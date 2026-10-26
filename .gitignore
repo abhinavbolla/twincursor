@@ -1,0 +1,24 @@
+# Rust
+/target/
+**/target/
+
+# Node
+node_modules/
+dist/
+
+# Tauri
+apps/desktop/src-tauri/gen/
+
+# Env and secrets
+.env
+.env.*
+!.env.example
+
+# Claude local overrides
+.claude/settings.local.json
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
