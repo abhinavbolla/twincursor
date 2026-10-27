@@ -18,10 +18,15 @@ env:
 jobs:
   rust:
     # Apple Silicon: matches our dev machines and the mac-arm64 libwebrtc build.
-    runs-on: macos-15
+    # macOS 26 / Xcode 26: screencapturekit's apple-metal Swift bridge needs the macOS 26 SDK
+    # (MTLTensor etc.) and fails to compile on the macos-15 image's default Xcode.
+    runs-on: macos-26
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
+      - name: Show Xcode and SDK
+        run: xcodebuild -version && xcrun --sdk macosx --show-sdk-version
 
       - uses: dtolnay/rust-toolchain@stable
         with:

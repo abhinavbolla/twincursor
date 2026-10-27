@@ -50,8 +50,10 @@ Fill these in as code lands; keep them accurate.
 - Media spike: `target/release/tc-spike share` and `target/release/tc-spike view` (see `--help`)
 - Latency matrix: `bench/run-matrix.sh [config ...]` → `bench/results/*.json` (git-ignored)
 - Desktop dev: _TBD (M4)_
-- CI: `.github/workflows/ci.yml` runs fmt, clippy and tests on `macos-15` for every PR and
+- CI: `.github/workflows/ci.yml` runs fmt, clippy and tests on `macos-26` for every PR and
   push to `main`. Keep it green; run the same three commands locally before pushing.
+- Building needs **Xcode 26** (macOS 26 SDK): `screencapturekit`'s `apple-metal` Swift bridge
+  uses macOS 26 Metal APIs and fails to compile with Xcode 16 (this broke CI on `macos-15`).
 
 If the libwebrtc download fails mid-way (connection reset), download
 `https://github.com/livekit/rust-sdks/releases/download/<WEBRTC_TAG>/webrtc-mac-arm64-release.zip`
