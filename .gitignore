@@ -22,3 +22,6 @@ apps/desktop/src-tauri/gen/
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Latency run output (summaries go in docs/research)
+bench/results/
