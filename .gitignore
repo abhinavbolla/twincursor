@@ -25,3 +25,6 @@ apps/desktop/src-tauri/gen/
 
 # Latency run output (summaries go in docs/research)
 bench/results/
+
+# Prebuilt libwebrtc unpacked by CI (see .github/workflows/ci.yml)
+.libwebrtc/
