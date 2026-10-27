@@ -160,7 +160,7 @@ async fn report_share_stats(stats: Arc<ShareStats>) {
         let take = |c: &std::sync::atomic::AtomicU64| c.swap(0, Ordering::Relaxed) as f64;
         let secs = EVERY.as_secs_f64();
         tracing::info!(
-            "captured {:.1} fps, sent {:.1} fps (+{:.1} idle re-sends/s), ticks {:.1}/s",
+            "captured {:.1} fps, sent {:.1} fps (+{:.1} re-sends/s for ticks or idle), ticks {:.1}/s",
             take(&stats.captured) / secs,
             take(&stats.sent) / secs,
             take(&stats.resent) / secs,

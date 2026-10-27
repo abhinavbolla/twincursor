@@ -38,7 +38,8 @@ pub struct Report {
 
 impl Recorder {
     pub fn tick_sent(&mut self, id: u32, at: Instant) {
-        self.sent.retain(|_, t| at.duration_since(*t).as_secs_f64() < TICK_TTL_SECS);
+        self.sent
+            .retain(|_, t| at.duration_since(*t).as_secs_f64() < TICK_TTL_SECS);
         self.sent.insert(id, at);
         self.ticks_sent += 1;
     }
@@ -55,7 +56,8 @@ impl Recorder {
     ) {
         self.frames += 1;
         if let Some(captured) = captured_at_us.filter(|&c| c > 0 && c <= presented_at_us) {
-            self.one_way_presented.push((presented_at_us - captured) as f64 / 1000.0);
+            self.one_way_presented
+                .push((presented_at_us - captured) as f64 / 1000.0);
         }
         let Some(id) = marker else { return };
         if self.last_seen == Some(id) {

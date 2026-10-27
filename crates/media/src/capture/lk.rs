@@ -43,7 +43,9 @@ pub fn start(
             #[cfg(target_os = "macos")]
             options.set_sck_system_picker(false);
             let Some(mut capturer) = DesktopCapturer::new(options) else {
-                let _ = ready_tx.send(Err(CaptureError::Backend("DesktopCapturer::new failed".into())));
+                let _ = ready_tx.send(Err(CaptureError::Backend(
+                    "DesktopCapturer::new failed".into(),
+                )));
                 return;
             };
             let source = capturer.get_source_list().into_iter().next();
@@ -66,7 +68,10 @@ pub fn start(
     ready_rx
         .recv()
         .map_err(|_| CaptureError::Backend("capture thread exited".into()))??;
-    Ok(LkCapture { running, thread: Some(thread) })
+    Ok(LkCapture {
+        running,
+        thread: Some(thread),
+    })
 }
 
 fn to_frame(frame: &DesktopFrame, width: u32, height: u32) -> Frame {
@@ -75,11 +80,25 @@ fn to_frame(frame: &DesktopFrame, width: u32, height: u32) -> Frame {
     let mut full = I420Buffer::new(src_w as u32, src_h as u32);
     let (sy, su, sv) = full.strides();
     let (y, u, v) = full.data_mut();
-    yuv_helper::argb_to_i420(frame.data(), frame.stride(), y, sy, u, su, v, sv, src_w, src_h);
+    yuv_helper::argb_to_i420(
+        frame.data(),
+        frame.stride(),
+        y,
+        sy,
+        u,
+        su,
+        v,
+        sv,
+        src_w,
+        src_h,
+    );
     let buffer = if (src_w as u32, src_h as u32) == (width, height) {
         full
     } else {
         full.scale(width as i32, height as i32)
     };
-    Frame { buffer: FrameBuffer::I420(buffer), captured_at_us }
+    Frame {
+        buffer: FrameBuffer::I420(buffer),
+        captured_at_us,
+    }
 }
