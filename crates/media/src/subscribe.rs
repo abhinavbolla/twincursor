@@ -43,11 +43,16 @@ pub async fn run(
     if let Err(e) = livekit::webrtc::enable_zero_playout_delay() {
         tracing::warn!("zero playout delay not enabled: {e}");
     }
-    let (room, mut events) = Room::connect(&config.url, &config.token, RoomOptions::default()).await?;
+    let (room, mut events) =
+        Room::connect(&config.url, &config.token, RoomOptions::default()).await?;
     tracing::info!(room = %room.name(), "connected as viewer");
 
     let on_frame = Arc::new(on_frame);
-    let ticker = tokio::spawn(send_ticks(room.local_participant(), recorder, config.tick_interval));
+    let ticker = tokio::spawn(send_ticks(
+        room.local_participant(),
+        recorder,
+        config.tick_interval,
+    ));
 
     tokio::pin!(shutdown);
     loop {
@@ -77,7 +82,11 @@ pub async fn run(
     Ok(())
 }
 
-async fn send_ticks(participant: LocalParticipant, recorder: Arc<Mutex<Recorder>>, every: Duration) {
+async fn send_ticks(
+    participant: LocalParticipant,
+    recorder: Arc<Mutex<Recorder>>,
+    every: Duration,
+) {
     let mut interval = tokio::time::interval(every);
     let mut id: u32 = 0;
     loop {

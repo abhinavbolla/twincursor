@@ -32,7 +32,11 @@ pub fn start(
     sink: impl Fn(Frame) + Send + Sync + 'static,
 ) -> Result<SckCapture, CaptureError> {
     let content = SCShareableContent::get().map_err(|_| CaptureError::NoDisplay)?;
-    let display = content.displays().into_iter().next().ok_or(CaptureError::NoDisplay)?;
+    let display = content
+        .displays()
+        .into_iter()
+        .next()
+        .ok_or(CaptureError::NoDisplay)?;
     let filter = SCContentFilter::create()
         .with_display(&display)
         .with_excluding_windows(&[])
@@ -92,7 +96,10 @@ fn to_frame(sample: &CMSampleBuffer) -> Option<Frame> {
                 .copy_from_slice(&src[row * src_stride..row * src_stride + row_len]);
         }
     }
-    Some(Frame { buffer: FrameBuffer::Nv12(buffer), captured_at_us })
+    Some(Frame {
+        buffer: FrameBuffer::Nv12(buffer),
+        captured_at_us,
+    })
 }
 
 extern "C" {

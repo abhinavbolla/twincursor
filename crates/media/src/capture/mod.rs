@@ -1,8 +1,8 @@
 //! Screen capture backends. Each one delivers frames to a sink callback on its own thread.
 
+mod lk;
 #[cfg(target_os = "macos")]
 mod sck;
-mod lk;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -85,5 +85,7 @@ pub fn start(
 
 /// Current wall-clock time in microseconds since the Unix epoch.
 pub fn wall_clock_us() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_micros() as u64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_micros() as u64)
 }

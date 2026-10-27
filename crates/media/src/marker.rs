@@ -83,12 +83,10 @@ pub fn read_luma(y: &[u8], stride: usize, width: usize, height: usize) -> Option
             .map(|&v| u32::from(v))
             .sum();
         let bit = sum / (inner * inner) as u32 > THRESHOLD;
-        if i < GUARD.len() {
-            if bit != GUARD[i] {
-                return None;
-            }
-        } else {
-            id = id << 1 | u32::from(bit);
+        match GUARD.get(i) {
+            Some(&expected) if bit != expected => return None,
+            Some(_) => {}
+            None => id = id << 1 | u32::from(bit),
         }
     }
     Some(id)
@@ -171,7 +169,10 @@ mod tests {
         let mut u = vec![0; stride * H / 2];
         neutral_chroma_planar(&mut u, stride);
         assert_eq!(u[0], NEUTRAL_CHROMA);
-        assert_eq!(u[(REGION.1 / 2 - 1) * stride + REGION.0 / 2 - 1], NEUTRAL_CHROMA);
+        assert_eq!(
+            u[(REGION.1 / 2 - 1) * stride + REGION.0 / 2 - 1],
+            NEUTRAL_CHROMA
+        );
         assert_eq!(u[REGION.0 / 2], 0);
 
         let mut uv = vec![0; W * H / 2];

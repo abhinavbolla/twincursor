@@ -166,8 +166,12 @@ impl App {
     /// Presenting here rather than on `RedrawRequested` avoids waiting for the next vsync.
     fn present_latest(&mut self) {
         self.latest.wake_pending.store(false, Ordering::Release);
-        let Some(frame) = self.latest.frame.lock().unwrap().take() else { return };
-        let (Some(window), Some(surface)) = (&self.window, &mut self.surface) else { return };
+        let Some(frame) = self.latest.frame.lock().unwrap().take() else {
+            return;
+        };
+        let (Some(window), Some(surface)) = (&self.window, &mut self.surface) else {
+            return;
+        };
 
         let (w, h) = (frame.i420.width(), frame.i420.height());
         if (w, h) != self.size {
@@ -237,7 +241,11 @@ fn write_results(
         "report": report,
     });
     std::fs::create_dir_all(&args.out)?;
-    let path = args.out.join(format!("{}-{}.json", args.label, wall_clock_us() / 1_000_000));
+    let path = args.out.join(format!(
+        "{}-{}.json",
+        args.label,
+        wall_clock_us() / 1_000_000
+    ));
     std::fs::write(&path, serde_json::to_string_pretty(&results)?)
         .with_context(|| format!("writing {}", path.display()))?;
     tracing::info!("results written to {}", path.display());

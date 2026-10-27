@@ -59,12 +59,17 @@ pub async fn run(
     stats: Arc<ShareStats>,
     shutdown: impl std::future::Future<Output = ()>,
 ) -> Result<(), ShareError> {
-    let (room, mut events) = Room::connect(&config.url, &config.token, RoomOptions::default()).await?;
+    let (room, mut events) =
+        Room::connect(&config.url, &config.token, RoomOptions::default()).await?;
     tracing::info!(room = %room.name(), "connected as sharer");
 
-    let resolution = VideoResolution { width: config.capture.width, height: config.capture.height };
+    let resolution = VideoResolution {
+        width: config.capture.width,
+        height: config.capture.height,
+    };
     let source = NativeVideoSource::new(resolution, config.is_screencast);
-    let track = LocalVideoTrack::create_video_track("screen", RtcVideoSource::Native(source.clone()));
+    let track =
+        LocalVideoTrack::create_video_track("screen", RtcVideoSource::Native(source.clone()));
     let mut options = TrackPublishOptions {
         source: TrackSource::Screenshare,
         video_codec: config.codec,
@@ -76,7 +81,9 @@ pub async fn run(
         ..Default::default()
     };
     options.frame_metadata_features.user_timestamp = true;
-    room.local_participant().publish_track(LocalTrack::Video(track), options).await?;
+    room.local_participant()
+        .publish_track(LocalTrack::Video(track), options)
+        .await?;
     tracing::info!(codec = ?config.codec, "screen track published");
 
     let (tx, rx) = mpsc::sync_channel::<Msg>(4);
@@ -157,7 +164,11 @@ fn send_loop(
             stamp_marker(&mut frame.buffer, tick);
         }
         // A re-sent frame shows content as of now, so that's its capture time.
-        let captured_at_us = if fresh { frame.captured_at_us } else { wall_clock_us() };
+        let captured_at_us = if fresh {
+            frame.captured_at_us
+        } else {
+            wall_clock_us()
+        };
         let timestamp_us = start.elapsed().as_micros() as i64;
         match &frame.buffer {
             FrameBuffer::Nv12(b) => send(source, b, timestamp_us, captured_at_us),
