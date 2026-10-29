@@ -12,13 +12,15 @@ BIN=target/release/tc-spike
 DURATION=${DURATION:-30}
 WARMUP=${WARMUP:-5}
 
-# name | sharer flags
+# name | sharer flags [| viewer flags]
 CONFIGS=(
   "sck-vp8|--capture sck --codec vp8"
   "sck-vp9|--capture sck --codec vp9"
   "sck-h264|--capture sck --codec h264"
   "sck-vp8-noscreencast|--capture sck --codec vp8 --no-screencast"
   "lk-vp8|--capture lk --codec vp8"
+  "sck-vp8-nostats|--capture sck --codec vp8 --no-stats|--no-stats"
+  "sck-h264-nostats|--capture sck --codec h264 --no-stats|--no-stats"
 )
 
 wanted() {
@@ -29,8 +31,7 @@ wanted() {
 }
 
 for entry in "${CONFIGS[@]}"; do
-  name=${entry%%|*}
-  flags=${entry#*|}
+  IFS='|' read -r name flags view_flags <<<"$entry"
   wanted "$name" "$@" || continue
 
   echo "=== $name ($flags)"
@@ -45,7 +46,8 @@ for entry in "${CONFIGS[@]}"; do
     sleep 0.5
   done
   sleep "$WARMUP"
-  "$BIN" view --duration "$DURATION" --label "$name" >/dev/null 2>&1 &
+  # shellcheck disable=SC2086
+  "$BIN" view --duration "$DURATION" --label "$name" ${view_flags:-} >/dev/null 2>&1 &
   viewer=$!
   # Sample CPU (% of one core) of both processes every 2 s while the viewer runs.
   cpu_log=$(mktemp)

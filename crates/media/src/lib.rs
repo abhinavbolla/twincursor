@@ -5,6 +5,7 @@
 pub mod capture;
 pub mod latency;
 pub mod marker;
+pub mod netstats;
 pub mod publish;
 pub mod stats;
 pub mod subscribe;
