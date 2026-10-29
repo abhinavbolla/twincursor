@@ -13,6 +13,7 @@ livekit-api = { version = "0.9.1", default-features = false, features = ["access
 screencapturekit = { version = "=11.1.1", features = ["macos_15_0"] }
 winit = "0.30"
 softbuffer = "0.4"
+font8x8 = { version = "0.3", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
 futures = "0.3"
 clap = { version = "4", features = ["derive"] }

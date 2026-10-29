@@ -90,6 +90,32 @@ delay aren't in RTT. A planned `--marker screen` mode fixes that.
 
 Every media-path PR reports before and after numbers (`bench/run-matrix.sh`).
 
+## Call health stats
+
+`crates/media/src/netstats.rs` polls WebRTC stats once a second on both ends (`Room::get_stats`)
+and turns the cumulative counters into per-second `NetSnapshot`s:
+- link RTT and path (ICE candidate type and protocol, e.g. `host udp`, `relay tcp`);
+- receive: bitrate, fps, resolution, loss %, jitter, freezes, dropped frames, NACK/PLI, decoder;
+- send: bitrate vs target, fps, resolution, loss reported by the SFU, retransmit %, bandwidth
+  estimate, what limits quality (`cpu`/`bandwidth`), encoder.
+
+The sharer sends its snapshot to the viewer on data topic `tc.stats`, so the viewer sees both
+ends. `connection_quality` grades the call Good/Fair/Poor; the worst signal wins:
+
+| signal | good below | fair below |
+|---|---|---|
+| link RTT | 80 ms | 200 ms |
+| loss | 1% | 5% |
+| jitter | 30 ms | 80 ms |
+| freezes in the last second | none | under 500 ms in total |
+
+The viewer draws this as a HUD in the top-right corner (away from the latency marker) and
+writes the per-second history into the results JSON (`net`). `--no-stats` turns it all off,
+for A/B latency runs.
+
+SDK quirk: with current LiveKit servers the SDK uses one peer connection for both directions
+and reports it as `publisher_stats`; `subscriber_stats` is then empty. The poller handles both.
+
 ## Platform plan
 
 macOS first (M1–M5), Linux next (Wayland via PipeWire capture and libei input, plus X11), Windows after that.
