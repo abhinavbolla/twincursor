@@ -16,26 +16,38 @@ pub const MAX_ID: u32 = (1 << ID_BITS) - 1;
 /// Size of the marked region in luma pixels: (width, height).
 pub const REGION: (usize, usize) = (COLS * BLOCK, ROWS * BLOCK);
 
+/// Left edge of the second marker slot, right of the latency marker. The synthetic test
+/// pattern writes its frame number there.
+pub const FRAME_SLOT_X: usize = REGION.0;
+
+/// Area that markers may cover, for quality metrics to skip: both slots plus a margin for
+/// encoder ringing around block edges.
+pub const MARKED_AREA: (usize, usize) = (FRAME_SLOT_X + REGION.0 + BLOCK / 2, REGION.1 + BLOCK / 2);
+
 // Limited-range luma, which is what WebRTC's I420 pipeline assumes.
 const WHITE: u8 = 235;
 const BLACK: u8 = 16;
 const THRESHOLD: u32 = (WHITE as u32 + BLACK as u32) / 2;
 const NEUTRAL_CHROMA: u8 = 128;
 
-fn bits(id: u32) -> impl Iterator<Item = bool> {
+/// The marker's bits in block order (row by row): guard bits, then the id.
+pub fn bits(id: u32) -> impl Iterator<Item = bool> {
     let id = id & MAX_ID;
     GUARD
         .into_iter()
         .chain((0..ID_BITS).rev().map(move |i| id >> i & 1 == 1))
 }
 
-fn fits(width: usize, height: usize) -> bool {
-    width >= REGION.0 && height >= REGION.1
+fn fits(width: usize, height: usize, x0: usize) -> bool {
+    width >= x0 + REGION.0 && height >= REGION.1
 }
+
+/// Luma value of a set bit and an unset bit (limited range).
+pub const LEVELS: (u8, u8) = (WHITE, BLACK);
 
 /// Paints `id` into an 8-bit luma plane. Returns `false` if the frame is too small.
 pub fn stamp_luma(y: &mut [u8], stride: usize, width: usize, height: usize, id: u32) -> bool {
-    if !fits(width, height) {
+    if !fits(width, height, 0) {
         return false;
     }
     for (i, bit) in bits(id).enumerate() {
@@ -70,14 +82,25 @@ pub fn neutral_chroma_nv12(uv: &mut [u8], stride: usize) {
 /// Each bit is the mean of the inner half of its block, which ignores ringing that the
 /// encoder adds at block edges.
 pub fn read_luma(y: &[u8], stride: usize, width: usize, height: usize) -> Option<u32> {
-    if !fits(width, height) {
+    read_luma_at(y, stride, width, height, 0)
+}
+
+/// Like [`read_luma`], for a marker whose left edge is at `x0` (e.g. [`FRAME_SLOT_X`]).
+pub fn read_luma_at(
+    y: &[u8],
+    stride: usize,
+    width: usize,
+    height: usize,
+    x0: usize,
+) -> Option<u32> {
+    if !fits(width, height, x0) {
         return None;
     }
     let inset = BLOCK / 4;
     let inner = BLOCK - 2 * inset;
     let mut id = 0u32;
     for i in 0..ROWS * COLS {
-        let (bx, by) = ((i % COLS) * BLOCK + inset, (i / COLS) * BLOCK + inset);
+        let (bx, by) = (x0 + (i % COLS) * BLOCK + inset, (i / COLS) * BLOCK + inset);
         let sum: u32 = (by..by + inner)
             .flat_map(|row| &y[row * stride + bx..row * stride + bx + inner])
             .map(|&v| u32::from(v))
@@ -161,6 +184,28 @@ mod tests {
             })
             .collect();
         assert_eq!(read_luma(&blurred, W, W, H), Some(424_242 & MAX_ID));
+    }
+
+    #[test]
+    fn reads_second_slot_independently() {
+        // Wide enough for both slots.
+        const WW: usize = 1024;
+        let mut y = vec![90; WW * H];
+        stamp_luma(&mut y, WW, WW, H, 7);
+        for (i, bit) in bits(4242).enumerate() {
+            let (bx, by) = (FRAME_SLOT_X + (i % COLS) * BLOCK, (i / COLS) * BLOCK);
+            let level = if bit { LEVELS.0 } else { LEVELS.1 };
+            for row in by..by + BLOCK {
+                y[row * WW + bx..row * WW + bx + BLOCK].fill(level);
+            }
+        }
+        assert_eq!(read_luma(&y, WW, WW, H), Some(7));
+        assert_eq!(read_luma_at(&y, WW, WW, H, FRAME_SLOT_X), Some(4242));
+        assert_eq!(
+            read_luma_at(&y, WW, FRAME_SLOT_X + REGION.0 - 1, H, FRAME_SLOT_X),
+            None,
+            "too narrow"
+        );
     }
 
     #[test]

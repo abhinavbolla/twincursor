@@ -28,3 +28,6 @@ bench/results/
 
 # Prebuilt libwebrtc unpacked by CI (see .github/workflows/ci.yml)
 .libwebrtc/
+
+# Luma snapshots of real screens (tc-spike --snapshot-every); may contain private content
+bench/snapshots/

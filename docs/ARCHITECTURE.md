@@ -42,8 +42,9 @@ Status: draft. Validate each decision with a spike before building on it.
 
 ### 3. Encoding: tune for latency, choose per platform
 Codecs are configurable (`tc-spike share --codec`). M1 measurements (`research/m1-results.md`):
-- **H.264 (hardware)** matches VP8's latency on macOS at about 1/5 of the sharer's CPU, at
-  full 1080p. It's the leading candidate for the default, pending a text-quality comparison.
+- **H.264 (hardware) is the default** (ADR 0002). It matches VP8's latency on macOS at about
+  1/5 of the sharer's CPU. Its text is measurably sharper (SSIM p5 0.9995 vs 0.98), and it
+  uses ~4x less bandwidth.
 - **VP8** is the software fallback.
 - **VP9** was worse on every measure.
 - Simulcast is off for screen share.
@@ -96,6 +97,29 @@ Limitation: the marker is stamped after capture, so the app redraw and part of t
 delay aren't in RTT. A planned `--marker screen` mode fixes that.
 
 Every media-path PR reports before and after numbers (`bench/run-matrix.sh`).
+
+## Measuring quality
+
+Latency alone doesn't tell us whether text is readable, so we measure picture quality too:
+- `tc-spike share --capture pattern` streams a synthetic dark-theme code editor
+  (`crates/media/src/pattern.rs`), drawn from the frame number alone:
+  - tiny 8 px code on the left, 16 px code on the right, coloured syntax;
+  - the left pane alternates 10 s of gentle scrolling with 10 s of fast scrolling (one line
+    per frame, the hardest case for screen codecs);
+  - a line being typed and a blinking cursor.
+  The frame number travels in a second marker slot next to the latency marker.
+- `tc-spike view --measure-quality` regenerates the expected frame and compares the decoded
+  luma with it on a background thread (`crates/media/src/quality.rs`, frames are skipped
+  while it's busy):
+  - **SSIM** (8x8 blocks; drops with blur and blocking, which is what makes text unreadable);
+  - **PSNR**.
+  Both skip the marker area. Results report p50, p5 and min, plus SSIM during fast scrolling
+  only.
+- `--headless` runs the viewer without a window. Latency is then measured at decode. Use it
+  for benchmarks and the network lab.
+- For a real screen, `--snapshot-every N` on both ends saves the frame carrying every Nth tick
+  as a PGM in `bench/snapshots/` (git-ignored: it holds real screen content), and
+  `tc-spike compare sharer-N.pgm viewer-N.pgm` prints SSIM and PSNR.
 
 ## Call health stats
 

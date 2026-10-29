@@ -3,6 +3,7 @@
 mod lk;
 #[cfg(target_os = "macos")]
 mod sck;
+mod synthetic;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,6 +17,8 @@ pub enum Backend {
     ScreenCaptureKit,
     /// libwebrtc's cross-platform `DesktopCapturer`, shipped with the LiveKit SDK.
     LiveKit,
+    /// The synthetic code-editor pattern (`crate::pattern`), for quality measurements.
+    Pattern,
 }
 
 /// Output size presets, by number of lines. Widths follow the display's aspect ratio.
@@ -62,8 +65,12 @@ impl Tier {
     }
 }
 
-/// Assumed when the display size can't be read (non-macOS before the first frame).
+/// Assumed when the display size can't be read (non-macOS, or a locked or sleeping screen).
 pub const FALLBACK_DISPLAY: (u32, u32) = (1920, 1080);
+
+/// The "display" the synthetic pattern pretends to have: 16:9, so its tiers are 1920x1080
+/// and 2560x1440 on every machine and results compare across machines.
+pub const PATTERN_DISPLAY: (u32, u32) = (2560, 1440);
 
 /// Pixel size of the display we capture (the first one), if the platform can tell us.
 pub fn display_pixels() -> Option<(u32, u32)> {
@@ -138,6 +145,7 @@ pub fn start(
         #[cfg(target_os = "macos")]
         Backend::ScreenCaptureKit => Box::new(sck::start(config, sink)?),
         Backend::LiveKit => Box::new(lk::start(config, sink)?),
+        Backend::Pattern => Box::new(synthetic::start(config, sink)),
     };
     Ok(CaptureHandle { _inner: inner })
 }

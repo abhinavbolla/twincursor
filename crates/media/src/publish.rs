@@ -13,6 +13,7 @@ use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 
 use crate::capture::{self, wall_clock_us, Backend, CaptureConfig, Frame, FrameBuffer};
 use crate::netstats::{NetSnapshot, Poller, Side};
+use crate::quality::Snapshots;
 use crate::{marker, wire};
 
 /// SCK only delivers frames when the screen changes. Re-sending the last frame keeps the
@@ -33,6 +34,7 @@ pub struct ShareConfig {
     pub stamp_markers: bool,
     /// Poll WebRTC stats and send them to the viewer.
     pub net_stats: bool,
+    pub snapshots: Option<Snapshots>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -99,7 +101,17 @@ pub async fn run(
         let latest_tick = latest_tick.clone();
         let stats = stats.clone();
         let stamp = config.stamp_markers;
-        std::thread::spawn(move || send_loop(&rx, &source, &latest_tick, &stats, stamp))
+        let snapshots = config.snapshots.clone();
+        std::thread::spawn(move || {
+            send_loop(
+                &rx,
+                &source,
+                &latest_tick,
+                &stats,
+                stamp,
+                snapshots.as_ref(),
+            )
+        })
     };
     let _capture = {
         let tx = tx.clone();
@@ -173,9 +185,11 @@ fn send_loop(
     latest_tick: &AtomicU32,
     stats: &ShareStats,
     stamp: bool,
+    snapshots: Option<&Snapshots>,
 ) {
     let start = Instant::now();
     let mut last: Option<Frame> = None;
+    let mut last_snapshot = NO_TICK;
     loop {
         let fresh = match rx.recv_timeout(IDLE_RESEND) {
             Ok(Msg::Frame(frame)) => {
@@ -189,6 +203,10 @@ fn send_loop(
         let tick = latest_tick.load(Ordering::Relaxed);
         if stamp && tick != NO_TICK {
             stamp_marker(&mut frame.buffer, tick);
+            if let Some(snaps) = snapshots.filter(|s| tick != last_snapshot && s.wants(tick)) {
+                save_snapshot(snaps, tick, &frame.buffer);
+                last_snapshot = tick;
+            }
         }
         // A re-sent frame shows content as of now, so that's its capture time.
         let captured_at_us = if fresh {
@@ -222,6 +240,20 @@ fn send<T: AsRef<dyn VideoBuffer>>(
         }),
         buffer,
     });
+}
+
+fn save_snapshot(snaps: &Snapshots, tick: u32, buffer: &FrameBuffer) {
+    let (w, h) = (buffer.width() as usize, buffer.height() as usize);
+    match buffer {
+        FrameBuffer::Nv12(b) => {
+            let (sy, _) = b.strides();
+            snaps.save("sharer", tick, b.data().0, sy as usize, w, h);
+        }
+        FrameBuffer::I420(b) => {
+            let (sy, _, _) = b.strides();
+            snaps.save("sharer", tick, b.data().0, sy as usize, w, h);
+        }
+    }
 }
 
 fn stamp_marker(buffer: &mut FrameBuffer, id: u32) {

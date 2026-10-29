@@ -41,3 +41,37 @@ Findings:
 
 Default stays 1080. Offer 1440 with H.264 once PR 3 shows whether the extra pixels make text
 measurably sharper.
+
+## Text quality: H.264 vs VP8 (PR 3)
+Synthetic code editor (`share --capture pattern`, 16:9 reference: 1920x1080 and 2560x1440),
+headless viewer with `--measure-quality`, one 40 s run each (two gentle-scroll and two
+fast-scroll phases), no windows and no screen capture. RTT here is measured at decode, and
+includes rendering the pattern on the sharer (about 10 ms more at 1440p).
+
+| config | fps | RTT p50 | RTT p95 | SSIM p50 | SSIM p5 | fast-scroll SSIM p5 | PSNR p5 | actual rate | sharer CPU |
+|---|---|---|---|---|---|---|---|---|---|
+| H.264 1080 (cap 5 Mbps) | 58 | 11 ms | 29 ms | 0.9996 | 0.9996 | 0.9996 | 48.4 dB | 0.8 Mbps | 19% |
+| H.264 1080, cap 1.5 Mbps | 58 | 14 ms | 34 ms | 0.9994 | 0.9993 | 0.9993 | 45.2 dB | 0.7 Mbps | 19% |
+| H.264 1440 (cap 8 Mbps) | 59 | 29 ms | 33 ms | 0.9996 | 0.9996 | 0.9996 | 48.4 dB | 0.9 Mbps | 31% |
+| H.264 1440, cap 2.5 Mbps | 59 | 28 ms | 32 ms | 0.9995 | 0.9995 | 0.9995 | 47.2 dB | 0.8 Mbps | 31% |
+| VP8 1080 (cap 5 Mbps) | 59 | 17 ms | 84 ms | 0.9978 | 0.9845 | 0.9817 | 33.4 dB | 3.5 Mbps | 75% |
+| VP8 1080, cap 1.5 Mbps | 37 | 14 ms | 247 ms | 0.9916 | 0.9774 | 0.9745 | 31.3 dB | 1.5 Mbps | 54% |
+| VP8 1440 (cap 8 Mbps) | 59 | 10 ms | 76 ms | 0.9980 | 0.9871 | 0.9857 | 34.0 dB | 3.6 Mbps | 112% |
+| VP8 1440, cap 2.5 Mbps | 37 | 28 ms | 164 ms | 0.9953 | 0.9818 | 0.9812 | 31.9 dB | 2.4 Mbps | 78% |
+
+Findings:
+1. **H.264 is sharper, cheaper and steadier.** Its text quality barely moves with bitrate cap,
+   resolution or fast scrolling. It sends ~4x less data than VP8, at ~1/4 of the CPU.
+   Decision: H.264 is the default (ADR 0002).
+2. **VP8 trades frame rate for quality when capped.** It drops to ~37 fps and its p95 RTT
+   grows to 160–250 ms.
+3. **1440p H.264 costs ~17 ms more RTT than 1080p here,** about 10 ms of which is rendering
+   the pattern itself. With a real screen and window (PR 2) it was ~12 ms.
+4. A first run of this matrix measured some "1440" configs at 1920x1080. While the Mac's
+   screen was asleep or locked, ScreenCaptureKit listed no displays, and the size fell back to
+   the default. The pattern source now uses a fixed 16:9 reference display, so results don't
+   depend on the machine or its screen.
+
+Caveat: the pattern uses a binary bitmap font. Anti-aliased text on a real screen has more
+fine texture, so expect lower absolute SSIM there. Compare real screens with
+`--snapshot-every` and `tc-spike compare`.
