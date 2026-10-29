@@ -121,29 +121,86 @@ Latency alone doesn't tell us whether text is readable, so we measure picture qu
   as a PGM in `bench/snapshots/` (git-ignored: it holds real screen content), and
   `tc-spike compare sharer-N.pgm viewer-N.pgm` prints SSIM and PSNR.
 
-## Auto-throttle (adaptive resolution)
+## Network lab and SLOs
+
+`bench/netlab/` runs a pattern sharer, a headless viewer and the LiveKit SFU in Docker, each
+with a fixed IP on a private bridge. Each profile's conditions are applied with `tc netem`:
+- the sharer's uplink is shaped on its own interface;
+- the viewer's uplink is shaped on its own interface;
+- the viewer's downlink is shaped on the SFU's interface, filtered to the viewer's IP.
+
+Run it with `bench/netlab/run.sh [--build] [profile ...]` (`CODEC`, `RES`, `DURATION`,
+`ADAPT=off`, `SHARE_FLAGS`, `TAG`), and summarise with `bench/netlab/report.sh`.
+
+Lab notes:
+- Rate limits use a token bucket (tbf) under netem. netem's own `rate` combined with jitter
+  tail-drops far more than configured.
+- Building tc-spike for Linux needs clang 21+ (libwebrtc's hermetic libc++) and an explicit
+  link to GLib/GIO (see the lab's Dockerfile). Linux in Docker has no hardware
+encoder, so the lab uses VP8 (H.264 there is OpenH264 at ~35 fps). Mac hardware H.264 is
+checked on real machines instead.
+
+| profile | conditions (one way) |
+|---|---|
+| lan | none |
+| wifi-good | 2 ms ±2 ms, 0.1% loss, both ways |
+| wifi-bad | 8 ms ±8 ms, 1% loss with 25% correlation, both ways |
+| 4g | 25 ms ±5 ms, 0.5% loss; 12 Mbit down, 4 Mbit up |
+| hotel | 40 ms ±10 ms, 2% loss; 3 Mbit down, 1 Mbit up |
+| intercontinental | 75 ms each way (150 ms RTT) |
+| sharer-uplink-3mbit | sharer uplink 3 Mbit, 10 ms |
+| bandwidth-drop | sharer uplink 10 → 1.5 → 10 Mbit, 20 s each |
+| udp-blocked | viewer drops all outgoing UDP (ICE must use TCP) |
+| outage-5s | viewer cut off completely for 5 s at t = 25 s |
+
+**SLOs** (checked by `report.sh`; "network RTT" is the RTT the profile adds):
+- lan, wifi-good: RTT p50 ≤ network RTT + 25 ms; p95 ≤ network RTT + 60 ms; SSIM p5 ≥ 0.97;
+  no stall (a second under 5 fps).
+- ≤ 2% average loss: at most one freeze a minute.
+- bandwidth-drop: no stall longer than 3 s.
+- outage-5s: video back within 3 s of the network returning (longest stall ≤ 8 s).
+- udp-blocked: the call connects and measures latency.
+
+## Auto-throttle (adaptive frame rate and resolution)
 
 libwebrtc adapts the bitrate to the bandwidth estimate, and for screen share it keeps the
-resolution and drops the frame rate when squeezed. That keeps text sharp until the budget is
-too small for the resolution; then quality collapses. `crates/media/src/adapt.rs` steps the
-resolution down a tier before that point, text first:
-- **Step down** when, for 3 s straight:
-  - the budget (encoder target, capped by the bandwidth estimate) is under 90% of the tier's
-    floor: 0.5 / 1.0 / 1.6 / 2.5 Mbps for 720 / 1080 / 1440 / native with H.264, about twice
-    that for VP8;
+resolution and drops the frame rate when squeezed. That isn't enough on its own:
+- When the budget is too small for the resolution, every frame is blurry.
+- When the *viewer's* downlink is the bottleneck, the sharer's estimate doesn't see it.
+  Without simulcast the SFU can only drop packets, and the LiveKit SDK has no public API to
+  change the max bitrate mid-call.
+
+`crates/media/src/adapt.rs` walks a ladder that halves the frame rate before giving up
+resolution, because text needs pixels more than 60 fps:
+
+1440p 60 → 1440p 30 → 1080p 30 → 720p 30 → 720p 15
+
+The ladder starts at what the user picked.
+- **Step down one level** after 3 s of trouble:
+  - the budget (encoder target, capped by the bandwidth estimate) is under 90% of the
+    level's floor. Floors are 0.5 / 1.0 / 1.6 / 2.5 Mbps for 720 / 1080 / 1440 / native at
+    60 fps with H.264, ~2x for VP8, and scale with (fps/60)^0.75;
   - or the encoder is CPU-limited;
-  - or it's bandwidth-limited below 15 fps;
-  - or the viewer reports ≥ 5% loss or freezes.
-- **Step up** after 10 s of calm with 1.5x the next tier's floor available. That wait doubles
-  (up to 80 s) when it flaps.
-- It never goes above the tier the user picked. It starts there and goes no lower than 720.
-- The viewer sends its stats back on `tc.stats`. Without simulcast the SFU can't adapt per
-  viewer, so the sharer has to know how the video arrives.
-- The sharer keeps capturing at the chosen tier and scales frames down before encoding
-  (libyuv), which works with every capture backend. libwebrtc reconfigures the encoder on
-  the size change by itself. The viewer's window keeps its size, and lower tiers are scaled
-  up to it.
-- The HUD shows "adapted to 1080p, from 1440p: <reason>". `share --no-adapt` turns it off.
+  - or it's bandwidth-limited below half the level's frame rate;
+  - or the viewer reports ≥ 5% loss or ≥ 2 freezes a second.
+- **Step up** after 10 s of calm with 1.5x the next level's floor available. That wait
+  doubles (up to 80 s) when it flaps.
+- The viewer sends its stats back on `tc.stats`, so the sharer sees its downlink.
+- The sharer captures at the chosen tier. The send loop scales frames to the level's size
+  (libyuv) and paces them to its frame rate; libwebrtc reconfigures the encoder by itself. The
+  viewer's window keeps its size, and lower tiers are scaled up to it.
+- On a big drop it jumps straight to the first level the budget can carry, instead of
+  walking down one level every few seconds while the picture stalls.
+- **Bitrate cap for the viewer's downlink** (`BitrateCap`). Frame rate and resolution don't
+  lower the bitrate on their own: the encoder spends whatever its target allows. So when the
+  viewer loses ≥ 5% for 4 s while we send more than it receives, the sharer caps its max
+  bitrate at 75% of the viewer's goodput. It raises the cap 1.5x after 30 calm seconds.
+  - The SDK has no public way to change the max bitrate mid-call, so this republishes the
+    track: the viewer sees it drop and come back.
+  - In the lab, VP8 into a 3 Mbit, 2%-loss downlink decoded 0 fps uncapped, and 18 fps with
+    no stall at a 1.5 Mbps cap.
+- The HUD shows "adapted to 1080p 30 fps: <reason>; capped at 1.5 Mbps (viewer downlink)".
+  `share --no-adapt` turns both off.
 
 ## Call health stats
 
