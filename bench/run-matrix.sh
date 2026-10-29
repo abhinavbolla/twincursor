@@ -21,6 +21,15 @@ CONFIGS=(
   "lk-vp8|--capture lk --codec vp8"
   "sck-vp8-1440|--capture sck --codec vp8 --resolution 1440"
   "sck-h264-1440|--capture sck --codec h264 --resolution 1440"
+  # Text quality on the synthetic pattern: headless, no screen capture, no windows.
+  "q-h264-1080|--capture pattern --codec h264 --resolution 1080|--headless --measure-quality"
+  "q-vp8-1080|--capture pattern --codec vp8 --resolution 1080|--headless --measure-quality"
+  "q-h264-1440|--capture pattern --codec h264 --resolution 1440|--headless --measure-quality"
+  "q-vp8-1440|--capture pattern --codec vp8 --resolution 1440|--headless --measure-quality"
+  "q-h264-1080-1500k|--capture pattern --codec h264 --resolution 1080 --bitrate-kbps 1500|--headless --measure-quality"
+  "q-vp8-1080-1500k|--capture pattern --codec vp8 --resolution 1080 --bitrate-kbps 1500|--headless --measure-quality"
+  "q-h264-1440-2500k|--capture pattern --codec h264 --resolution 1440 --bitrate-kbps 2500|--headless --measure-quality"
+  "q-vp8-1440-2500k|--capture pattern --codec vp8 --resolution 1440 --bitrate-kbps 2500|--headless --measure-quality"
   "sck-vp8-nostats|--capture sck --codec vp8 --no-stats|--no-stats"
   "sck-h264-nostats|--capture sck --codec h264 --no-stats|--no-stats"
 )

@@ -47,8 +47,10 @@ Fill these in as code lands; keep them accurate.
 - Format: `cargo fmt --all`
 - Local LiveKit: `livekit-server --dev` (`brew install livekit`), or
   `docker compose -f deploy/dev/docker-compose.yml up`
-- Media spike: `target/release/tc-spike share [--resolution 720|1080|1440|native] [--codec h264]`
+- Media spike: `target/release/tc-spike share [--resolution 720|1080|1440|native] [--codec vp8]`
   and `target/release/tc-spike view` (see `--help`; `S` toggles the stats HUD)
+- Quality without windows or screen capture: `tc-spike share --capture pattern` +
+  `tc-spike view --headless --measure-quality` (SSIM/PSNR vs the synthetic pattern)
 - Latency matrix: `bench/run-matrix.sh [config ...]` → `bench/results/*.json` (git-ignored)
 - Desktop dev: _TBD (M4)_
 - CI: `.github/workflows/ci.yml` runs fmt, clippy and tests on `macos-26` for every PR and

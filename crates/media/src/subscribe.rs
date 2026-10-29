@@ -1,5 +1,7 @@
 //! Viewer: subscribes to the screen track, decodes frames, and sends latency ticks.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -10,6 +12,8 @@ use livekit::webrtc::video_stream::native::NativeVideoStream;
 
 use crate::latency::Recorder;
 use crate::netstats::{Board, Poller, Side};
+use crate::pattern::{fast_scrolling, Pattern};
+use crate::quality::{self, Plane, Snapshots};
 use crate::{marker, wire};
 
 const STATS_EVERY: Duration = Duration::from_secs(1);
@@ -21,6 +25,9 @@ pub struct ViewConfig {
     pub tick_interval: Duration,
     /// Poll WebRTC stats for the HUD.
     pub net_stats: bool,
+    /// Score decoded frames against the synthetic pattern (`share --capture pattern`).
+    pub measure_quality: bool,
+    pub snapshots: Option<Snapshots>,
 }
 
 /// A decoded frame ready to render.
@@ -56,7 +63,7 @@ pub async fn run(
     let on_frame = Arc::new(on_frame);
     let ticker = tokio::spawn(send_ticks(
         room.local_participant(),
-        recorder,
+        recorder.clone(),
         config.tick_interval,
     ));
 
@@ -79,7 +86,15 @@ pub async fn run(
                     // is what delivers the sharer's capture timestamp with each frame.
                     let _timing = track.subscribe_timing_events();
                     let stream = NativeVideoStream::new(track.rtc_track());
-                    tokio::spawn(receive_frames(stream, on_frame.clone()));
+                    let probe = config
+                        .measure_quality
+                        .then(|| QualityProbe::start(recorder.clone()));
+                    tokio::spawn(receive_frames(
+                        stream,
+                        on_frame.clone(),
+                        probe,
+                        config.snapshots.clone(),
+                    ));
                 }
                 Some(RoomEvent::DataReceived { payload, topic, .. })
                     if topic.as_deref() == Some(wire::STATS_TOPIC) =>
@@ -126,17 +141,91 @@ async fn send_ticks(
     }
 }
 
-async fn receive_frames(mut stream: NativeVideoStream, on_frame: Arc<impl Fn(DecodedFrame)>) {
+async fn receive_frames(
+    mut stream: NativeVideoStream,
+    on_frame: Arc<impl Fn(DecodedFrame)>,
+    probe: Option<QualityProbe>,
+    snapshots: Option<Snapshots>,
+) {
+    let mut last_marker = None;
     while let Some(frame) = stream.next().await {
         let i420 = frame.buffer.to_i420();
         let (w, h) = (i420.width() as usize, i420.height() as usize);
         let (stride_y, _, _) = i420.strides();
-        let marker = marker::read_luma(i420.data().0, stride_y as usize, w, h);
+        let (y, stride) = (i420.data().0, stride_y as usize);
+        let marker = marker::read_luma(y, stride, w, h);
+        if let Some(probe) = &probe {
+            if let Some(n) = marker::read_luma_at(y, stride, w, h, marker::FRAME_SLOT_X) {
+                probe.offer(n, y, stride, w, h);
+            }
+        }
+        if let (Some(snaps), Some(id)) = (&snapshots, marker) {
+            if last_marker != Some(id) && snaps.wants(id) {
+                snaps.save("viewer", id, y, stride, w, h);
+            }
+        }
+        last_marker = marker;
         on_frame(DecodedFrame {
             i420,
             marker,
             decoded_at: Instant::now(),
             captured_at_us: frame.frame_metadata.and_then(|m| m.user_timestamp),
         });
+    }
+}
+
+/// Scores decoded pattern frames against what the sharer rendered, on its own thread. Frames
+/// that arrive while it's busy are skipped, so it never holds up the frame path.
+struct QualityProbe {
+    tx: SyncSender<(u32, usize, usize, Vec<u8>)>,
+    busy: Arc<AtomicBool>,
+}
+
+impl QualityProbe {
+    fn start(recorder: Arc<Mutex<Recorder>>) -> Self {
+        let (tx, rx) = mpsc::sync_channel::<(u32, usize, usize, Vec<u8>)>(1);
+        let busy = Arc::new(AtomicBool::new(false));
+        let done = busy.clone();
+        std::thread::spawn(move || {
+            for (n, w, h, luma) in rx {
+                let expected = Pattern::new(w as u32, h as u32).render_i420(n);
+                let (sy, _, _) = expected.strides();
+                let scores = quality::compare(
+                    Plane {
+                        data: expected.data().0,
+                        stride: sy as usize,
+                    },
+                    Plane {
+                        data: &luma,
+                        stride: w,
+                    },
+                    w,
+                    h,
+                    marker::MARKED_AREA,
+                );
+                if let Some(scores) = scores {
+                    let mut recorder = recorder.lock().unwrap();
+                    recorder.quality.push(scores);
+                    if fast_scrolling(n) {
+                        recorder.quality_fast.push(scores);
+                    }
+                }
+                done.store(false, Ordering::Release);
+            }
+        });
+        Self { tx, busy }
+    }
+
+    fn offer(&self, n: u32, y: &[u8], stride: usize, w: usize, h: usize) {
+        if self.busy.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let mut luma = Vec::with_capacity(w * h);
+        for row in 0..h {
+            luma.extend_from_slice(&y[row * stride..row * stride + w]);
+        }
+        if self.tx.try_send((n, w, h, luma)).is_err() {
+            self.busy.store(false, Ordering::Release);
+        }
     }
 }

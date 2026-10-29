@@ -16,7 +16,7 @@ Goal: prove we can hit good latency before building any UI.
 - [x] Run across two machines: Mac → Windows on Wi-Fi LAN, RTT p50 22 ms, p95 223 ms (see results)
 - [ ] Find the cause of the ~220 ms p95 tail on Wi-Fi (ping test, Ethernet, AWDL off)
 - [ ] Run between **two Macs** and under Network Link Conditioner (needs a second Mac)
-- [ ] Compare text quality: H.264 vs VP8 at equal bitrate, then pick the default codec
+- [x] Compare text quality: H.264 vs VP8, then pick the default codec (done in M1.5: H.264)
 - [ ] (Stretch) `--marker screen` for true glass-to-glass
 Done when: 1080p at 30+ fps between two Macs, with measured latency written in the doc.
 
@@ -30,7 +30,8 @@ Goal: prove the picture is sharp and stays usable on real networks, and show the
 - [x] Network stats on both ends (RTT, loss, jitter, bitrate, bandwidth estimate, limit
       reason, freezes, path) and an on-screen HUD in the viewer (`S` toggles it)
 - [x] Resolution tiers up to 1440p, with bitrate presets (`--resolution`)
-- [ ] Measured quality: synthetic code-text source, SSIM/PSNR, H.264 vs VP8, default codec (ADR)
+- [x] Measured quality: synthetic code-text source, SSIM/PSNR, H.264 vs VP8; H.264 is the
+      default (ADR 0002)
 - [ ] Network lab: Docker + netem profiles (Wi-Fi, 4G, hotel, intercontinental, bandwidth drop,
       UDP blocked, outage) with pass/fail SLOs
 - [ ] Auto-throttle: step resolution and fps with the bandwidth estimate, text first

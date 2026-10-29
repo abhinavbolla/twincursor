@@ -28,6 +28,11 @@ enum Command {
     Share(ShareArgs),
     /// Subscribe, render in a window, and measure latency.
     View(view::ViewArgs),
+    /// Compare two snapshots (PGM) and print SSIM and PSNR, skipping the marker area.
+    Compare {
+        sharer: std::path::PathBuf,
+        viewer: std::path::PathBuf,
+    },
 }
 
 #[derive(Args, Clone)]
@@ -52,6 +57,8 @@ enum CaptureBackend {
     Sck,
     /// libwebrtc DesktopCapturer from the LiveKit SDK (BGRA, CPU-scaled).
     Lk,
+    /// Synthetic code-editor pattern; the viewer measures its quality (SSIM/PSNR).
+    Pattern,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -101,7 +108,8 @@ struct ShareArgs {
     connection: Connection,
     #[arg(long, value_enum, default_value = "sck")]
     capture: CaptureBackend,
-    #[arg(long, value_enum, default_value = "vp8")]
+    /// Video codec. H.264 is the default (hardware on macOS; see docs/adr/0002).
+    #[arg(long, value_enum, default_value = "h264")]
     codec: Codec,
     /// Output size in lines (the width follows the display's aspect ratio), or the
     /// display's own pixel size.
@@ -127,6 +135,11 @@ struct ShareArgs {
     /// Don't poll network stats or send them to the viewer.
     #[arg(long)]
     no_stats: bool,
+    /// Save the frame stamped with every Nth latency tick as a PGM (see `tc-spike compare`).
+    #[arg(long, default_value_t = 0)]
+    snapshot_every: u32,
+    #[arg(long, default_value = "bench/snapshots")]
+    snapshot_dir: std::path::PathBuf,
     /// Include the mouse cursor in the capture.
     #[arg(long)]
     cursor: bool,
@@ -142,6 +155,7 @@ fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Share(args) => share(args),
         Command::View(args) => view::run(args),
+        Command::Compare { sharer, viewer } => compare(&sharer, &viewer),
     }
 }
 
@@ -152,9 +166,14 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
         #[cfg(not(target_os = "macos"))]
         CaptureBackend::Sck => anyhow::bail!("ScreenCaptureKit is macOS only"),
         CaptureBackend::Lk => Backend::LiveKit,
+        CaptureBackend::Pattern => Backend::Pattern,
     };
     let tier = Tier::from(args.resolution);
-    let screen = capture::display_pixels().unwrap_or_else(|| {
+    let detected = match backend {
+        Backend::Pattern => Some(capture::PATTERN_DISPLAY),
+        _ => capture::display_pixels(),
+    };
+    let screen = detected.unwrap_or_else(|| {
         tracing::warn!(
             "display size unknown; assuming {:?}",
             capture::FALLBACK_DISPLAY
@@ -188,6 +207,10 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
         is_screencast: !args.no_screencast,
         stamp_markers: !args.no_markers,
         net_stats: !args.no_stats,
+        snapshots: (args.snapshot_every > 0).then(|| media::quality::Snapshots {
+            every: args.snapshot_every,
+            dir: args.snapshot_dir.clone(),
+        }),
     };
 
     let runtime = tokio::runtime::Runtime::new()?;
@@ -201,6 +224,32 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
         reporter.abort();
         result.context("sharing failed")
     })
+}
+
+fn compare(a: &std::path::Path, b: &std::path::Path) -> anyhow::Result<()> {
+    use media::quality::{self, Plane};
+    let (wa, ha, pa) = quality::read_pgm(a).with_context(|| format!("reading {}", a.display()))?;
+    let (wb, hb, pb) = quality::read_pgm(b).with_context(|| format!("reading {}", b.display()))?;
+    anyhow::ensure!((wa, ha) == (wb, hb), "sizes differ: {wa}x{ha} vs {wb}x{hb}");
+    let scores = quality::compare(
+        Plane {
+            data: &pa,
+            stride: wa,
+        },
+        Plane {
+            data: &pb,
+            stride: wb,
+        },
+        wa,
+        ha,
+        media::marker::MARKED_AREA,
+    )
+    .context("images too small to compare")?;
+    println!(
+        "{wa}x{ha}  SSIM {:.4}  PSNR {:.1} dB",
+        scores.ssim, scores.psnr_db
+    );
+    Ok(())
 }
 
 async fn report_share_stats(stats: Arc<ShareStats>) {
