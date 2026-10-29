@@ -125,6 +125,8 @@ pub struct RecvStats {
     pub loss_pct: f64,
     pub jitter_ms: f64,
     pub freezes: u32,
+    /// Often 0 even when `freezes` > 0: libwebrtc doesn't fill `totalFreezesDuration` on
+    /// the builds we use. Rely on `freezes`.
     pub freeze_ms: f64,
     pub dropped: u32,
     pub nacks: u32,
