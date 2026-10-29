@@ -60,12 +60,41 @@ Measured 2026-10-27 with `bench/run-matrix.sh` (4 rounds × 5 configs × 30 s).
    per frame. It's the largest single cost we control: a Metal/wgpu renderer that takes the
    decoder's CVPixelBuffer directly should remove most of it.
 7. The viewer uses about 50–60% CPU at 58 fps, mostly from the same rendering path.
-8. The first connect took about 11 s (ICE over many IPv6 candidates). This needs looking at
-   before the real app ships (M5).
+8. The first connect took about 11 s (ICE over many IPv6 candidates). Across two machines it
+   took 0.6 s (see below), so this looks specific to running both ends on one Mac.
+
+## Mac → Windows over a home LAN (2026-10-29)
+
+First run across two machines. Sharer and `livekit-server --dev --bind 0.0.0.0` on the Mac
+above (on **Wi-Fi**, with AWDL active). Viewer on a Windows PC (Rust 1.93 MSVC) with
+`tc-spike view --url ws://192.168.50.19:7880`. sck + VP8 defaults, one 64 s run.
+
+| fps | resolution | RTT p50 | RTT p95 | RTT max | dec p50 | dec p95 | ticks seen | connect |
+|---|---|---|---|---|---|---|---|---|
+| 52 | 1660x1080 | 22 ms | 223 ms | 331 ms | 20 ms | 221 ms | 254/254 | 0.6 s |
+
+Each 10 s window looked the same (p50 22–30 ms, p95 222–243 ms), so the tail is steady, not a
+start-up effect. One-way isn't valid here (clocks not synced). The window wasn't watched, so
+image correctness wasn't checked by eye; 3310 frames were presented.
+
+Findings:
+1. **The typical case is barely slower than on one machine:** p50 22 ms vs 18 ms.
+2. **About 5–10% of round trips take 220–330 ms.** The tail is already there at decode, so it
+   isn't the Windows renderer; it's the network, the sharer, or the decoder waiting for data.
+   Not diagnosed yet. Main suspect: the Mac's Wi-Fi. AWDL (AirDrop/Continuity) is known to cause
+   periodic latency spikes on macOS Wi-Fi. Next: ping the Mac from the viewer during a run, and
+   repeat on Ethernet or with AWDL off.
+3. **Connecting took 0.6 s,** not the ~11 s seen with both ends on one Mac. That delay was
+   specific to the same-machine setup.
+4. **Windows needs the static C runtime.** The prebuilt libwebrtc is built with `/MT`; without
+   `-C target-feature=+crt-static` the link fails with LNK2038 `RuntimeLibrary` mismatches.
+   `.cargo/config.toml` now sets it for `windows` + `msvc`. Also: clone to a short path
+   (`C:\tc`); a deep folder hits git's "Filename too long".
 
 ## Not covered yet
-- A real network (Network Link Conditioner, two Macs). The marker RTT metric works across
+- Mac-to-Mac, a wired network, and Network Link Conditioner. The marker RTT metric works across
   machines; use `tc-spike view --url ws://<sharer-ip>:7880` with `livekit-server --dev --bind 0.0.0.0`.
+- The cause of the ~220 ms p95 tail on Wi-Fi (see above).
 - Capture delay from the app redraw: stamping happens after capture. The planned
   `--marker screen` mode (a marker drawn on screen and captured) would close this gap.
 - Text-quality comparison between H.264 and VP8 at equal bitrate.

@@ -13,13 +13,16 @@ Goal: prove we can hit good latency before building any UI.
 - [x] Latency harness (tick → frame marker) printing p50 and p95, plus `bench/run-matrix.sh`
 - [x] ADR 0001: capture API choice (ScreenCaptureKit)
 - [x] Results: `docs/research/m1-results.md`. Same Mac: ~58 fps at 1660x1080, RTT p50 ~18 ms, p95 ~31–34 ms
+- [x] Run across two machines: Mac → Windows on Wi-Fi LAN, RTT p50 22 ms, p95 223 ms (see results)
+- [ ] Find the cause of the ~220 ms p95 tail on Wi-Fi (ping test, Ethernet, AWDL off)
 - [ ] Run between **two Macs** and under Network Link Conditioner (needs a second Mac)
 - [ ] Compare text quality: H.264 vs VP8 at equal bitrate, then pick the default codec
 - [ ] (Stretch) `--marker screen` for true glass-to-glass
 Done when: 1080p at 30+ fps between two Macs, with measured latency written in the doc.
 
 Follow-ups found in M1 (for later milestones): Metal/wgpu viewer that renders the decoder's
-CVPixelBuffer (saves ~10 ms); exclude our own windows from capture; slow first connect (~11 s ICE).
+CVPixelBuffer (saves ~10 ms); exclude our own windows from capture. The ~11 s first connect
+only happened with both ends on one Mac; across two machines it took 0.6 s.
 
 ## M2: Remote control (macOS)
 - [ ] `crates/protocol`: input event messages
