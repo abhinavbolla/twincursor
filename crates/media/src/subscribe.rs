@@ -12,7 +12,7 @@ use livekit::webrtc::video_stream::native::NativeVideoStream;
 
 use crate::latency::Recorder;
 use crate::netstats::{Board, Poller, Side};
-use crate::pattern::{fast_scrolling, Pattern};
+use crate::pattern::{self, fast_scrolling};
 use crate::quality::{self, Plane, Snapshots};
 use crate::{marker, wire};
 
@@ -76,6 +76,14 @@ pub async fn run(
             _ = &mut shutdown => break,
             _ = stats_timer.tick(), if config.net_stats => {
                 if let Some(snap) = poller.poll(&room).await {
+                    // The sharer's auto-throttle needs to know how the video arrives here.
+                    let packet = DataPacket {
+                        payload: wire::encode_stats(&snap),
+                        topic: Some(wire::STATS_TOPIC.into()),
+                        reliable: true,
+                        ..Default::default()
+                    };
+                    let _ = room.local_participant().publish_data(packet).await;
                     board.lock().unwrap().local_update(started.elapsed().as_secs_f64(), snap);
                 }
             }
@@ -187,8 +195,12 @@ impl QualityProbe {
         let busy = Arc::new(AtomicBool::new(false));
         let done = busy.clone();
         std::thread::spawn(move || {
-            for (n, w, h, luma) in rx {
-                let expected = Pattern::new(w as u32, h as u32).render_i420(n);
+            for (id, w, h, luma) in rx {
+                let Some(expected) = pattern::expected(id, (w as u32, h as u32)) else {
+                    done.store(false, Ordering::Release);
+                    continue;
+                };
+                let n = pattern::decode_frame_id(id).0;
                 let (sy, _, _) = expected.strides();
                 let scores = quality::compare(
                     Plane {

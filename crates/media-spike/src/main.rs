@@ -12,7 +12,7 @@ use anyhow::Context;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use livekit::options::VideoCodec;
 use media::capture::{self, Backend, CaptureConfig, Tier};
-use media::publish::{self, ShareConfig, ShareStats};
+use media::publish::{self, AdaptConfig, ShareConfig, ShareStats};
 use media::token;
 
 #[derive(Parser)]
@@ -132,9 +132,12 @@ struct ShareArgs {
     /// Don't stamp latency markers into frames.
     #[arg(long)]
     no_markers: bool,
-    /// Don't poll network stats or send them to the viewer.
+    /// Don't poll network stats or send them to the viewer (also turns off --adapt).
     #[arg(long)]
     no_stats: bool,
+    /// Keep the resolution fixed instead of stepping it down when the call can't sustain it.
+    #[arg(long)]
+    no_adapt: bool,
     /// Save the frame stamped with every Nth latency tick as a PGM (see `tc-spike compare`).
     #[arg(long, default_value_t = 0)]
     snapshot_every: u32,
@@ -207,6 +210,11 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
         is_screencast: !args.no_screencast,
         stamp_markers: !args.no_markers,
         net_stats: !args.no_stats,
+        // The adapter needs stats, and works in tiers (not with an explicit --width/--height).
+        adapt: (!args.no_adapt && !args.no_stats && args.width.is_none()).then_some(AdaptConfig {
+            max: tier,
+            display: screen,
+        }),
         snapshots: (args.snapshot_every > 0).then(|| media::quality::Snapshots {
             every: args.snapshot_every,
             dir: args.snapshot_dir.clone(),

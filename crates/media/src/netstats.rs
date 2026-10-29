@@ -96,6 +96,9 @@ pub struct NetSnapshot {
     pub path: Option<String>,
     pub send: Option<SendStats>,
     pub recv: Option<RecvStats>,
+    /// Sharer only: the auto-throttle's current tier and why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapt: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -291,6 +294,7 @@ pub fn snapshot(prev: &Counters, cur: &Counters, secs: f64) -> NetSnapshot {
         path: cur.path.as_ref().map(|p| p.kind.clone()),
         send,
         recv,
+        adapt: None,
     }
 }
 

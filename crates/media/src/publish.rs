@@ -11,7 +11,8 @@ use livekit::webrtc::video_frame::{FrameMetadata, VideoBuffer, VideoFrame, Video
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 
-use crate::capture::{self, wall_clock_us, Backend, CaptureConfig, Frame, FrameBuffer};
+use crate::adapt::Adapter;
+use crate::capture::{self, wall_clock_us, Backend, CaptureConfig, Frame, FrameBuffer, Tier};
 use crate::netstats::{NetSnapshot, Poller, Side};
 use crate::quality::Snapshots;
 use crate::{marker, wire};
@@ -35,6 +36,17 @@ pub struct ShareConfig {
     /// Poll WebRTC stats and send them to the viewer.
     pub net_stats: bool,
     pub snapshots: Option<Snapshots>,
+    /// Auto-throttle: step the resolution down from the captured tier when the call can't
+    /// sustain it. `None` keeps the captured size.
+    pub adapt: Option<AdaptConfig>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AdaptConfig {
+    /// The tier being captured: the most the adapter will send.
+    pub max: Tier,
+    /// Display size the tiers are computed from.
+    pub display: (u32, u32),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -96,18 +108,31 @@ pub async fn run(
 
     let (tx, rx) = mpsc::sync_channel::<Msg>(4);
     let latest_tick = Arc::new(AtomicU32::new(NO_TICK));
+    // Size frames are sent at; the adapter lowers it, the send loop scales to it.
+    let send_size = Arc::new(Mutex::new((config.capture.width, config.capture.height)));
+    let codec_factor = if config.codec == VideoCodec::H264 {
+        1.0
+    } else {
+        2.0
+    };
+    let mut adapter = config.adapt.map(|a| (Adapter::new(a.max, codec_factor), a));
+    let mut adapt_note: Option<String> = None;
+    let mut viewer_net: Option<NetSnapshot> = None;
+    let started = Instant::now();
 
     let sender = {
         let latest_tick = latest_tick.clone();
         let stats = stats.clone();
         let stamp = config.stamp_markers;
         let snapshots = config.snapshots.clone();
+        let send_size = send_size.clone();
         std::thread::spawn(move || {
             send_loop(
                 &rx,
                 &source,
                 &latest_tick,
                 &stats,
+                &send_size,
                 stamp,
                 snapshots.as_ref(),
             )
@@ -130,14 +155,37 @@ pub async fn run(
         tokio::select! {
             _ = &mut shutdown => break,
             _ = stats_timer.tick(), if config.net_stats => {
-                if let Some(snap) = poller.poll(&room).await {
+                if let Some(mut snap) = poller.poll(&room).await {
+                    if let Some((adapter, cfg)) = adapter.as_mut() {
+                        let t = started.elapsed().as_secs_f64();
+                        if let Some(change) = adapter.update(t, &snap, viewer_net.as_ref()) {
+                            let size = change.to.size(cfg.display);
+                            *send_size.lock().unwrap() = size;
+                            tracing::info!(
+                                "adapt: {:?} → {:?} ({}x{}): {}",
+                                change.from, change.to, size.0, size.1, change.reason
+                            );
+                            adapt_note = Some(format!(
+                                "{}p, from {}p: {}",
+                                size.1,
+                                cfg.max.size(cfg.display).1,
+                                change.reason
+                            ));
+                            if change.to == cfg.max {
+                                adapt_note = None;
+                            }
+                        }
+                    }
+                    snap.adapt = adapt_note.clone();
                     send_stats(&room, &snap).await;
                     *stats.net.lock().unwrap() = Some(snap);
                 }
             }
             event = events.recv() => match event {
                 Some(RoomEvent::DataReceived { payload, topic, .. }) => {
-                    if topic.as_deref() == Some(wire::TICK_TOPIC) {
+                    if topic.as_deref() == Some(wire::STATS_TOPIC) {
+                        viewer_net = wire::decode_stats(&payload);
+                    } else if topic.as_deref() == Some(wire::TICK_TOPIC) {
                         if let Some(id) = wire::decode_tick(&payload) {
                             latest_tick.store(id, Ordering::Relaxed);
                             stats.ticks.fetch_add(1, Ordering::Relaxed);
@@ -184,6 +232,7 @@ fn send_loop(
     source: &NativeVideoSource,
     latest_tick: &AtomicU32,
     stats: &ShareStats,
+    send_size: &Mutex<(u32, u32)>,
     stamp: bool,
     snapshots: Option<&Snapshots>,
 ) {
@@ -200,11 +249,19 @@ fn send_loop(
             Err(RecvTimeoutError::Disconnected) => return,
         };
         let Some(frame) = last.as_mut() else { continue };
+        let (w, h) = *send_size.lock().unwrap();
+        let mut scaled;
+        let buffer = if (frame.buffer.width(), frame.buffer.height()) == (w, h) {
+            &mut frame.buffer
+        } else {
+            scaled = frame.buffer.scaled(w, h);
+            &mut scaled
+        };
         let tick = latest_tick.load(Ordering::Relaxed);
         if stamp && tick != NO_TICK {
-            stamp_marker(&mut frame.buffer, tick);
+            stamp_marker(buffer, tick);
             if let Some(snaps) = snapshots.filter(|s| tick != last_snapshot && s.wants(tick)) {
-                save_snapshot(snaps, tick, &frame.buffer);
+                save_snapshot(snaps, tick, buffer);
                 last_snapshot = tick;
             }
         }
@@ -215,9 +272,9 @@ fn send_loop(
             wall_clock_us()
         };
         let timestamp_us = start.elapsed().as_micros() as i64;
-        match &frame.buffer {
-            FrameBuffer::Nv12(b) => send(source, b, timestamp_us, captured_at_us),
-            FrameBuffer::I420(b) => send(source, b, timestamp_us, captured_at_us),
+        match buffer {
+            FrameBuffer::Nv12(b) => send(source, &*b, timestamp_us, captured_at_us),
+            FrameBuffer::I420(b) => send(source, &*b, timestamp_us, captured_at_us),
         }
         let counter = if fresh { &stats.sent } else { &stats.resent };
         counter.fetch_add(1, Ordering::Relaxed);

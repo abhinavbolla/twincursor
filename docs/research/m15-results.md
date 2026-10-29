@@ -75,3 +75,19 @@ Findings:
 Caveat: the pattern uses a binary bitmap font. Anti-aliased text on a real screen has more
 fine texture, so expect lower absolute SSIM there. Compare real screens with
 `--snapshot-every` and `tc-spike compare`.
+
+## Auto-throttle (PR 5)
+Smoke test on one Mac: pattern at 1440p with H.264 and the bitrate capped at 1 Mbps, below the
+1440 floor of 1.6 Mbps. Viewer headless with `--measure-quality`.
+- After 3 s the sharer logged `adapt: P1440 → P1080 (1920x1080): budget 0.9 Mbps < 1.6 Mbps
+  needed` and held 1080p for the rest of the run. The encoder (VideoToolbox) accepted the new
+  size mid-stream, without republishing.
+- The viewer received 1920x1080 at 52 fps, SSIM p50 0.998. The HUD showed the reason.
+- The first version also stepped down to 720p on "budget 1.0 Mbps < 1.0 Mbps", a budget sitting
+  right at the floor. Trouble now means below 90% of the floor.
+- Quality scoring after a step-down needs the original render size. The pattern's marker now
+  carries it (2 bits), and the viewer renders at that size and scales it the same way the
+  sharer did, which matches pixel for pixel.
+
+Lab evaluation on shaped networks (bandwidth drop, hotel, 4G; adapt on vs off) comes with the
+network lab (PR 4).

@@ -34,7 +34,8 @@ Goal: prove the picture is sharp and stays usable on real networks, and show the
       default (ADR 0002)
 - [ ] Network lab: Docker + netem profiles (Wi-Fi, 4G, hotel, intercontinental, bandwidth drop,
       UDP blocked, outage) with pass/fail SLOs
-- [ ] Auto-throttle: step resolution and fps with the bandwidth estimate, text first
+- [x] Auto-throttle: step resolution with the bandwidth estimate and viewer health, text first
+      (`adapt.rs`; lab evaluation pending)
 - [ ] Real-world runs: Mac → Windows on Wi-Fi vs Ethernet, AWDL, Network Link Conditioner
 Done when: the lab passes its SLOs (or misses are explained) and the real-world runs are documented.
 

@@ -2,6 +2,7 @@
 //!
 //! All media lives here in Rust, never in the app's webview (see CLAUDE.md).
 
+pub mod adapt;
 pub mod capture;
 pub mod latency;
 pub mod marker;

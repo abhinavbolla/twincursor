@@ -125,6 +125,9 @@ pub fn lines(board: &Board, rtt: Option<Summary>) -> Vec<Line> {
                 ),
                 if t.limit == Limit::None { GREY } else { AMBER },
             ));
+            if let Some(note) = &s.adapt {
+                out.push(Line::new(format!("     adapted to {note}"), AMBER));
+            }
         }
         None => out.push(Line::new("send: waiting for sharer stats".to_owned(), GREY)),
     }

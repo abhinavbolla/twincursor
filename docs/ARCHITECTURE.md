@@ -121,6 +121,30 @@ Latency alone doesn't tell us whether text is readable, so we measure picture qu
   as a PGM in `bench/snapshots/` (git-ignored: it holds real screen content), and
   `tc-spike compare sharer-N.pgm viewer-N.pgm` prints SSIM and PSNR.
 
+## Auto-throttle (adaptive resolution)
+
+libwebrtc adapts the bitrate to the bandwidth estimate, and for screen share it keeps the
+resolution and drops the frame rate when squeezed. That keeps text sharp until the budget is
+too small for the resolution; then quality collapses. `crates/media/src/adapt.rs` steps the
+resolution down a tier before that point, text first:
+- **Step down** when, for 3 s straight:
+  - the budget (encoder target, capped by the bandwidth estimate) is under 90% of the tier's
+    floor: 0.5 / 1.0 / 1.6 / 2.5 Mbps for 720 / 1080 / 1440 / native with H.264, about twice
+    that for VP8;
+  - or the encoder is CPU-limited;
+  - or it's bandwidth-limited below 15 fps;
+  - or the viewer reports ≥ 5% loss or freezes.
+- **Step up** after 10 s of calm with 1.5x the next tier's floor available. That wait doubles
+  (up to 80 s) when it flaps.
+- It never goes above the tier the user picked. It starts there and goes no lower than 720.
+- The viewer sends its stats back on `tc.stats`. Without simulcast the SFU can't adapt per
+  viewer, so the sharer has to know how the video arrives.
+- The sharer keeps capturing at the chosen tier and scales frames down before encoding
+  (libyuv), which works with every capture backend. libwebrtc reconfigures the encoder on
+  the size change by itself. The viewer's window keeps its size, and lower tiers are scaled
+  up to it.
+- The HUD shows "adapted to 1080p, from 1440p: <reason>". `share --no-adapt` turns it off.
+
 ## Call health stats
 
 `crates/media/src/netstats.rs` polls WebRTC stats once a second on both ends (`Room::get_stats`)
