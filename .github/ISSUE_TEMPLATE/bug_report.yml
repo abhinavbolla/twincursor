@@ -1,0 +1,37 @@
+name: Bug report
+description: Something doesn't work as it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. tc-spike share --resolution 1440
+        2. tc-spike view --url ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: hud
+    attributes:
+      label: Call stats
+      description: >-
+        If it's about quality or lag, paste the viewer's HUD lines (press S, or copy them from
+        the console every 10 s) and the results JSON if you have it.
+      render: text
+  - type: input
+    id: setup
+    attributes:
+      label: Setup
+      description: OS and version on both ends, Wi-Fi or Ethernet, and the commit or version.
+      placeholder: macOS 26.5 (sharer, Wi-Fi) → Windows 11 (viewer, Ethernet), commit abc1234
+    validations:
+      required: true

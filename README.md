@@ -26,4 +26,6 @@ be fast, private, and free, with Linux treated as a first-class platform.
 
 ## License
 
-[AGPL-3.0](LICENSE)
+[AGPL-3.0](LICENSE). Contributions are accepted under a [Contributor License Agreement](CLA.md),
+which lets the project also offer TwinCursor under other licenses. Report security problems
+privately: see [SECURITY.md](SECURITY.md).
