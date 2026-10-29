@@ -52,6 +52,8 @@ Fill these in as code lands; keep them accurate.
 - Quality without windows or screen capture: `tc-spike share --capture pattern` +
   `tc-spike view --headless --measure-quality` (SSIM/PSNR vs the synthetic pattern)
 - Latency matrix: `bench/run-matrix.sh [config ...]` → `bench/results/*.json` (git-ignored)
+- Network lab (Docker): `bench/netlab/run.sh [--build] [profile ...]`, then
+  `bench/netlab/report.sh` (profiles and SLOs in ARCHITECTURE.md)
 - Desktop dev: _TBD (M4)_
 - CI: `.github/workflows/ci.yml` runs fmt, clippy and tests on `macos-26` for every PR and
   push to `main`. Keep it green; run the same three commands locally before pushing.

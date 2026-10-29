@@ -1,0 +1,45 @@
+# Network lab: LiveKit SFU, a sharer and a headless viewer on a private bridge with fixed IPs,
+# so traffic can be shaped per direction with tc netem. Driven by bench/netlab/run.sh.
+name: tc-netlab
+
+networks:
+  lab:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+x-node: &node
+  image: tc-netlab:latest
+  cap_add: [NET_ADMIN]
+  init: true
+
+services:
+  livekit:
+    image: livekit/livekit-server:v1.13.11
+    command: --dev --bind 0.0.0.0 --node-ip 172.30.0.10
+    networks:
+      lab:
+        ipv4_address: 172.30.0.10
+
+  # Shares the SFU's network namespace to shape what the SFU sends (the downlinks).
+  sfu-net:
+    <<: *node
+    network_mode: service:livekit
+    depends_on: [livekit]
+
+  sharer:
+    <<: *node
+    build:
+      context: ../..
+      dockerfile: bench/netlab/Dockerfile
+    networks:
+      lab:
+        ipv4_address: 172.30.0.20
+
+  viewer:
+    <<: *node
+    volumes:
+      - ../results/netlab:/results
+    networks:
+      lab:
+        ipv4_address: 172.30.0.30

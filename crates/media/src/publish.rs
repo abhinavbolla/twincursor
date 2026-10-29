@@ -10,7 +10,7 @@ use livekit::webrtc::video_frame::{FrameMetadata, VideoBuffer, VideoFrame, Video
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 
-use crate::adapt::Adapter;
+use crate::adapt::{Adapter, BitrateCap};
 use crate::capture::{self, wall_clock_us, Backend, CaptureConfig, Frame, FrameBuffer, Tier};
 use crate::netstats::{NetSnapshot, Poller, Side};
 use crate::quality::Snapshots;
@@ -63,7 +63,8 @@ pub struct ShareStats {
     pub sent: AtomicU64,
     pub resent: AtomicU64,
     pub ticks: AtomicU64,
-    /// Captured frames replaced by a newer one before the encoder took them.
+    /// Captured frames not sent: replaced by a newer one before the encoder took them, or
+    /// skipped to keep to the adapter's frame-rate cap.
     pub dropped: AtomicU64,
     /// Latest network stats of the publishing connection.
     pub net: Mutex<Option<NetSnapshot>>,
@@ -156,22 +157,34 @@ pub async fn run(
         ..Default::default()
     };
     options.frame_metadata_features.user_timestamp = true;
-    room.local_participant()
-        .publish_track(LocalTrack::Video(track), options)
+    let mut publication = room
+        .local_participant()
+        .publish_track(LocalTrack::Video(track.clone()), options.clone())
         .await?;
     tracing::info!(codec = ?config.codec, "screen track published");
 
     let mailbox = Arc::new(Mailbox::default());
     let latest_tick = Arc::new(AtomicU32::new(NO_TICK));
-    // Size frames are sent at; the adapter lowers it, the send loop scales to it.
-    let send_size = Arc::new(Mutex::new((config.capture.width, config.capture.height)));
+    // Size and frame-rate cap frames are sent at; the adapter lowers them, the send loop
+    // scales and paces to them.
+    let send_size = Arc::new(Mutex::new((
+        config.capture.width,
+        config.capture.height,
+        config.capture.max_fps,
+    )));
     let codec_factor = if config.codec == VideoCodec::H264 {
         1.0
     } else {
         2.0
     };
-    let mut adapter = config.adapt.map(|a| (Adapter::new(a.max, codec_factor), a));
+    let mut adapter = config
+        .adapt
+        .map(|a| (Adapter::new(a.max, config.capture.max_fps, codec_factor), a));
     let mut adapt_note: Option<String> = None;
+    let mut cap = config
+        .adapt
+        .map(|_| BitrateCap::new(config.max_bitrate as f64 / 1000.0));
+    let mut cap_note: Option<String> = None;
     let mut viewer_net: Option<NetSnapshot> = None;
     let started = Instant::now();
 
@@ -216,24 +229,38 @@ pub async fn run(
                     if let Some((adapter, cfg)) = adapter.as_mut() {
                         let t = started.elapsed().as_secs_f64();
                         if let Some(change) = adapter.update(t, &snap, viewer_net.as_ref()) {
-                            let size = change.to.size(cfg.display);
-                            *send_size.lock().unwrap() = size;
+                            let (w, h) = change.to.tier.size(cfg.display);
+                            *send_size.lock().unwrap() = (w, h, change.to.fps);
                             tracing::info!(
-                                "adapt: {:?} → {:?} ({}x{}): {}",
-                                change.from, change.to, size.0, size.1, change.reason
+                                "adapt: {} → {} ({w}x{h}): {}",
+                                change.from, change.to, change.reason
                             );
-                            adapt_note = Some(format!(
-                                "{}p, from {}p: {}",
-                                size.1,
-                                cfg.max.size(cfg.display).1,
-                                change.reason
-                            ));
-                            if change.to == cfg.max {
-                                adapt_note = None;
-                            }
+                            let best = (cfg.max, config.capture.max_fps);
+                            adapt_note = ((change.to.tier, change.to.fps) != best)
+                                .then(|| format!("{}: {}", change.to, change.reason));
                         }
                     }
-                    snap.adapt = adapt_note.clone();
+                    if let Some(cap) = cap.as_mut() {
+                        let t = started.elapsed().as_secs_f64();
+                        if let Some(kbps) = cap.update(t, &snap, viewer_net.as_ref()) {
+                            options.video_encoding = Some(VideoEncoding {
+                                max_bitrate: (kbps * 1000.0) as u64,
+                                max_framerate: f64::from(config.capture.max_fps),
+                            });
+                            tracing::info!("adapt: max bitrate {:.0} kbit/s (republishing)", kbps);
+                            match republish(&room, &publication, &track, options.clone()).await {
+                                Ok(p) => publication = p,
+                                Err(e) => tracing::warn!("republish failed: {e}"),
+                            }
+                            cap_note = cap
+                                .cap_kbps()
+                                .map(|k| format!("capped at {:.1} Mbps (viewer downlink)", k / 1000.0));
+                        }
+                    }
+                    snap.adapt = match (&adapt_note, &cap_note) {
+                        (Some(a), Some(c)) => Some(format!("{a}; {c}")),
+                        (a, c) => a.clone().or_else(|| c.clone()),
+                    };
                     send_stats(&room, &snap).await;
                     *stats.net.lock().unwrap() = Some(snap);
                 }
@@ -267,6 +294,22 @@ pub async fn run(
     Ok(())
 }
 
+/// Publishes the track again with new options: the only way the SDK offers to change the max
+/// bitrate mid-call. The track and its video source keep running; the viewer briefly sees the
+/// track go and come back.
+async fn republish(
+    room: &Room,
+    publication: &LocalTrackPublication,
+    track: &LocalVideoTrack,
+    options: TrackPublishOptions,
+) -> Result<LocalTrackPublication, RoomError> {
+    let participant = room.local_participant();
+    participant.unpublish_track(&publication.sid()).await?;
+    participant
+        .publish_track(LocalTrack::Video(track.clone()), options)
+        .await
+}
+
 /// Shares our stats with the viewer so its HUD can show both ends of the call.
 async fn send_stats(room: &Room, snap: &NetSnapshot) {
     let packet = DataPacket {
@@ -285,13 +328,14 @@ fn send_loop(
     source: &NativeVideoSource,
     latest_tick: &AtomicU32,
     stats: &ShareStats,
-    send_size: &Mutex<(u32, u32)>,
+    send_size: &Mutex<(u32, u32, u32)>,
     stamp: bool,
     snapshots: Option<&Snapshots>,
 ) {
     let start = Instant::now();
     let mut last: Option<Frame> = None;
     let mut last_snapshot = NO_TICK;
+    let mut last_fresh: Option<Instant> = None;
     loop {
         let fresh = match mailbox.wait(IDLE_RESEND) {
             Mail::Frame(frame) => {
@@ -302,7 +346,17 @@ fn send_loop(
             Mail::Closed => return,
         };
         let Some(frame) = last.as_mut() else { continue };
-        let (w, h) = *send_size.lock().unwrap();
+        let (w, h, fps) = *send_size.lock().unwrap();
+        if fresh {
+            // Pace new frames to the adapter's cap. A skipped frame isn't lost: the newest
+            // one is kept and goes out with the next tick or frame.
+            let interval = Duration::from_secs_f64(0.9 / f64::from(fps.max(1)));
+            if last_fresh.is_some_and(|t| t.elapsed() < interval) {
+                stats.dropped.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            last_fresh = Some(Instant::now());
+        }
         let mut scaled;
         let buffer = if (frame.buffer.width(), frame.buffer.height()) == (w, h) {
             &mut frame.buffer
