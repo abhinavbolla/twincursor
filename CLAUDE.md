@@ -40,12 +40,22 @@ docs/             product, architecture, roadmap, research, ADRs
 
 Fill these in as code lands; keep them accurate.
 
-- Build all Rust: `cargo build --workspace`
-- Test all Rust: `cargo test --workspace`
-- Lint: `cargo clippy --workspace --all-targets -- -D warnings`
+- Build all Rust: `cargo build --release --workspace` (release is the default profile we use;
+  libwebrtc is a ~277 MB prebuilt download on the first build of each profile)
+- Test all Rust: `cargo test --release --workspace`
+- Lint: `cargo clippy --release --workspace --all-targets -- -D warnings`
 - Format: `cargo fmt --all`
+- Local LiveKit: `livekit-server --dev` (`brew install livekit`), or
+  `docker compose -f deploy/dev/docker-compose.yml up`
+- Media spike: `target/release/tc-spike share` and `target/release/tc-spike view` (see `--help`)
+- Latency matrix: `bench/run-matrix.sh [config ...]` → `bench/results/*.json` (git-ignored)
 - Desktop dev: _TBD (M4)_
-- Local LiveKit: _TBD (M1)_
+
+If the libwebrtc download fails mid-way (connection reset), download
+`https://github.com/livekit/rust-sdks/releases/download/<WEBRTC_TAG>/webrtc-mac-arm64-release.zip`
+with `curl -C -` and unzip it into
+`target/release/build/scratch-*/out/livekit_webrtc/livekit/mac-arm64-release-<WEBRTC_TAG>/`.
+The tag is `WEBRTC_TAG` in the `webrtc-sys-build` crate.
 
 ## Conventions
 

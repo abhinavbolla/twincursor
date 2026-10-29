@@ -1,0 +1,11 @@
+# Local LiveKit dev server, an alternative to `brew install livekit && livekit-server --dev`.
+# Uses the dev credentials (key "devkey", secret "secret") that tc-spike expects.
+#   docker compose -f deploy/dev/docker-compose.yml up
+services:
+  livekit:
+    image: livekit/livekit-server:v1.13.11
+    command: --dev --bind 0.0.0.0 --node-ip 127.0.0.1
+    ports:
+      - "7880:7880"       # signalling (ws://localhost:7880)
+      - "7881:7881"       # WebRTC over TCP
+      - "7882:7882/udp"   # WebRTC over UDP
