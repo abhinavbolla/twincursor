@@ -36,7 +36,9 @@ Goal: prove the picture is sharp and stays usable on real networks, and show the
       UDP blocked, outage) with pass/fail SLOs
 - [x] Auto-throttle: step resolution with the bandwidth estimate and viewer health, text first
       (`adapt.rs`; lab evaluation pending)
-- [ ] Real-world runs: Mac → Windows on Wi-Fi vs Ethernet, AWDL, Network Link Conditioner
+- [x] Real-world runs on Wi-Fi: Mac → Windows, H.264 decodes on Windows, quality holds (SSIM
+      0.9996), tails come from Wi-Fi link stalls (`research/m15-results.md`)
+- [ ] Real-world runs on Ethernet, with AWDL off, and under Network Link Conditioner
 Done when: the lab passes its SLOs (or misses are explained) and the real-world runs are documented.
 
 ## M2: Remote control (macOS)
