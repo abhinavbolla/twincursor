@@ -5,5 +5,10 @@
 [target.'cfg(target_vendor = "apple")']
 rustflags = ["-C", "link-args=-ObjC", "-C", "link-args=-Wl,-rpath,/usr/lib/swift"]
 
+# The prebuilt libwebrtc for Windows uses the static C runtime (/MT). Rust defaults to the
+# dynamic one (/MD), so without this the link fails with LNK2038 RuntimeLibrary mismatches.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
+
 [build]
 rustdocflags = ["-C", "link-args=-ObjC"]
