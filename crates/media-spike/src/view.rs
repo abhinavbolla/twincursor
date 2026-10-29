@@ -126,6 +126,7 @@ pub fn run(args: ViewArgs) -> anyhow::Result<()> {
         window: None,
         surface: None,
         size: (0, 0),
+        frame_size: (0, 0),
         last_report: Instant::now(),
         frames_since_report: 0,
     };
@@ -135,7 +136,7 @@ pub fn run(args: ViewArgs) -> anyhow::Result<()> {
     let _ = network.join();
     let recorder = recorder.lock().unwrap();
     let board = board.lock().unwrap();
-    write_results(&args, &recorder, &board, started.elapsed(), app.size)
+    write_results(&args, &recorder, &board, started.elapsed(), app.frame_size)
 }
 
 struct App {
@@ -150,7 +151,10 @@ struct App {
     rtt_mark: usize,
     window: Option<Arc<Window>>,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
+    /// Size we draw at: the frame size, or smaller if the frame doesn't fit on the monitor.
     size: (u32, u32),
+    /// Size of the frames we receive.
+    frame_size: (u32, u32),
     last_report: Instant,
     frames_since_report: u64,
 }
@@ -202,14 +206,29 @@ impl App {
             return;
         };
 
-        let (w, h) = (frame.i420.width(), frame.i420.height());
-        if (w, h) != self.size {
+        let frame_size = (frame.i420.width(), frame.i420.height());
+        if frame_size != self.frame_size {
+            // Show frames 1:1 for the sharpest text, unless they don't fit on this monitor.
+            let monitor = window
+                .current_monitor()
+                .map(|m| (m.size().width, m.size().height));
+            let (w, h) = monitor.map_or(frame_size, |m| fit_within(frame_size, usable(m)));
             let _ = window.request_inner_size(PhysicalSize::new(w, h));
             surface
                 .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
                 .expect("resize surface");
             self.size = (w, h);
-            tracing::info!("receiving {w}x{h}");
+            self.frame_size = frame_size;
+            tracing::info!(
+                "receiving {}x{}, showing at {w}x{h}",
+                frame_size.0,
+                frame_size.1
+            );
+        }
+        let (w, h) = self.size;
+        let mut i420 = frame.i420;
+        if (w, h) != frame_size {
+            i420 = i420.scale(w as i32, h as i32);
         }
 
         let mut buffer = surface.buffer_mut().expect("buffer");
@@ -219,8 +238,8 @@ impl App {
         let bytes = unsafe {
             std::slice::from_raw_parts_mut(buffer.as_mut_ptr().cast::<u8>(), buffer.len() * 4)
         };
-        let (y, u, v) = frame.i420.data();
-        let (sy, su, sv) = frame.i420.strides();
+        let (y, u, v) = i420.data();
+        let (sy, su, sv) = i420.strides();
         yuv_helper::i420_to_argb(y, sy, u, su, v, sv, bytes, w * 4, w as i32, h as i32);
         if self.hud {
             let lines = hud::lines(&self.board.lock().unwrap(), self.recent_rtt);
@@ -266,6 +285,28 @@ impl App {
     }
 }
 
+/// Room on a monitor for the window's content, leaving space for the title bar and dock.
+fn usable((w, h): (u32, u32)) -> (u32, u32) {
+    (w * 95 / 100, h * 88 / 100)
+}
+
+/// Largest size with the frame's aspect ratio that fits in `max`, never upscaling.
+/// Dimensions stay even, as I420 scaling needs.
+fn fit_within(frame: (u32, u32), max: (u32, u32)) -> (u32, u32) {
+    if frame.0 <= max.0 && frame.1 <= max.1 {
+        return frame;
+    }
+    let scale = f64::min(
+        f64::from(max.0) / f64::from(frame.0),
+        f64::from(max.1) / f64::from(frame.1),
+    );
+    let even = |v: f64| ((v as u32) & !1).max(2);
+    (
+        even(f64::from(frame.0) * scale),
+        even(f64::from(frame.1) * scale),
+    )
+}
+
 fn write_results(
     args: &ViewArgs,
     recorder: &Recorder,
@@ -297,4 +338,27 @@ fn write_results(
     tracing::info!("results written to {}", path.display());
     println!("{}", serde_json::to_string_pretty(&results)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fits_without_scaling_when_room() {
+        assert_eq!(fit_within((1664, 1080), (2872, 1728)), (1664, 1080));
+    }
+
+    #[test]
+    fn shrinks_1440p_onto_a_1080p_screen() {
+        let (w, h) = fit_within((2224, 1440), usable((1920, 1080)));
+        assert_eq!(h, 950);
+        assert!(w <= 1824 && w % 2 == 0, "{w}");
+        assert!((f64::from(w) / f64::from(h) - 2224.0 / 1440.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn limited_by_width() {
+        assert_eq!(fit_within((3000, 1000), (1500, 1000)), (1500, 500));
+    }
 }

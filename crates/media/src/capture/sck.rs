@@ -107,6 +107,34 @@ extern "C" {
     fn clock_gettime_nsec_np(clock_id: libc::clockid_t) -> u64;
 }
 
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGDisplayCopyDisplayMode(display: u32) -> *mut std::ffi::c_void;
+    fn CGDisplayModeGetPixelWidth(mode: *mut std::ffi::c_void) -> usize;
+    fn CGDisplayModeGetPixelHeight(mode: *mut std::ffi::c_void) -> usize;
+    fn CGDisplayModeRelease(mode: *mut std::ffi::c_void);
+}
+
+/// Pixel size of the first display. `SCDisplay` reports points, which is half the pixels
+/// on a Retina panel, so ask CoreGraphics for the current mode's pixel size.
+pub fn display_pixels() -> Option<(u32, u32)> {
+    let content = SCShareableContent::get().ok()?;
+    let display = content.displays().into_iter().next()?;
+    // SAFETY: plain CoreGraphics calls; the mode is released after use.
+    unsafe {
+        let mode = CGDisplayCopyDisplayMode(display.display_id());
+        if mode.is_null() {
+            return None;
+        }
+        let size = (
+            CGDisplayModeGetPixelWidth(mode) as u32,
+            CGDisplayModeGetPixelHeight(mode) as u32,
+        );
+        CGDisplayModeRelease(mode);
+        (size.0 > 0 && size.1 > 0).then_some(size)
+    }
+}
+
 /// Wall-clock time at which SCK captured the sample, so the measured latency includes
 /// SCK's own delay. SCK timestamps samples on the host clock (`CLOCK_UPTIME_RAW`).
 fn capture_time_us(sample: &CMSampleBuffer) -> u64 {

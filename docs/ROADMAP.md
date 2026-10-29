@@ -21,14 +21,15 @@ Goal: prove we can hit good latency before building any UI.
 Done when: 1080p at 30+ fps between two Macs, with measured latency written in the doc.
 
 Follow-ups found in M1 (for later milestones): Metal/wgpu viewer that renders the decoder's
-CVPixelBuffer (saves ~10 ms); exclude our own windows from capture. The ~11 s first connect
+CVPixelBuffer (saves ~10 ms, and ~17 ms at 1440p, see `research/m15-results.md`); exclude our
+own windows from capture. The ~11 s first connect
 only happened with both ends on one Mac; across two machines it took 0.6 s.
 
 ## M1.5: High-fidelity media (Tuple-level quality)
 Goal: prove the picture is sharp and stays usable on real networks, and show the call's health.
 - [x] Network stats on both ends (RTT, loss, jitter, bitrate, bandwidth estimate, limit
       reason, freezes, path) and an on-screen HUD in the viewer (`S` toggles it)
-- [ ] Resolution tiers up to 1440p, with bitrate presets
+- [x] Resolution tiers up to 1440p, with bitrate presets (`--resolution`)
 - [ ] Measured quality: synthetic code-text source, SSIM/PSNR, H.264 vs VP8, default codec (ADR)
 - [ ] Network lab: Docker + netem profiles (Wi-Fi, 4G, hotel, intercontinental, bandwidth drop,
       UDP blocked, outage) with pass/fail SLOs
