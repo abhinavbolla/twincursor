@@ -25,6 +25,9 @@ const MIN_FPS: f64 = 15.0;
 /// Viewer-side distress: loss or frozen time within one second.
 const VIEWER_LOSS_PCT: f64 = 5.0;
 const VIEWER_FREEZE_MS: f64 = 300.0;
+/// Freezes per second that count as distress. libwebrtc's `totalFreezesDuration` stays 0 on
+/// the builds we use (seen on Windows), so the count is the signal we can rely on.
+const VIEWER_FREEZES: u32 = 2;
 
 /// Smallest bitrate (kbit/s) at which a tier still shows sharp text while scrolling. Measured
 /// on the synthetic pattern with H.264 (`research/m15-results.md`); VP8 needs about twice.
@@ -125,8 +128,8 @@ impl Adapter {
         } else if let Some(r) = recv.filter(|r| r.loss_pct >= VIEWER_LOSS_PCT) {
             Some(format!("viewer loss {:.1}%", r.loss_pct))
         } else {
-            recv.filter(|r| r.freeze_ms >= VIEWER_FREEZE_MS)
-                .map(|r| format!("viewer froze {:.0} ms", r.freeze_ms))
+            recv.filter(|r| r.freeze_ms >= VIEWER_FREEZE_MS || r.freezes >= VIEWER_FREEZES)
+                .map(|r| format!("viewer froze {}x ({:.0} ms)", r.freezes, r.freeze_ms))
         };
 
         if let Some(reason) = trouble {
@@ -283,6 +286,33 @@ mod tests {
             run(&mut a, 0, 5, &good(), Some(&frozen)),
             vec![(3, Tier::P720)]
         );
+    }
+
+    #[test]
+    fn repeated_freezes_count_even_without_duration() {
+        let mut a = Adapter::new(Tier::P1080, 1.0);
+        let freezing = NetSnapshot {
+            recv: Some(RecvStats {
+                freezes: 2,
+                freeze_ms: 0.0,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            run(&mut a, 0, 5, &good(), Some(&freezing)),
+            vec![(3, Tier::P720)]
+        );
+        // One freeze now and then (scrolling after a pause) is not distress.
+        let mut a = Adapter::new(Tier::P1080, 1.0);
+        let once = NetSnapshot {
+            recv: Some(RecvStats {
+                freezes: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(run(&mut a, 0, 30, &good(), Some(&once)).is_empty());
     }
 
     #[test]
