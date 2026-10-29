@@ -1,0 +1,9 @@
+# libwebrtc's Objective-C categories are only linked when -ObjC is set. Without it the
+# LiveKit SDK crashes at startup with `-[RTCVideoCodecInfo nativeSdpVideoFormat]`.
+# screencapturekit's Swift bridge needs the system Swift runtime on the rpath; its build
+# script only adds that to its own targets, not to our binaries and test executables.
+[target.'cfg(target_vendor = "apple")']
+rustflags = ["-C", "link-args=-ObjC", "-C", "link-args=-Wl,-rpath,/usr/lib/swift"]
+
+[build]
+rustdocflags = ["-C", "link-args=-ObjC"]

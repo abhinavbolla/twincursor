@@ -27,8 +27,11 @@ Status: draft. Validate each decision with a spike before building on it.
 - The webview **only** renders app UI. Hopp ran WebRTC inside Tauri's WebKit webview and ran
   into audio glitches, browser codec limits, no access to frame buffers, and no WebRTC in the
   default WebKitGTK build (which blocks Linux). They are now migrating media to Rust. We start there.
-- The shared screen is shown in a **native window** we render ourselves (wgpu + winit, to be
-  confirmed in M1). That also lets us apply render-side sharpening and upscaling.
+- The shared screen is shown in a **native window** we render ourselves. That also lets us
+  apply render-side sharpening and upscaling. M1 uses winit + softbuffer (CPU conversion),
+  which costs about 9–11 ms per frame. The real viewer should render the decoder's
+  CVPixelBuffer with Metal/wgpu (see `research/m1-results.md`).
+- Capture on macOS uses ScreenCaptureKit directly (ADR 0001).
 
 ### 2. WebRTC through LiveKit (self-hostable SFU)
 - LiveKit's Rust SDK (`livekit` crate, built on libwebrtc) gives us congestion control,
@@ -38,10 +41,16 @@ Status: draft. Validate each decision with a spike before building on it.
 - One LiveKit participant per person (screen, camera, and audio are tracks, not separate participants).
 
 ### 3. Encoding: tune for latency, choose per platform
-Start with VP8 on macOS and H.264 (hardware) on Windows. Make the codec and its parameters
-configurable so we can measure. See `research/hopp-lessons.md` for the rate-control and
-buffer settings that cut Hopp's latency from ~330 ms to ~90 ms. Disable simulcast for screen
-share on stable links. Check libwebrtc's screencast frame-rate cap.
+Codecs are configurable (`tc-spike share --codec`). M1 measurements (`research/m1-results.md`):
+- **H.264 (hardware)** matches VP8's latency on macOS at about 1/5 of the sharer's CPU, at
+  full 1080p. It's the leading candidate for the default, pending a text-quality comparison.
+- **VP8** is the software fallback.
+- **VP9** was worse on every measure.
+- Simulcast is off for screen share.
+- `is_screencast` showed no frame-rate cap and no latency difference.
+
+Encoder tuning (Hopp's rate-control and buffer settings, `research/hopp-lessons.md`) needs a
+custom libwebrtc build. Do it only if real-network numbers call for it.
 
 ### 4. Remote control over a data channel
 - The guest's viewer captures mouse, keyboard and scroll events and normalizes coordinates
@@ -63,14 +72,23 @@ share on stable links. Check libwebrtc's screencast frame-rate cap.
 
 ## Measuring latency
 
-Build this in M1, before any tuning:
-1. The guest sends a "tick" over the data channel.
-2. On receipt, the sharer stamps a marker into the next captured frame (for example a bright
-   pattern in the top rows of the Y plane) together with the tick ID.
-3. The guest detects the marker after decoding. Latency is the time from tick to marker seen.
-4. Log p50 and p95 per run. Use Network Link Conditioner (macOS) to simulate poor networks.
+Built in M1 (`crates/media/src/{marker,latency}.rs`, `tc-spike`, `bench/run-matrix.sh`):
+1. The viewer sends a tick (lossy data packet) every 250 ms.
+2. The sharer stamps the latest tick id into outgoing frames as a black/white block marker in
+   the top-left of the luma plane (4 guard bits + a 20-bit id). It re-sends the last frame
+   immediately when a tick arrives.
+3. The viewer reads the marker after decoding. **RTT** = tick sent → marker frame presented
+   (viewer clock only, so it's valid across machines).
+4. Each frame also carries the sharer's capture timestamp in the RTP packet trailer
+   (`PTF_USER_TIMESTAMP`). **One-way** = capture → presented. Valid on one machine or with
+   synced clocks.
+5. Every run logs p50/p95/max and writes JSON to `bench/results/`. Use Network Link
+   Conditioner (macOS) to simulate poor networks.
 
-Every media-path PR reports before and after numbers.
+Limitation: the marker is stamped after capture, so the app redraw and part of the capture
+delay aren't in RTT. A planned `--marker screen` mode fixes that.
+
+Every media-path PR reports before and after numbers (`bench/run-matrix.sh`).
 
 ## Platform plan
 
