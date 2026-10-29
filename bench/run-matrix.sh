@@ -29,6 +29,7 @@ CONFIGS=(
   "q-h264-1080-1500k|--capture pattern --codec h264 --resolution 1080 --bitrate-kbps 1500|--headless --measure-quality"
   "q-vp8-1080-1500k|--capture pattern --codec vp8 --resolution 1080 --bitrate-kbps 1500|--headless --measure-quality"
   "q-h264-1440-2500k|--capture pattern --codec h264 --resolution 1440 --bitrate-kbps 2500|--headless --measure-quality"
+  "q-h264-1080-noadapt|--capture pattern --codec h264 --resolution 1080 --no-adapt|--headless --measure-quality"
   "q-vp8-1440-2500k|--capture pattern --codec vp8 --resolution 1440 --bitrate-kbps 2500|--headless --measure-quality"
   "sck-vp8-nostats|--capture sck --codec vp8 --no-stats|--no-stats"
   "sck-h264-nostats|--capture sck --codec h264 --no-stats|--no-stats"
