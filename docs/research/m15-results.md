@@ -131,9 +131,8 @@ Findings:
    The ranking from one machine holds across a real network.
 2. **The Wi-Fi tail is the network, and the stats show it.** Every multi-second RTT max came
    with 0% loss while the link RTT spiked (612 ms, 964 ms, 2.5 s). In the windowed run the ICE
-   For example, in the windowed run the ICE link RTT (STUN consent checks) itself reached 2.5 s. Those are Wi-Fi
-   stalls (power save, scanning or AWDL), not encode or decode. 64 lossy ticks were lost in
-   the stall.
+   link RTT (STUN consent checks) itself reached 2.5 s. Those are Wi-Fi stalls (power save,
+   scanning or AWDL), not encode or decode. 64 lossy ticks were lost in the stall.
 3. **ICE sometimes settles on TCP.** One run connected over `prflx tcp`. Its p95 and max (147 ms
    and 3 s) show TCP's head-of-line blocking. The HUD shows the path, so a user can see when
    this happens. Worth investigating: why UDP lost that ICE race on a LAN.
