@@ -11,7 +11,7 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use livekit::options::VideoCodec;
-use media::capture::{Backend, CaptureConfig};
+use media::capture::{self, Backend, CaptureConfig, Tier};
 use media::publish::{self, ShareConfig, ShareStats};
 use media::token;
 
@@ -62,6 +62,28 @@ enum Codec {
     Av1,
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum Resolution {
+    #[value(name = "720")]
+    P720,
+    #[value(name = "1080")]
+    P1080,
+    #[value(name = "1440")]
+    P1440,
+    Native,
+}
+
+impl From<Resolution> for Tier {
+    fn from(r: Resolution) -> Self {
+        match r {
+            Resolution::P720 => Tier::P720,
+            Resolution::P1080 => Tier::P1080,
+            Resolution::P1440 => Tier::P1440,
+            Resolution::Native => Tier::Native,
+        }
+    }
+}
+
 impl From<Codec> for VideoCodec {
     fn from(codec: Codec) -> Self {
         match codec {
@@ -81,16 +103,21 @@ struct ShareArgs {
     capture: CaptureBackend,
     #[arg(long, value_enum, default_value = "vp8")]
     codec: Codec,
-    /// Maximum video bitrate in kbit/s.
-    #[arg(long, default_value_t = 4000)]
-    bitrate_kbps: u64,
+    /// Output size in lines (the width follows the display's aspect ratio), or the
+    /// display's own pixel size.
+    #[arg(long, value_enum, default_value = "1080")]
+    resolution: Resolution,
+    /// Maximum video bitrate in kbit/s. Defaults per resolution: 2500, 5000, 8000, 12000.
+    #[arg(long)]
+    bitrate_kbps: Option<u64>,
     #[arg(long, default_value_t = 60)]
     fps: u32,
-    /// Output width. The default keeps a 3024x1964 Retina panel's aspect ratio at 1080 lines.
-    #[arg(long, default_value_t = 1662)]
-    width: u32,
-    #[arg(long, default_value_t = 1080)]
-    height: u32,
+    /// Exact output width, overriding --resolution (needs --height too).
+    #[arg(long, requires = "height")]
+    width: Option<u32>,
+    /// Exact output height, overriding --resolution (needs --width too).
+    #[arg(long, requires = "width")]
+    height: Option<u32>,
     /// Publish as a regular video source instead of a screencast.
     #[arg(long)]
     no_screencast: bool,
@@ -126,18 +153,38 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
         CaptureBackend::Sck => anyhow::bail!("ScreenCaptureKit is macOS only"),
         CaptureBackend::Lk => Backend::LiveKit,
     };
+    let tier = Tier::from(args.resolution);
+    let screen = capture::display_pixels().unwrap_or_else(|| {
+        tracing::warn!(
+            "display size unknown; assuming {:?}",
+            capture::FALLBACK_DISPLAY
+        );
+        capture::FALLBACK_DISPLAY
+    });
+    let (width, height) = match (args.width, args.height) {
+        (Some(w), Some(h)) => (w, h),
+        _ => tier.size(screen),
+    };
+    let bitrate_kbps = args
+        .bitrate_kbps
+        .unwrap_or_else(|| tier.default_bitrate_kbps());
+    tracing::info!(
+        "display {}x{} → sending {width}x{height}, up to {bitrate_kbps} kbit/s",
+        screen.0,
+        screen.1
+    );
     let config = ShareConfig {
         url: args.connection.url.clone(),
         token: args.connection.token("sharer")?,
         backend,
         capture: CaptureConfig {
-            width: args.width,
-            height: args.height,
+            width,
+            height,
             max_fps: args.fps,
             show_cursor: args.cursor,
         },
         codec: args.codec.into(),
-        max_bitrate: args.bitrate_kbps * 1000,
+        max_bitrate: bitrate_kbps * 1000,
         is_screencast: !args.no_screencast,
         stamp_markers: !args.no_markers,
         net_stats: !args.no_stats,
