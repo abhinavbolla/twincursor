@@ -234,20 +234,26 @@ impl App {
         let frame_size = (frame.i420.width(), frame.i420.height());
         if frame_size != self.frame_size {
             // Show frames 1:1 for the sharpest text, unless they don't fit on this monitor.
-            let monitor = window
-                .current_monitor()
-                .map(|m| (m.size().width, m.size().height));
-            let (w, h) = monitor.map_or(frame_size, |m| fit_within(frame_size, usable(m)));
-            let _ = window.request_inner_size(PhysicalSize::new(w, h));
-            surface
-                .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
-                .expect("resize surface");
-            self.size = (w, h);
+            // The window only grows: when the sharer's auto-throttle drops to a lower tier,
+            // frames are scaled up to the window instead of the window jumping around.
+            if frame_size.0 > self.size.0 || frame_size.1 > self.size.1 {
+                let monitor = window
+                    .current_monitor()
+                    .map(|m| (m.size().width, m.size().height));
+                let (w, h) = monitor.map_or(frame_size, |m| fit_within(frame_size, usable(m)));
+                let _ = window.request_inner_size(PhysicalSize::new(w, h));
+                surface
+                    .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
+                    .expect("resize surface");
+                self.size = (w, h);
+            }
             self.frame_size = frame_size;
             tracing::info!(
-                "receiving {}x{}, showing at {w}x{h}",
+                "receiving {}x{}, showing at {}x{}",
                 frame_size.0,
-                frame_size.1
+                frame_size.1,
+                self.size.0,
+                self.size.1
             );
         }
         let (w, h) = self.size;

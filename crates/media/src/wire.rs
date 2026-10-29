@@ -4,7 +4,8 @@ use crate::netstats::NetSnapshot;
 
 /// Data-packet topic for latency ticks (viewer → sharer).
 pub const TICK_TOPIC: &str = "tc.tick";
-/// Data-packet topic for the sharer's network stats (sharer → viewer), once a second.
+/// Data-packet topic for network stats, once a second, both ways: the viewer shows the
+/// sharer's, and the sharer's auto-throttle uses the viewer's.
 pub const STATS_TOPIC: &str = "tc.stats";
 
 pub fn encode_tick(id: u32) -> Vec<u8> {

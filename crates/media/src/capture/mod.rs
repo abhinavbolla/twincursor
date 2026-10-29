@@ -108,6 +108,14 @@ impl FrameBuffer {
         self.as_video_buffer().height()
     }
 
+    /// A copy scaled to `width` x `height` (libyuv, on the CPU).
+    pub fn scaled(&mut self, width: u32, height: u32) -> FrameBuffer {
+        match self {
+            Self::Nv12(b) => Self::Nv12(b.scale(width as i32, height as i32)),
+            Self::I420(b) => Self::I420(b.scale(width as i32, height as i32)),
+        }
+    }
+
     pub fn as_video_buffer(&self) -> &dyn VideoBuffer {
         match self {
             Self::Nv12(b) => b,
