@@ -8,7 +8,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-BIN=target/release/tc-spike
+BIN=${BIN:-target/release/tc-spike}
 DURATION=${DURATION:-30}
 WARMUP=${WARMUP:-5}
 
