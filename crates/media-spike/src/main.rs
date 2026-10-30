@@ -1,6 +1,7 @@
 //! `tc-spike`: the M1 media spike. `share` publishes this Mac's screen, `view` shows it in a
 //! native window and measures latency. Start `livekit-server --dev` first.
 
+mod hud;
 mod view;
 
 use std::sync::atomic::Ordering;
@@ -96,6 +97,9 @@ struct ShareArgs {
     /// Don't stamp latency markers into frames.
     #[arg(long)]
     no_markers: bool,
+    /// Don't poll network stats or send them to the viewer.
+    #[arg(long)]
+    no_stats: bool,
     /// Include the mouse cursor in the capture.
     #[arg(long)]
     cursor: bool,
@@ -136,6 +140,7 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
         max_bitrate: args.bitrate_kbps * 1000,
         is_screencast: !args.no_screencast,
         stamp_markers: !args.no_markers,
+        net_stats: !args.no_stats,
     };
 
     let runtime = tokio::runtime::Runtime::new()?;
@@ -166,5 +171,8 @@ async fn report_share_stats(stats: Arc<ShareStats>) {
             take(&stats.resent) / secs,
             take(&stats.ticks) / secs,
         );
+        if let Some(net) = stats.net.lock().unwrap().as_ref() {
+            tracing::info!("network {}", serde_json::to_string(net).unwrap_or_default());
+        }
     }
 }

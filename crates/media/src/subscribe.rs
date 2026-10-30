@@ -9,13 +9,18 @@ use livekit::webrtc::video_frame::{I420Buffer, VideoBuffer};
 use livekit::webrtc::video_stream::native::NativeVideoStream;
 
 use crate::latency::Recorder;
+use crate::netstats::{Board, Poller, Side};
 use crate::{marker, wire};
+
+const STATS_EVERY: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone)]
 pub struct ViewConfig {
     pub url: String,
     pub token: String,
     pub tick_interval: Duration,
+    /// Poll WebRTC stats for the HUD.
+    pub net_stats: bool,
 }
 
 /// A decoded frame ready to render.
@@ -37,6 +42,7 @@ pub enum ViewError {
 pub async fn run(
     config: ViewConfig,
     recorder: Arc<Mutex<Recorder>>,
+    board: Arc<Mutex<Board>>,
     on_frame: impl Fn(DecodedFrame) + Send + Sync + 'static,
     shutdown: impl std::future::Future<Output = ()>,
 ) -> Result<(), ViewError> {
@@ -54,10 +60,18 @@ pub async fn run(
         config.tick_interval,
     ));
 
+    let started = Instant::now();
+    let mut poller = Poller::new(Side::Subscriber);
+    let mut stats_timer = tokio::time::interval(STATS_EVERY);
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
             _ = &mut shutdown => break,
+            _ = stats_timer.tick(), if config.net_stats => {
+                if let Some(snap) = poller.poll(&room).await {
+                    board.lock().unwrap().local_update(started.elapsed().as_secs_f64(), snap);
+                }
+            }
             event = events.recv() => match event {
                 Some(RoomEvent::TrackSubscribed { track: RemoteTrack::Video(track), participant, .. }) => {
                     tracing::info!(from = %participant.identity(), "video track subscribed");
@@ -66,6 +80,13 @@ pub async fn run(
                     let _timing = track.subscribe_timing_events();
                     let stream = NativeVideoStream::new(track.rtc_track());
                     tokio::spawn(receive_frames(stream, on_frame.clone()));
+                }
+                Some(RoomEvent::DataReceived { payload, topic, .. })
+                    if topic.as_deref() == Some(wire::STATS_TOPIC) =>
+                {
+                    if let Some(snap) = wire::decode_stats(&payload) {
+                        board.lock().unwrap().remote = Some(snap);
+                    }
                 }
                 Some(RoomEvent::Disconnected { reason }) => {
                     tracing::warn!(?reason, "disconnected");

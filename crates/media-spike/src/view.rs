@@ -16,15 +16,18 @@ use livekit::webrtc::native::yuv_helper;
 use livekit::webrtc::video_frame::VideoBuffer;
 use media::capture::wall_clock_us;
 use media::latency::Recorder;
+use media::netstats::Board;
+use media::stats::{summarize, Summary};
 use media::subscribe::{self, DecodedFrame, ViewConfig};
 use serde_json::json;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::Key;
 use winit::window::{Window, WindowId};
 
-use crate::Connection;
+use crate::{hud, Connection};
 
 const REPORT_EVERY: Duration = Duration::from_secs(10);
 
@@ -41,6 +44,9 @@ pub struct ViewArgs {
     /// Label stored in the results file, e.g. "sck-vp8-static".
     #[arg(long, default_value = "run")]
     label: String,
+    /// Don't poll network stats or show the HUD.
+    #[arg(long)]
+    no_stats: bool,
     /// Directory for the JSON results file.
     #[arg(long, default_value = "bench/results")]
     out: PathBuf,
@@ -66,16 +72,19 @@ pub fn run(args: ViewArgs) -> anyhow::Result<()> {
 
     let latest = Arc::new(Latest::default());
     let recorder = Arc::new(Mutex::new(Recorder::default()));
+    let board = Arc::new(Mutex::new(Board::default()));
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
 
     let config = ViewConfig {
         url: args.connection.url.clone(),
         token: args.connection.token("viewer")?,
         tick_interval: Duration::from_millis(args.tick_ms),
+        net_stats: !args.no_stats,
     };
     let network = {
         let latest = latest.clone();
         let recorder = recorder.clone();
+        let board = board.clone();
         let proxy = proxy.clone();
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -89,7 +98,8 @@ pub fn run(args: ViewArgs) -> anyhow::Result<()> {
             let shutdown = async {
                 let _ = stop_rx.await;
             };
-            let result = runtime.block_on(subscribe::run(config, recorder, on_frame, shutdown));
+            let result =
+                runtime.block_on(subscribe::run(config, recorder, board, on_frame, shutdown));
             if let Err(e) = &result {
                 tracing::error!("viewer failed: {e}");
             }
@@ -109,6 +119,10 @@ pub fn run(args: ViewArgs) -> anyhow::Result<()> {
     let mut app = App {
         latest,
         recorder: recorder.clone(),
+        board: board.clone(),
+        hud: !args.no_stats,
+        recent_rtt: None,
+        rtt_mark: 0,
         window: None,
         surface: None,
         size: (0, 0),
@@ -120,12 +134,20 @@ pub fn run(args: ViewArgs) -> anyhow::Result<()> {
     let _ = stop_tx.send(());
     let _ = network.join();
     let recorder = recorder.lock().unwrap();
-    write_results(&args, &recorder, started.elapsed(), app.size)
+    let board = board.lock().unwrap();
+    write_results(&args, &recorder, &board, started.elapsed(), app.size)
 }
 
 struct App {
     latest: Arc<Latest>,
     recorder: Arc<Mutex<Recorder>>,
+    board: Arc<Mutex<Board>>,
+    /// HUD visibility, toggled with the S key.
+    hud: bool,
+    /// Tick round trip over the last report window, shown in the HUD.
+    recent_rtt: Option<Summary>,
+    /// Index into the recorder's RTT samples where the current report window starts.
+    rtt_mark: usize,
     window: Option<Arc<Window>>,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
     size: (u32, u32),
@@ -155,8 +177,15 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
-        if let WindowEvent::CloseRequested = event {
-            event_loop.exit();
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("s")) =>
+            {
+                self.hud = !self.hud;
+            }
+            _ => {}
         }
     }
 }
@@ -193,6 +222,10 @@ impl App {
         let (y, u, v) = frame.i420.data();
         let (sy, su, sv) = frame.i420.strides();
         yuv_helper::i420_to_argb(y, sy, u, su, v, sv, bytes, w * 4, w as i32, h as i32);
+        if self.hud {
+            let lines = hud::lines(&self.board.lock().unwrap(), self.recent_rtt);
+            hud::draw(&mut buffer, w as usize, h as usize, &lines);
+        }
         buffer.present().expect("present");
 
         let presented_at = Instant::now();
@@ -211,13 +244,23 @@ impl App {
 
     fn report(&mut self) {
         let fps = self.frames_since_report as f64 / self.last_report.elapsed().as_secs_f64();
-        let report = self.recorder.lock().unwrap().report();
-        let fmt = |s: Option<media::stats::Summary>| s.map_or("n/a".to_owned(), |s| s.to_string());
+        let report = {
+            let recorder = self.recorder.lock().unwrap();
+            let samples = &recorder.rtt_presented;
+            self.recent_rtt = summarize(&samples[self.rtt_mark.min(samples.len())..]);
+            self.rtt_mark = samples.len();
+            recorder.report()
+        };
+        let fmt = |s: Option<Summary>| s.map_or("n/a".to_owned(), |s| s.to_string());
         tracing::info!(
-            "{fps:.1} fps | RTT (tick→presented) {} | one-way (capture→presented) {}",
+            "{fps:.1} fps | RTT (tick→presented) last 10 s {} | run {} | one-way (capture→presented) {}",
+            fmt(self.recent_rtt),
             fmt(report.rtt_presented),
             fmt(report.one_way_presented),
         );
+        for line in hud::lines(&self.board.lock().unwrap(), self.recent_rtt) {
+            tracing::info!("  {}", line.text);
+        }
         self.last_report = Instant::now();
         self.frames_since_report = 0;
     }
@@ -226,6 +269,7 @@ impl App {
 fn write_results(
     args: &ViewArgs,
     recorder: &Recorder,
+    board: &Board,
     elapsed: Duration,
     size: (u32, u32),
 ) -> anyhow::Result<()> {
@@ -239,6 +283,8 @@ fn write_results(
         "avg_fps": report.frames as f64 / secs,
         "tick_ms": args.tick_ms,
         "report": report,
+        "net": board.history,
+        "sharer_net_last": board.remote,
     });
     std::fs::create_dir_all(&args.out)?;
     let path = args.out.join(format!(

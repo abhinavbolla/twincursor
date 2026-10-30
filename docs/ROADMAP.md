@@ -24,6 +24,18 @@ Follow-ups found in M1 (for later milestones): Metal/wgpu viewer that renders th
 CVPixelBuffer (saves ~10 ms); exclude our own windows from capture. The ~11 s first connect
 only happened with both ends on one Mac; across two machines it took 0.6 s.
 
+## M1.5: High-fidelity media (Tuple-level quality)
+Goal: prove the picture is sharp and stays usable on real networks, and show the call's health.
+- [x] Network stats on both ends (RTT, loss, jitter, bitrate, bandwidth estimate, limit
+      reason, freezes, path) and an on-screen HUD in the viewer (`S` toggles it)
+- [ ] Resolution tiers up to 1440p, with bitrate presets
+- [ ] Measured quality: synthetic code-text source, SSIM/PSNR, H.264 vs VP8, default codec (ADR)
+- [ ] Network lab: Docker + netem profiles (Wi-Fi, 4G, hotel, intercontinental, bandwidth drop,
+      UDP blocked, outage) with pass/fail SLOs
+- [ ] Auto-throttle: step resolution and fps with the bandwidth estimate, text first
+- [ ] Real-world runs: Mac → Windows on Wi-Fi vs Ethernet, AWDL, Network Link Conditioner
+Done when: the lab passes its SLOs (or misses are explained) and the real-world runs are documented.
+
 ## M2: Remote control (macOS)
 - [ ] `crates/protocol`: input event messages
 - [ ] Viewer captures mouse, keyboard, and scroll and sends them over the data channel
