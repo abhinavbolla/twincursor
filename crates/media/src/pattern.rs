@@ -90,6 +90,40 @@ const CODE: &[&str] = &[
     "}",
 ];
 
+/// Bits of the frame number in the marker. The top 2 of the marker id carry the size the frame
+/// was rendered at, so a viewer can regenerate it even after the sharer scaled it down.
+pub const COUNTER_BITS: usize = marker::ID_BITS - 2;
+pub const COUNTER_MASK: u32 = (1 << COUNTER_BITS) - 1;
+/// Render sizes a viewer can tell apart: the 16:9 tiers. Anything else is "other" (class 3),
+/// which can only be checked when it arrives unscaled.
+const SIZES: [(u32, u32); 3] = [(1920, 1080), (2560, 1440), (1280, 720)];
+
+/// Marker id for frame `n` rendered at `size`.
+pub fn frame_id(n: u32, size: (u32, u32)) -> u32 {
+    let class = SIZES.iter().position(|&s| s == size).unwrap_or(3) as u32;
+    class << COUNTER_BITS | (n & COUNTER_MASK)
+}
+
+/// Frame number and render size (if it's one of the known ones) from a marker id.
+pub fn decode_frame_id(id: u32) -> (u32, Option<(u32, u32)>) {
+    let class = (id >> COUNTER_BITS) as usize;
+    (id & COUNTER_MASK, SIZES.get(class).copied())
+}
+
+/// The frame a viewer should have received for marker `id` at `received` size: rendered at
+/// its original size and, if the sharer scaled it, scaled the same way (libyuv).
+pub fn expected(id: u32, received: (u32, u32)) -> Option<I420Buffer> {
+    let (n, source) = decode_frame_id(id);
+    let source = source.unwrap_or(received);
+    let mut frame = Pattern::new(source.0, source.1).render_i420(n);
+    if source == received {
+        return Some(frame);
+    }
+    // Only downscales are ours; anything else means the id was misread.
+    (received.0 < source.0 && received.1 < source.1)
+        .then(|| frame.scale(received.0 as i32, received.1 as i32))
+}
+
 /// Renders frames of a given size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pattern {
@@ -104,6 +138,7 @@ impl Pattern {
 
     /// Renders frame `n` as 0RGB pixels (`width * height`).
     pub fn render_rgb(&self, n: u32, px: &mut [u32]) {
+        let n = n & COUNTER_MASK;
         let (w, h) = (self.width as usize, self.height as usize);
         let mut c = Canvas { px, w, h };
         c.fill(0, 0, w, h, BG);
@@ -112,7 +147,7 @@ impl Pattern {
         // latency marker into the first slot later.
         let bar_h = MARKED_AREA.1;
         c.fill(0, 0, w, bar_h, BAR);
-        for (i, bit) in marker::bits(n).enumerate() {
+        for (i, bit) in marker::bits(frame_id(n, (self.width, self.height))).enumerate() {
             let level = u32::from(if bit {
                 marker::LEVELS.0
             } else {
@@ -321,7 +356,7 @@ mod tests {
     #[test]
     fn frame_number_survives_conversion() {
         let p = Pattern::new(1104, 720);
-        for n in [0, 1, 777, marker::MAX_ID] {
+        for n in [0, 1, 777, COUNTER_MASK] {
             let frame = p.render_i420(n);
             let (sy, _, _) = frame.strides();
             let read = marker::read_luma_at(
@@ -331,8 +366,61 @@ mod tests {
                 frame.height() as usize,
                 FRAME_SLOT_X,
             );
-            assert_eq!(read, Some(n));
+            assert_eq!(read, Some(frame_id(n, (1104, 720))));
+            assert_eq!(decode_frame_id(read.unwrap()), (n, None));
         }
+    }
+
+    #[test]
+    fn frame_ids_carry_known_sizes() {
+        assert_eq!(
+            decode_frame_id(frame_id(5, (2560, 1440))),
+            (5, Some((2560, 1440)))
+        );
+        assert_eq!(
+            decode_frame_id(frame_id(5, (1280, 720))),
+            (5, Some((1280, 720)))
+        );
+        assert_eq!(
+            decode_frame_id(frame_id(COUNTER_MASK + 9, (1920, 1080))).0,
+            8
+        );
+    }
+
+    #[test]
+    fn expected_matches_a_scaled_down_frame() {
+        use crate::quality::{compare, Plane};
+        let sent = Pattern::new(2560, 1440).render_i420(42).scale(1920, 1080);
+        let id = frame_id(42, (2560, 1440));
+        let exp = expected(id, (1920, 1080)).unwrap();
+        let (sa, _, _) = sent.strides();
+        let (sb, _, _) = exp.strides();
+        let s = compare(
+            Plane {
+                data: sent.data().0,
+                stride: sa as usize,
+            },
+            Plane {
+                data: exp.data().0,
+                stride: sb as usize,
+            },
+            1920,
+            1080,
+            (0, 0),
+        )
+        .unwrap();
+        assert_eq!(
+            s.psnr_db,
+            crate::quality::MAX_PSNR_DB,
+            "same scaler, same pixels"
+        );
+        // A natively rendered 1080p frame is not what was sent.
+        assert!(expected(frame_id(42, (1920, 1080)), (1920, 1080)).is_some());
+        assert!(expected(id, (2560, 1440)).is_some());
+        assert!(
+            expected(id, (3000, 2000)).is_none(),
+            "upscale means a misread id"
+        );
     }
 
     #[test]

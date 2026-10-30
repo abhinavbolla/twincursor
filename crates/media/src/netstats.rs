@@ -96,6 +96,9 @@ pub struct NetSnapshot {
     pub path: Option<String>,
     pub send: Option<SendStats>,
     pub recv: Option<RecvStats>,
+    /// Sharer only: the auto-throttle's current tier and why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapt: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -122,6 +125,8 @@ pub struct RecvStats {
     pub loss_pct: f64,
     pub jitter_ms: f64,
     pub freezes: u32,
+    /// Often 0 even when `freezes` > 0: libwebrtc doesn't fill `totalFreezesDuration` on
+    /// the builds we use. Rely on `freezes`.
     pub freeze_ms: f64,
     pub dropped: u32,
     pub nacks: u32,
@@ -291,6 +296,7 @@ pub fn snapshot(prev: &Counters, cur: &Counters, secs: f64) -> NetSnapshot {
         path: cur.path.as_ref().map(|p| p.kind.clone()),
         send,
         recv,
+        adapt: None,
     }
 }
 
