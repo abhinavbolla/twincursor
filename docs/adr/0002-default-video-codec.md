@@ -37,9 +37,9 @@ decode H.264.
 - Lower bandwidth leaves headroom on poor networks. That matters most for the auto-throttle
   (M1.5 PR 5) and for sharers on thin uplinks.
 - 1440p becomes practical. It needs a hardware encoder, which every supported Mac has.
-- **To verify:** H.264 decoding on the Windows viewer, and on Linux later. M1.5 PR 6 runs
-  Mac → Windows with H.264. If a viewer can't decode it, we need codec negotiation or a VP8
-  backup track.
+- **Verified on Windows** (M1.5 PR 6): the Windows viewer decodes H.264 with FFmpeg, at SSIM
+  p5 0.9996 over Wi-Fi. Linux is still to check. If a viewer can't decode it, we need codec
+  negotiation or a VP8 backup track.
 - Caveats on the measurement:
   - The pattern uses a binary bitmap font. Real anti-aliased text has more fine texture, so
     absolute SSIM on a real screen will be lower. The ranking between codecs is what we rely on.

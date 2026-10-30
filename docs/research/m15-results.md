@@ -109,3 +109,43 @@ and counts the frames it drops. A/B: headless pattern, H.264 1080, 4 alternating
 - This matters for M2, because remote-control input will take the same path. Measure the
   data-channel one-way delay on its own (reliable vs lossy, ordered vs not) before building
   input on it.
+
+## Mac → Windows over home Wi-Fi (PR 6)
+Sharer: this Mac (Wi-Fi, AWDL active) running `livekit-server --dev --bind 0.0.0.0`. Viewer:
+a Windows laptop (Intel Wi-Fi 6 AX201, 1920x1080 at 100% scaling, decoding with FFmpeg),
+through the `windows testing` Claude session. 60 s per run, 2026-10-29.
+
+| run | fps | size | RTT p50 | RTT p95 | RTT max | SSIM p5 | fast-scroll SSIM p5 | ticks | path | link RTT max |
+|---|---|---|---|---|---|---|---|---|---|---|
+| pattern H.264 1080, headless | 60 | 1920x1080 | 25 ms | 105 ms | 320 ms | 0.9996 | 0.9996 | 240/240 | host udp | 78 ms |
+| pattern H.264 1440, headless | 59 | 2560x1440 | 44 ms | 127 ms | 2594 ms | 0.9996 | 0.9996 | 231/240 | host udp | 612 ms |
+| pattern VP8 1080, headless | 59 | 1920x1080 | 23 ms | 222 ms | 2897 ms | 0.9871 | 0.9838 | 229/240 | host udp | 964 ms |
+| pattern H.264 1440, `--no-adapt`, headless | 58 | 2560x1440 | 37 ms | 147 ms | 2984 ms | 0.9996 | 0.9996 | 231/240 | **prflx tcp** | 219 ms |
+| real screen H.264 1080, headless | 47 | 1664x1080 | 20 ms | 117 ms | 324 ms | - | - | 240/241 | host udp | 87 ms |
+| real screen H.264 1440, windowed (shown at 1466x950) | 37 | 2224x1440 | 37 ms | 533 ms | 2475 ms | - | - | 176/240 | host udp | **2457 ms** |
+
+Findings:
+1. **H.264 decodes on Windows** (FFmpeg). This resolves the open item in ADR 0002. Text quality
+   survives the network unchanged: SSIM p5 0.9996 at 1080p and 1440p, the same as on one
+   machine, at 0.76–0.81 Mbps. VP8 again lands at 0.987 (PSNR p5 34.8 dB) and uses 3.3 Mbps.
+   The ranking from one machine holds across a real network.
+2. **The Wi-Fi tail is the network, and the stats show it.** Every multi-second RTT max came
+   with 0% loss while the link RTT spiked (612 ms, 964 ms, 2.5 s). In the windowed run the ICE
+   For example, in the windowed run the ICE link RTT (STUN consent checks) itself reached 2.5 s. Those are Wi-Fi
+   stalls (power save, scanning or AWDL), not encode or decode. 64 lossy ticks were lost in
+   the stall.
+3. **ICE sometimes settles on TCP.** One run connected over `prflx tcp`. Its p95 and max (147 ms
+   and 3 s) show TCP's head-of-line blocking. The HUD shows the path, so a user can see when
+   this happens. Worth investigating: why UDP lost that ICE race on a LAN.
+4. **`freeze_ms` is always 0** on this libwebrtc build, even when `freezes` > 0. The adapter
+   now counts freezes instead (fixed in PR 5).
+5. The Windows viewer showed 1440p downscaled to fit its 1080p screen (2224x1440 shown at
+   1466x950), as designed.
+6. Real-screen runs send 35–48 fps because the screen doesn't change every frame. That's
+   expected with ScreenCaptureKit.
+7. On a good link the adapter correctly did nothing: no tier changes and no limit reported in
+   any run.
+
+Still to run, and each needs a hand from you: Mac on Ethernet instead of Wi-Fi; AWDL off
+(`sudo ifconfig awdl0 down`, then `up` afterwards); and Network Link Conditioner profiles on
+the Mac. These separate Wi-Fi stalls from everything else.
