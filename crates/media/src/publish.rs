@@ -195,6 +195,7 @@ pub async fn run(
         let snapshots = config.snapshots.clone();
         let send_size = send_size.clone();
         let mailbox = mailbox.clone();
+        let capture_fps = config.capture.max_fps;
         std::thread::spawn(move || {
             send_loop(
                 &mailbox,
@@ -202,6 +203,7 @@ pub async fn run(
                 &latest_tick,
                 &stats,
                 &send_size,
+                capture_fps,
                 stamp,
                 snapshots.as_ref(),
             )
@@ -323,19 +325,22 @@ async fn send_stats(room: &Room, snap: &NetSnapshot) {
     }
 }
 
+// The send thread's whole context; a struct for it would only be unpacked again here.
+#[allow(clippy::too_many_arguments)]
 fn send_loop(
     mailbox: &Mailbox,
     source: &NativeVideoSource,
     latest_tick: &AtomicU32,
     stats: &ShareStats,
     send_size: &Mutex<(u32, u32, u32)>,
+    capture_fps: u32,
     stamp: bool,
     snapshots: Option<&Snapshots>,
 ) {
     let start = Instant::now();
     let mut last: Option<Frame> = None;
     let mut last_snapshot = NO_TICK;
-    let mut last_fresh: Option<Instant> = None;
+    let mut pacer = Pacer::new(capture_fps);
     loop {
         let fresh = match mailbox.wait(IDLE_RESEND) {
             Mail::Frame(frame) => {
@@ -347,15 +352,11 @@ fn send_loop(
         };
         let Some(frame) = last.as_mut() else { continue };
         let (w, h, fps) = *send_size.lock().unwrap();
-        if fresh {
-            // Pace new frames to the adapter's cap. A skipped frame isn't lost: the newest
-            // one is kept and goes out with the next tick or frame.
-            let interval = Duration::from_secs_f64(0.9 / f64::from(fps.max(1)));
-            if last_fresh.is_some_and(|t| t.elapsed() < interval) {
-                stats.dropped.fetch_add(1, Ordering::Relaxed);
-                continue;
-            }
-            last_fresh = Some(Instant::now());
+        // A skipped frame isn't lost: the newest one is kept and goes out with the next tick
+        // or frame.
+        if fresh && !pacer.admit(Instant::now(), fps) {
+            stats.dropped.fetch_add(1, Ordering::Relaxed);
+            continue;
         }
         let mut scaled;
         let buffer = if (frame.buffer.width(), frame.buffer.height()) == (w, h) {
@@ -385,6 +386,49 @@ fn send_loop(
         }
         let counter = if fresh { &stats.sent } else { &stats.resent };
         counter.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Paces new frames to the adapter's frame-rate cap.
+///
+/// It only acts when the cap is below the capture rate. It keeps a schedule rather than
+/// measuring from the last frame sent, so ordinary capture jitter doesn't drop frames. (A first
+/// version used "at least 0.9 / fps since the last send" and dropped ~18 of 60 frames a second
+/// at full rate.)
+struct Pacer {
+    capture_fps: u32,
+    next_due: Option<Instant>,
+}
+
+impl Pacer {
+    fn new(capture_fps: u32) -> Self {
+        Self {
+            capture_fps,
+            next_due: None,
+        }
+    }
+
+    /// Whether a new frame arriving at `now` should be sent under a cap of `fps`.
+    fn admit(&mut self, now: Instant, fps: u32) -> bool {
+        if fps >= self.capture_fps {
+            self.next_due = None;
+            return true;
+        }
+        let interval = Duration::from_secs_f64(1.0 / f64::from(fps.max(1)));
+        if let Some(due) = self.next_due {
+            // Accept frames a little early, so jitter averages out. Less than half an
+            // interval: at a 30 fps cap, 60 fps frames land exactly half an interval early.
+            if now + interval / 5 < due {
+                return false;
+            }
+            // Keep the schedule, unless we're more than an interval behind it (a pause):
+            // then restart from now instead of bursting to catch up.
+            let base = if due + interval > now { due } else { now };
+            self.next_due = Some(base + interval);
+        } else {
+            self.next_due = Some(now + interval);
+        }
+        true
     }
 }
 
@@ -452,6 +496,52 @@ mod tests {
             buffer: FrameBuffer::I420(I420Buffer::new(16, 16)),
             captured_at_us: id,
         }
+    }
+
+    /// Admitted frames per second for 10 s of arrivals at `capture` fps with ±`jitter_ms`.
+    fn paced_rate(capture: u32, cap: u32, jitter_ms: u64) -> f64 {
+        let mut pacer = Pacer::new(capture);
+        let t0 = Instant::now();
+        let period_us = 1_000_000 / u64::from(capture);
+        let mut seed = 0x2545_f491_u32;
+        let admitted = (0..u64::from(capture) * 10)
+            .filter(|i| {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                let jitter = (u64::from(seed) % (2 * jitter_ms * 1000 + 1)) as i64
+                    - (jitter_ms * 1000) as i64;
+                let at = (i * period_us) as i64 + jitter + 10_000;
+                pacer.admit(t0 + Duration::from_micros(at as u64), cap)
+            })
+            .count();
+        admitted as f64 / 10.0
+    }
+
+    #[test]
+    fn pacer_never_drops_at_the_capture_rate() {
+        assert_eq!(paced_rate(60, 60, 3), 60.0);
+    }
+
+    #[test]
+    fn pacer_holds_the_cap_despite_jitter() {
+        let r30 = paced_rate(60, 30, 3);
+        let r15 = paced_rate(60, 15, 3);
+        assert!((29.0..=31.0).contains(&r30), "30 fps cap gave {r30}");
+        assert!((14.5..=15.5).contains(&r15), "15 fps cap gave {r15}");
+    }
+
+    #[test]
+    fn pacer_restarts_after_a_pause_instead_of_bursting() {
+        let mut p = Pacer::new(60);
+        let t0 = Instant::now();
+        assert!(p.admit(t0, 30));
+        // Nothing for 2 s (static screen), then frames at 60 fps again.
+        let back = t0 + Duration::from_secs(2);
+        let burst = (0..6)
+            .filter(|i| p.admit(back + Duration::from_micros(i * 16_667), 30))
+            .count();
+        assert_eq!(burst, 3, "every other frame, not a catch-up burst");
     }
 
     #[test]
