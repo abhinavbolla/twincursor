@@ -197,3 +197,26 @@ Findings:
    - netem's `rate` plus jitter tail-drops far more than configured, so rates go through tbf.
    - The report must match labels exactly (`4g-vp8-1080` vs `4g-vp8-1080-noadapt`).
    - Linux builds need clang 21+ and an explicit GLib/GIO link.
+
+## Frame pacing bug (fixed after M1.5)
+The frame-rate cap added with the ladder (PR 4) paced new frames by "at least 0.9 / fps since
+the last frame sent". With ordinary capture jitter, that dropped **~18 of 60 frames a second
+even at full rate**, when no cap applies. It's fixed with a pacer that only acts below the
+capture rate, keeps a schedule rather than timing from the last send, and restarts after a
+pause instead of bursting. It has unit tests with jittered arrivals.
+
+A/B, headless pattern, H.264 1080, 3 alternating runs of 30 s:
+
+| build | fps | RTT p50 | RTT p95 | one-way p50 | SSIM p5 |
+|---|---|---|---|---|---|
+| with the bug | 41, 42, 41 | 13.5, 13.3, 17.3 ms | 22, 16, 44 ms | 15 ms | 0.9995 |
+| fixed | 59, 59, 47 | 25.3, 13.4, 29.0 ms | 29, 21, 275 ms | 15 ms | 0.9995 |
+
+- The frame rate is restored, and one-way latency and quality are unchanged.
+- RTT p50 stays inside the known run-to-run swing (see the hand-off section above). The bug
+  may have flattered RTT a little: dropping frames kept the encoder idle, so a tick's frame went
+  out sooner. One fixed run had a 275 ms p95 while it dipped to 47 fps.
+- **Effect on earlier results:** the network lab's final sweep ran with this bug, so its fps
+  figures are low by ~15–20% (lan showed 50 fps instead of ~58). Adapt on and off were affected
+  alike, so the comparisons hold. Results measured before the ladder (quality, Windows, PR 5)
+  are unaffected.
