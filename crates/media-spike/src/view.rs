@@ -17,6 +17,7 @@ use livekit::webrtc::video_frame::VideoBuffer;
 use media::capture::wall_clock_us;
 use media::latency::Recorder;
 use media::netstats::Board;
+use media::quality::Snapshots;
 use media::stats::{summarize, Summary};
 use media::subscribe::{self, DecodedFrame, ViewConfig};
 use serde_json::json;
@@ -47,6 +48,18 @@ pub struct ViewArgs {
     /// Don't poll network stats or show the HUD.
     #[arg(long)]
     no_stats: bool,
+    /// Decode and measure without opening a window (for benchmarks and the network lab).
+    /// Latency is then measured at decode.
+    #[arg(long)]
+    headless: bool,
+    /// Score frames against the synthetic pattern (needs `share --capture pattern`).
+    #[arg(long)]
+    measure_quality: bool,
+    /// Save the frame carrying every Nth latency tick as a PGM (see `tc-spike compare`).
+    #[arg(long, default_value_t = 0)]
+    snapshot_every: u32,
+    #[arg(long, default_value = "bench/snapshots")]
+    snapshot_dir: PathBuf,
     /// Directory for the JSON results file.
     #[arg(long, default_value = "bench/results")]
     out: PathBuf,
@@ -65,7 +78,24 @@ struct Latest {
     wake_pending: AtomicBool,
 }
 
+fn view_config(args: &ViewArgs) -> anyhow::Result<ViewConfig> {
+    Ok(ViewConfig {
+        url: args.connection.url.clone(),
+        token: args.connection.token("viewer")?,
+        tick_interval: Duration::from_millis(args.tick_ms),
+        net_stats: !args.no_stats,
+        measure_quality: args.measure_quality,
+        snapshots: (args.snapshot_every > 0).then(|| Snapshots {
+            every: args.snapshot_every,
+            dir: args.snapshot_dir.clone(),
+        }),
+    })
+}
+
 pub fn run(args: ViewArgs) -> anyhow::Result<()> {
+    if args.headless {
+        return run_headless(args);
+    }
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     let proxy = event_loop.create_proxy();
@@ -75,12 +105,7 @@ pub fn run(args: ViewArgs) -> anyhow::Result<()> {
     let board = Arc::new(Mutex::new(Board::default()));
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
 
-    let config = ViewConfig {
-        url: args.connection.url.clone(),
-        token: args.connection.token("viewer")?,
-        tick_interval: Duration::from_millis(args.tick_ms),
-        net_stats: !args.no_stats,
-    };
+    let config = view_config(&args)?;
     let network = {
         let latest = latest.clone();
         let recorder = recorder.clone();
@@ -263,26 +288,112 @@ impl App {
 
     fn report(&mut self) {
         let fps = self.frames_since_report as f64 / self.last_report.elapsed().as_secs_f64();
-        let report = {
-            let recorder = self.recorder.lock().unwrap();
-            let samples = &recorder.rtt_presented;
-            self.recent_rtt = summarize(&samples[self.rtt_mark.min(samples.len())..]);
-            self.rtt_mark = samples.len();
-            recorder.report()
-        };
-        let fmt = |s: Option<Summary>| s.map_or("n/a".to_owned(), |s| s.to_string());
-        tracing::info!(
-            "{fps:.1} fps | RTT (tick→presented) last 10 s {} | run {} | one-way (capture→presented) {}",
-            fmt(self.recent_rtt),
-            fmt(report.rtt_presented),
-            fmt(report.one_way_presented),
-        );
-        for line in hud::lines(&self.board.lock().unwrap(), self.recent_rtt) {
-            tracing::info!("  {}", line.text);
-        }
+        self.recent_rtt = log_report(&self.recorder, &self.board, &mut self.rtt_mark, fps);
         self.last_report = Instant::now();
         self.frames_since_report = 0;
     }
+}
+
+/// Logs the latency, quality and network summary for the last window. Returns the round trip
+/// over that window, which the HUD shows.
+fn log_report(
+    recorder: &Mutex<Recorder>,
+    board: &Mutex<Board>,
+    rtt_mark: &mut usize,
+    fps: f64,
+) -> Option<Summary> {
+    let (recent, report) = {
+        let recorder = recorder.lock().unwrap();
+        let samples = &recorder.rtt_presented;
+        let recent = summarize(&samples[(*rtt_mark).min(samples.len())..]);
+        *rtt_mark = samples.len();
+        (recent, recorder.report())
+    };
+    let fmt = |s: Option<Summary>| s.map_or("n/a".to_owned(), |s| s.to_string());
+    tracing::info!(
+        "{fps:.1} fps | RTT (tick→presented) last 10 s {} | run {} | one-way (capture→presented) {}",
+        fmt(recent),
+        fmt(report.rtt_presented),
+        fmt(report.one_way_presented),
+    );
+    if let (Some(ssim), Some(psnr)) = (report.ssim, report.psnr_db) {
+        let fast = report.ssim_fast_scroll.map_or("n/a".to_owned(), |f| {
+            format!("p50 {:.4} p5 {:.4}", f.p50, f.p5)
+        });
+        tracing::info!(
+            "  quality SSIM p50 {:.4} p5 {:.4} min {:.4} | fast scroll {fast} | PSNR p50 {:.1} dB p5 {:.1} dB (n={})",
+            ssim.p50,
+            ssim.p5,
+            ssim.min,
+            psnr.p50,
+            psnr.p5,
+            ssim.count
+        );
+    }
+    for line in hud::lines(&board.lock().unwrap(), recent) {
+        tracing::info!("  {}", line.text);
+    }
+    recent
+}
+
+/// Viewer without a window: frames count as presented when decoded.
+fn run_headless(args: ViewArgs) -> anyhow::Result<()> {
+    let recorder = Arc::new(Mutex::new(Recorder::default()));
+    let board = Arc::new(Mutex::new(Board::default()));
+    let frame_size = Arc::new(Mutex::new((0u32, 0u32)));
+    let config = view_config(&args)?;
+    let started = Instant::now();
+
+    let on_frame = {
+        let recorder = recorder.clone();
+        let frame_size = frame_size.clone();
+        move |frame: DecodedFrame| {
+            *frame_size.lock().unwrap() = (frame.i420.width(), frame.i420.height());
+            recorder.lock().unwrap().frame_presented(
+                frame.marker,
+                frame.decoded_at,
+                frame.decoded_at,
+                frame.captured_at_us,
+                wall_clock_us(),
+            );
+        }
+    };
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async {
+        let reporter = {
+            let (recorder, board) = (recorder.clone(), board.clone());
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(REPORT_EVERY);
+                interval.tick().await;
+                let (mut rtt_mark, mut frames) = (0, 0);
+                loop {
+                    interval.tick().await;
+                    let total = recorder.lock().unwrap().frames;
+                    let fps = (total - frames) as f64 / REPORT_EVERY.as_secs_f64();
+                    frames = total;
+                    log_report(&recorder, &board, &mut rtt_mark, fps);
+                }
+            })
+        };
+        let duration = args.duration;
+        let shutdown = async move {
+            match duration {
+                Some(secs) => tokio::time::sleep(Duration::from_secs(secs)).await,
+                None => {
+                    let _ = tokio::signal::ctrl_c().await;
+                }
+            }
+        };
+        let result =
+            subscribe::run(config, recorder.clone(), board.clone(), on_frame, shutdown).await;
+        reporter.abort();
+        result
+    })?;
+
+    let recorder = recorder.lock().unwrap();
+    let board = board.lock().unwrap();
+    let size = *frame_size.lock().unwrap();
+    write_results(&args, &recorder, &board, started.elapsed(), size)
 }
 
 /// Room on a monitor for the window's content, leaving space for the title bar and dock.

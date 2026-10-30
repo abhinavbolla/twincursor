@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use serde::Serialize;
 
+use crate::quality::{summarize_low, LowSummary, Scores};
 use crate::stats::{summarize, Summary};
 
 /// How long a sent tick is kept waiting for its marker before it counts as lost.
@@ -23,6 +24,10 @@ pub struct Recorder {
     pub one_way_presented: Vec<f64>,
     pub ticks_sent: u64,
     pub frames: u64,
+    /// Decoded vs expected picture, for the synthetic pattern.
+    pub quality: Vec<Scores>,
+    /// The subset taken while the pattern was scrolling fast.
+    pub quality_fast: Vec<Scores>,
 }
 
 /// Summaries for one reporting window or a whole run.
@@ -34,6 +39,9 @@ pub struct Report {
     pub ticks_sent: u64,
     pub ticks_seen: usize,
     pub frames: u64,
+    pub ssim: Option<LowSummary>,
+    pub psnr_db: Option<LowSummary>,
+    pub ssim_fast_scroll: Option<LowSummary>,
 }
 
 impl Recorder {
@@ -79,6 +87,11 @@ impl Recorder {
             ticks_sent: self.ticks_sent,
             ticks_seen: self.rtt_presented.len(),
             frames: self.frames,
+            ssim: summarize_low(&self.quality.iter().map(|q| q.ssim).collect::<Vec<_>>()),
+            psnr_db: summarize_low(&self.quality.iter().map(|q| q.psnr_db).collect::<Vec<_>>()),
+            ssim_fast_scroll: summarize_low(
+                &self.quality_fast.iter().map(|q| q.ssim).collect::<Vec<_>>(),
+            ),
         }
     }
 }
