@@ -47,6 +47,13 @@ Codecs are configurable (`tc-spike share --codec`). M1 measurements (`research/m
 - **VP8** is the software fallback.
 - **VP9** was worse on every measure.
 - Simulcast is off for screen share.
+- **Resolution tiers** (`--resolution`): 720, 1080 (default), 1440 or native lines; the width
+  follows the display's aspect ratio, rounded to a multiple of 16 so encoders don't crop
+  (1662 became 1660). On a 3024x1964 MacBook panel: 1104x720, 1664x1080, 2224x1440.
+  ScreenCaptureKit scales on the GPU. Default max bitrates are 2.5 / 5 / 8 / 12 Mbps; the
+  bandwidth estimate usually sets the actual target lower.
+- The viewer shows frames 1:1 (sharpest text) and only downscales when a frame doesn't fit
+  on its monitor (e.g. 1440p onto a 1080p screen).
 - `is_screencast` showed no frame-rate cap and no latency difference.
 
 Encoder tuning (Hopp's rate-control and buffer settings, `research/hopp-lessons.md`) needs a

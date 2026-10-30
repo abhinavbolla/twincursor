@@ -18,6 +18,65 @@ pub enum Backend {
     LiveKit,
 }
 
+/// Output size presets, by number of lines. Widths follow the display's aspect ratio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Tier {
+    P720,
+    P1080,
+    P1440,
+    /// The display's own pixel size.
+    Native,
+}
+
+impl Tier {
+    fn lines(self) -> Option<u32> {
+        match self {
+            Self::P720 => Some(720),
+            Self::P1080 => Some(1080),
+            Self::P1440 => Some(1440),
+            Self::Native => None,
+        }
+    }
+
+    /// Default maximum bitrate. Screen content is mostly static, so this is a ceiling for
+    /// scrolling and typing bursts, not a steady rate.
+    pub fn default_bitrate_kbps(self) -> u64 {
+        match self {
+            Self::P720 => 2_500,
+            Self::P1080 => 5_000,
+            Self::P1440 => 8_000,
+            Self::Native => 12_000,
+        }
+    }
+
+    /// Output size for this tier on a display of `native` pixels. Keeps the aspect ratio,
+    /// rounds the width to a multiple of 16 (encoders crop other widths: 1662 became 1660),
+    /// keeps the height even (NV12) and never upscales.
+    pub fn size(self, native: (u32, u32)) -> (u32, u32) {
+        let (nw, nh) = (native.0.max(16), native.1.max(2));
+        let max_w = nw / 16 * 16;
+        let lines = self.lines().unwrap_or(nh).min(nh) & !1;
+        let width = (u64::from(lines) * u64::from(nw) + u64::from(nh) / 2) / u64::from(nh);
+        let width = ((width as u32 + 8) / 16 * 16).clamp(16, max_w);
+        (width, lines)
+    }
+}
+
+/// Assumed when the display size can't be read (non-macOS before the first frame).
+pub const FALLBACK_DISPLAY: (u32, u32) = (1920, 1080);
+
+/// Pixel size of the display we capture (the first one), if the platform can tell us.
+pub fn display_pixels() -> Option<(u32, u32)> {
+    #[cfg(target_os = "macos")]
+    {
+        sck::display_pixels()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct CaptureConfig {
     /// Output size. Backends that can't scale on capture scale on the CPU instead.
@@ -88,4 +147,58 @@ pub fn wall_clock_us() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_micros() as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RETINA_14: (u32, u32) = (3024, 1964);
+
+    #[test]
+    fn tiers_on_a_retina_macbook() {
+        assert_eq!(Tier::P720.size(RETINA_14), (1104, 720));
+        assert_eq!(Tier::P1080.size(RETINA_14), (1664, 1080));
+        assert_eq!(Tier::P1440.size(RETINA_14), (2224, 1440));
+        assert_eq!(Tier::Native.size(RETINA_14), (3024, 1964));
+    }
+
+    #[test]
+    fn tiers_on_16_by_9() {
+        assert_eq!(Tier::P1080.size((1920, 1080)), (1920, 1080));
+        assert_eq!(Tier::P1440.size((2560, 1440)), (2560, 1440));
+        assert_eq!(Tier::P720.size((3840, 2160)), (1280, 720));
+    }
+
+    #[test]
+    fn never_upscales() {
+        assert_eq!(Tier::P1440.size((1920, 1080)), (1920, 1080));
+        assert_eq!(Tier::Native.size((1366, 768)), (1360, 768));
+    }
+
+    #[test]
+    fn widths_are_multiples_of_16_and_heights_even() {
+        for native in [
+            (3024, 1964),
+            (2560, 1600),
+            (1440, 900),
+            (1366, 768),
+            (1001, 777),
+        ] {
+            for tier in [Tier::P720, Tier::P1080, Tier::P1440, Tier::Native] {
+                let (w, h) = tier.size(native);
+                assert_eq!(w % 16, 0, "{tier:?} on {native:?}");
+                assert_eq!(h % 2, 0, "{tier:?} on {native:?}");
+                assert!(w <= native.0 && h <= native.1, "{tier:?} on {native:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn bitrate_grows_with_tier() {
+        let rates: Vec<_> = [Tier::P720, Tier::P1080, Tier::P1440, Tier::Native]
+            .map(Tier::default_bitrate_kbps)
+            .to_vec();
+        assert!(rates.windows(2).all(|w| w[0] < w[1]));
+    }
 }

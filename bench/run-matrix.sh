@@ -19,6 +19,8 @@ CONFIGS=(
   "sck-h264|--capture sck --codec h264"
   "sck-vp8-noscreencast|--capture sck --codec vp8 --no-screencast"
   "lk-vp8|--capture lk --codec vp8"
+  "sck-vp8-1440|--capture sck --codec vp8 --resolution 1440"
+  "sck-h264-1440|--capture sck --codec h264 --resolution 1440"
   "sck-vp8-nostats|--capture sck --codec vp8 --no-stats|--no-stats"
   "sck-h264-nostats|--capture sck --codec h264 --no-stats|--no-stats"
 )
