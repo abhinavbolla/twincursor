@@ -32,10 +32,12 @@ Goal: prove the picture is sharp and stays usable on real networks, and show the
 - [x] Resolution tiers up to 1440p, with bitrate presets (`--resolution`)
 - [x] Measured quality: synthetic code-text source, SSIM/PSNR, H.264 vs VP8; H.264 is the
       default (ADR 0002)
-- [ ] Network lab: Docker + netem profiles (Wi-Fi, 4G, hotel, intercontinental, bandwidth drop,
-      UDP blocked, outage) with pass/fail SLOs
-- [x] Auto-throttle: step resolution with the bandwidth estimate and viewer health, text first
-      (`adapt.rs`; lab evaluation pending)
+- [x] Network lab: Docker + netem profiles (Wi-Fi, 4G, hotel, intercontinental, bandwidth drop,
+      UDP blocked, outage) with pass/fail SLOs; misses are explained in `research/m15-results.md`
+- [x] Auto-throttle, text first: frame rate before resolution, jump on severe drops, and a
+      bitrate cap from the viewer's goodput (`adapt.rs`; evaluated in the lab)
+- [ ] Live bitrate control without republishing (upstream SDK API, or a small SDK patch) and FEC
+      for lossy links
 - [x] Real-world runs on Wi-Fi: Mac → Windows, H.264 decodes on Windows, quality holds (SSIM
       0.9996), tails come from Wi-Fi link stalls (`research/m15-results.md`)
 - [ ] Real-world runs on Ethernet, with AWDL off, and under Network Link Conditioner

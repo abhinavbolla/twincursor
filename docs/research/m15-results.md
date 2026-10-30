@@ -131,9 +131,8 @@ Findings:
    The ranking from one machine holds across a real network.
 2. **The Wi-Fi tail is the network, and the stats show it.** Every multi-second RTT max came
    with 0% loss while the link RTT spiked (612 ms, 964 ms, 2.5 s). In the windowed run the ICE
-   For example, in the windowed run the ICE link RTT (STUN consent checks) itself reached 2.5 s. Those are Wi-Fi
-   stalls (power save, scanning or AWDL), not encode or decode. 64 lossy ticks were lost in
-   the stall.
+   link RTT (STUN consent checks) itself reached 2.5 s. Those are Wi-Fi stalls (power save,
+   scanning or AWDL), not encode or decode. 64 lossy ticks were lost in the stall.
 3. **ICE sometimes settles on TCP.** One run connected over `prflx tcp`. Its p95 and max (147 ms
    and 3 s) show TCP's head-of-line blocking. The HUD shows the path, so a user can see when
    this happens. Worth investigating: why UDP lost that ICE race on a LAN.
@@ -149,3 +148,52 @@ Findings:
 Still to run, and each needs a hand from you: Mac on Ethernet instead of Wi-Fi; AWDL off
 (`sudo ifconfig awdl0 down`, then `up` afterwards); and Network Link Conditioner profiles on
 the Mac. These separate Wi-Fi stalls from everything else.
+
+## Network lab (PR 4)
+`bench/netlab/` (profiles and SLOs in ARCHITECTURE.md): pattern sharer, headless viewer and
+LiveKit in Docker on this Mac, 60 s per run. **VP8 software**, because Linux in Docker has no
+hardware encoder. That makes the lab harsher than the product, since the Mac's H.264 sends
+about 4x fewer bits. Final adapter: frame rate first, jump on severe drops, bitrate cap.
+
+| profile | fps | RTT p50 | RTT p95 | SSIM p5 | loss | freezes / min | longest stall | SLO |
+|---|---|---|---|---|---|---|---|---|
+| lan | 50 | 8 ms | 78 ms | 0.983 | 0% | 0 | 0 s | miss (p95) |
+| wifi-good | 52 | 13 ms | 62 ms | 0.982 | 0.1% | 0 | 0 s | pass |
+| wifi-bad | 52 | 33 ms | 143 ms | 0.986 | 0.3% | 0 | 0 s | pass |
+| 4g | 51 | 78 ms | 244 ms | 0.984 | 0.5% | 51 | 0 s | miss (freezes) |
+| hotel, adapt off | 0 | 594 ms | 594 ms | 0.977 | 47% | 0 | 59 s | (loss > 2%) |
+| **hotel, adapt on** (2 runs) | **13, 19** | 113, 155 ms | 348, 457 ms | 0.979, 0.974 | 11%, 8% | 63, 52 | 15 s, 15 s | (loss > 2%) |
+| intercontinental (150 ms) | 51 | 159 ms | 292 ms | 0.983 | 0% | 0 | 0 s | pass |
+| sharer uplink 3 Mbit, adapt off | 28 | 116 ms | 1024 ms | 0.977 | 0% | 6 | 2 s | miss (freezes) |
+| sharer uplink 3 Mbit, adapt on | 23 | 52 ms | 623 ms | 0.976 | 0.2% | 6 | 1 s | miss (freezes) |
+| bandwidth drop, adapt off | 38 | 13 ms | 410 ms | 0.979 | 0.1% | 10 | **7 s** | **fail** |
+| **bandwidth drop, adapt on** (2 runs) | 38, 37 | 17, 43 ms | 533, 247 ms | 0.988, 0.984 | 0.1–0.3% | 11, 2 | **0 s, 2 s** | pass |
+| UDP blocked (ICE over TCP) | 49 | 8 ms | 78 ms | 0.982 | 0% | 0 | 0 s | pass |
+| 5 s outage | 45 | 16 ms | 190 ms | 0.985 | 0% | 1 | 6 s | pass |
+
+Findings:
+1. **Recovery works.** After a 5 s outage, video is back about 1 s after the network returns.
+   With UDP blocked, ICE falls back to TCP and the call still runs at 49 fps.
+2. **The adapter turns a bandwidth drop from a 7–10 s stall into 0–2 s.** It jumps straight to
+   720p 30 fps instead of walking down.
+3. **A congested viewer downlink needs a bitrate cap, not just a lower level.** Into a 3 Mbit,
+   2%-loss downlink, VP8 kept sending 4–5.6 Mbps at any frame rate or resolution, because the
+   encoder spends whatever target the sharer's uplink estimate allows. The viewer decoded 0
+   fps, and the SFU still reported "allocation: optimal".
+   - Hand-set caps: 2.5 Mbps still lost 21%; 1.5 Mbps ran at 18 fps with no stall.
+   - The adapter now halves the max bitrate to the viewer's goodput when it overflows. It does
+     this by republishing, because the SDK has no live bitrate API. That brings hotel from
+     0 fps to 13–19 fps.
+   - The 15 s stall left is the start-up before the cap: detection, republish, and keyframe
+     recovery.
+   - H.264 (OpenH264 at 30 fps) on the same profile ran at 28 fps with no stall: its actual
+     bitrate is low.
+4. **Remaining misses are VP8-in-Linux effects, not adaptation:**
+   - lan p95 is 78 ms: software VP8 tails. On the Mac with hardware H.264, p95 is 29–35 ms.
+   - 4G has ~50 freezes a minute: 0.5% loss at VP8's packet rate, with a 50 ms RTT for each
+     NACK. H.264's ~4x lower rate means ~4x fewer loss events. FEC would help more, but the
+     SDK doesn't expose it.
+5. **Lab pitfalls we hit, for anyone extending it:**
+   - netem's `rate` plus jitter tail-drops far more than configured, so rates go through tbf.
+   - The report must match labels exactly (`4g-vp8-1080` vs `4g-vp8-1080-noadapt`).
+   - Linux builds need clang 21+ and an explicit GLib/GIO link.
