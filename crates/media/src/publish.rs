@@ -1,8 +1,7 @@
 //! Sharer: publishes captured frames as a screen-share track and stamps latency markers.
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use livekit::options::{TrackPublishOptions, VideoCodec, VideoEncoding};
@@ -64,13 +63,69 @@ pub struct ShareStats {
     pub sent: AtomicU64,
     pub resent: AtomicU64,
     pub ticks: AtomicU64,
+    /// Captured frames replaced by a newer one before the encoder took them.
+    pub dropped: AtomicU64,
     /// Latest network stats of the publishing connection.
     pub net: Mutex<Option<NetSnapshot>>,
 }
 
-enum Msg {
+/// Hands frames and tick wake-ups to the send loop. It holds only the newest frame: when the
+/// encoder falls behind, older frames are dropped rather than queued, because every queued
+/// frame adds a frame time (16 ms at 60 fps) of latency.
+#[derive(Default)]
+struct Mailbox {
+    state: Mutex<MailState>,
+    ready: Condvar,
+}
+
+#[derive(Default)]
+struct MailState {
+    frame: Option<Frame>,
+    tick: bool,
+    closed: bool,
+}
+
+enum Mail {
     Frame(Frame),
-    Tick,
+    /// A tick arrived, or nothing did for a while: re-send the last frame.
+    Resend,
+    Closed,
+}
+
+impl Mailbox {
+    /// Leaves `frame` for the send loop. Returns `true` if it replaced one never sent.
+    fn put_frame(&self, frame: Frame) -> bool {
+        let replaced = self.state.lock().unwrap().frame.replace(frame).is_some();
+        self.ready.notify_one();
+        replaced
+    }
+
+    fn tick(&self) {
+        self.state.lock().unwrap().tick = true;
+        self.ready.notify_one();
+    }
+
+    fn close(&self) {
+        self.state.lock().unwrap().closed = true;
+        self.ready.notify_one();
+    }
+
+    /// Waits up to `timeout` for a frame or a tick. A new frame wins over a tick, since it
+    /// gets the latest marker stamped anyway.
+    fn wait(&self, timeout: std::time::Duration) -> Mail {
+        let state = self.state.lock().unwrap();
+        let (mut state, _) = self
+            .ready
+            .wait_timeout_while(state, timeout, |s| {
+                s.frame.is_none() && !s.tick && !s.closed
+            })
+            .unwrap();
+        if state.closed {
+            return Mail::Closed;
+        }
+        state.tick = false;
+        state.frame.take().map_or(Mail::Resend, Mail::Frame)
+    }
 }
 
 /// Connects, publishes, and streams frames until `shutdown` resolves.
@@ -106,7 +161,7 @@ pub async fn run(
         .await?;
     tracing::info!(codec = ?config.codec, "screen track published");
 
-    let (tx, rx) = mpsc::sync_channel::<Msg>(4);
+    let mailbox = Arc::new(Mailbox::default());
     let latest_tick = Arc::new(AtomicU32::new(NO_TICK));
     // Size frames are sent at; the adapter lowers it, the send loop scales to it.
     let send_size = Arc::new(Mutex::new((config.capture.width, config.capture.height)));
@@ -126,9 +181,10 @@ pub async fn run(
         let stamp = config.stamp_markers;
         let snapshots = config.snapshots.clone();
         let send_size = send_size.clone();
+        let mailbox = mailbox.clone();
         std::thread::spawn(move || {
             send_loop(
-                &rx,
+                &mailbox,
                 &source,
                 &latest_tick,
                 &stats,
@@ -139,12 +195,13 @@ pub async fn run(
         })
     };
     let _capture = {
-        let tx = tx.clone();
+        let mailbox = mailbox.clone();
         let stats = stats.clone();
         capture::start(config.backend, config.capture, move |frame| {
             stats.captured.fetch_add(1, Ordering::Relaxed);
-            // Drop the frame rather than queue it if the sender falls behind.
-            let _ = tx.try_send(Msg::Frame(frame));
+            if mailbox.put_frame(frame) {
+                stats.dropped.fetch_add(1, Ordering::Relaxed);
+            }
         })?
     };
 
@@ -189,7 +246,7 @@ pub async fn run(
                         if let Some(id) = wire::decode_tick(&payload) {
                             latest_tick.store(id, Ordering::Relaxed);
                             stats.ticks.fetch_add(1, Ordering::Relaxed);
-                            notify(&tx, Msg::Tick);
+                            mailbox.tick();
                         }
                     }
                 }
@@ -204,7 +261,7 @@ pub async fn run(
     }
 
     drop(_capture);
-    drop(tx);
+    mailbox.close();
     let _ = sender.join();
     room.close().await?;
     Ok(())
@@ -223,12 +280,8 @@ async fn send_stats(room: &Room, snap: &NetSnapshot) {
     }
 }
 
-fn notify(tx: &SyncSender<Msg>, msg: Msg) {
-    let _ = tx.try_send(msg);
-}
-
 fn send_loop(
-    rx: &mpsc::Receiver<Msg>,
+    mailbox: &Mailbox,
     source: &NativeVideoSource,
     latest_tick: &AtomicU32,
     stats: &ShareStats,
@@ -240,13 +293,13 @@ fn send_loop(
     let mut last: Option<Frame> = None;
     let mut last_snapshot = NO_TICK;
     loop {
-        let fresh = match rx.recv_timeout(IDLE_RESEND) {
-            Ok(Msg::Frame(frame)) => {
+        let fresh = match mailbox.wait(IDLE_RESEND) {
+            Mail::Frame(frame) => {
                 last = Some(frame);
                 true
             }
-            Ok(Msg::Tick) | Err(RecvTimeoutError::Timeout) => false,
-            Err(RecvTimeoutError::Disconnected) => return,
+            Mail::Resend => false,
+            Mail::Closed => return,
         };
         let Some(frame) = last.as_mut() else { continue };
         let (w, h) = *send_size.lock().unwrap();
@@ -331,5 +384,62 @@ fn stamp_marker(buffer: &mut FrameBuffer, id: u32) {
                 marker::neutral_chroma_planar(v, sv as usize);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use livekit::webrtc::video_frame::I420Buffer;
+    use std::time::Duration;
+
+    fn frame(id: u64) -> Frame {
+        Frame {
+            buffer: FrameBuffer::I420(I420Buffer::new(16, 16)),
+            captured_at_us: id,
+        }
+    }
+
+    #[test]
+    fn mailbox_keeps_only_the_newest_frame() {
+        let m = Mailbox::default();
+        assert!(!m.put_frame(frame(1)));
+        assert!(m.put_frame(frame(2)), "replaced an unsent frame");
+        match m.wait(Duration::from_millis(1)) {
+            Mail::Frame(f) => assert_eq!(f.captured_at_us, 2),
+            _ => panic!("expected the newest frame"),
+        }
+        assert!(
+            matches!(m.wait(Duration::from_millis(1)), Mail::Resend),
+            "timeout"
+        );
+    }
+
+    #[test]
+    fn mailbox_tick_wakes_and_frame_wins() {
+        let m = Mailbox::default();
+        m.tick();
+        assert!(matches!(m.wait(Duration::from_secs(5)), Mail::Resend));
+        m.tick();
+        m.put_frame(frame(3));
+        assert!(matches!(m.wait(Duration::from_secs(5)), Mail::Frame(_)));
+        assert!(
+            matches!(m.wait(Duration::from_millis(1)), Mail::Resend),
+            "tick consumed"
+        );
+    }
+
+    #[test]
+    fn mailbox_wakes_a_waiting_thread() {
+        let m = Arc::new(Mailbox::default());
+        let waiter = {
+            let m = m.clone();
+            std::thread::spawn(move || matches!(m.wait(Duration::from_secs(5)), Mail::Frame(_)))
+        };
+        std::thread::sleep(Duration::from_millis(20));
+        m.put_frame(frame(4));
+        assert!(waiter.join().unwrap());
+        m.close();
+        assert!(matches!(m.wait(Duration::from_secs(5)), Mail::Closed));
     }
 }

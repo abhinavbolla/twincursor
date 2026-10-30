@@ -40,6 +40,8 @@ Goal: prove the picture is sharp and stays usable on real networks, and show the
 Done when: the lab passes its SLOs (or misses are explained) and the real-world runs are documented.
 
 ## M2: Remote control (macOS)
+- [ ] First: measure the data-channel delay viewer → sharer on its own. Latency ticks show a
+      run-to-run 10–20 ms swing there that the video path doesn't have (`research/m15-results.md`)
 - [ ] `crates/protocol`: input event messages
 - [ ] Viewer captures mouse, keyboard, and scroll and sends them over the data channel
 - [ ] Sharer injects them with enigo; Accessibility permission check

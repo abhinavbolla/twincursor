@@ -91,3 +91,21 @@ Smoke test on one Mac: pattern at 1440p with H.264 and the bitrate capped at 1 M
 
 Lab evaluation on shaped networks (bandwidth drop, hotel, 4G; adapt on vs off) comes with the
 network lab (PR 4).
+
+## Sharer frame hand-off: queue vs newest-frame mailbox
+The sharer handed frames to the encoder thread through a 4-slot queue. When the encoder falls
+behind, every queued frame adds ~16 ms. It's now a mailbox that keeps only the newest frame
+and counts the frames it drops. A/B: headless pattern, H.264 1080, 4 alternating runs of 30 s.
+
+| hand-off | RTT p50 by run | RTT p95 by run | one-way p50 |
+|---|---|---|---|
+| 4-slot queue | 18.1, 18.3, 10.2, 14.0 ms | 69, 66, 21, 33 ms | 11–14 ms |
+| mailbox | 14.7, 9.0, 22.6, 20.6 ms | 47, 41, 28, 30 ms | 11–14 ms |
+
+- p50 doesn't change, and p95 is a little lower and steadier (median 35 vs 49 ms), but noisy.
+- **The run-to-run p50 swing (~10 vs ~20 ms) is not in the video path.** One-way latency
+  (capture → decode) is steady at 11–14 ms in every run. The swing is in the tick's path:
+  viewer → SFU → sharer over a LiveKit data packet.
+- This matters for M2, because remote-control input will take the same path. Measure the
+  data-channel one-way delay on its own (reliable vs lossy, ordered vs not) before building
+  input on it.
