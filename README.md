@@ -18,7 +18,8 @@ behind your hands. TwinCursor is built around three ideas:
 - **Latency is the product.** All media runs in native Rust rather than a webview, and every change
   to that path has to report its effect on latency.
 - **You stay in control of your machine.** A guest can only control your computer after you grant
-  it. You can always see who is controlling it, and revoke it instantly with a global hotkey.
+  it. You can always see who is controlling it, and revoke it instantly with a global hotkey. The
+  [threat model](docs/threat-model.md) covers what's protected and what isn't.
 - **It's yours to run.** It's AGPL-3.0 and self-hostable, and Linux will be a first-class platform.
 
 ## What works today

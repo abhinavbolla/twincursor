@@ -17,6 +17,10 @@ Notable changes to TwinCursor. The format follows
 - Measurement tools: latency markers, text quality against a synthetic code editor, input path
   pings, and a Docker network lab with pass/fail targets.
 
+### Security
+
+- Published a threat model covering consent, known limits and the supply chain.
+
 ### Fixed
 
 - Frame pacing no longer drops frames at the full frame rate.
