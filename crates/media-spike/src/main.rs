@@ -1,4 +1,4 @@
-//! `tc-spike`: the M1 media spike. `share` publishes this Mac's screen, `view` shows it in a
+//! `tc-spike`: the media development tool. `share` publishes this Mac's screen, `view` shows it in a
 //! native window and measures latency. Start `livekit-server --dev` first.
 
 mod hud;

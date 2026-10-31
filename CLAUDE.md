@@ -7,6 +7,7 @@ Read before larger work:
 - `docs/PRODUCT.md`: what we're building and for whom
 - `docs/ARCHITECTURE.md`: how the pieces fit together, and why
 - `docs/ROADMAP.md`: milestones; work on the current one only
+- `docs/performance.md`: current numbers and how to reproduce them
 - `docs/research/hopp-lessons.md`: what we learned from Hopp's public engineering blog
 
 ## Hard rules
@@ -22,7 +23,8 @@ Read before larger work:
 4. **Remote control is consent-based.** The sharer must explicitly grant control, see who is
    controlling, and be able to revoke it instantly with a global hotkey. Never weaken this.
 5. New dependencies need a one-line justification in the PR description. Licenses must be
-   AGPL-compatible (MIT, Apache-2.0, BSD, MPL-2.0, LGPL, GPL-3.0, AGPL-3.0).
+   AGPL-compatible (MIT, Apache-2.0, BSD, ISC, Zlib, Unicode-3.0, MPL-2.0, LGPL, GPL-3.0, AGPL-3.0).
+   `cargo deny` enforces this in CI (`deny.toml`).
 
 ## Repo layout (planned; create as milestones need them)
 
@@ -51,10 +53,12 @@ Fill these in as code lands; keep them accurate.
   and `target/release/tc-spike view` (see `--help`; `S` toggles the stats HUD)
 - Quality without windows or screen capture: `tc-spike share --capture pattern` +
   `tc-spike view --headless --measure-quality` (SSIM/PSNR vs the synthetic pattern)
+- Input path: `tc-spike view --headless --measure-input` (reliable vs lossy data channels)
 - Latency matrix: `bench/run-matrix.sh [config ...]` → `bench/results/*.json` (git-ignored)
 - Network lab (Docker): `bench/netlab/run.sh [--build] [profile ...]`, then
   `bench/netlab/report.sh` (profiles and SLOs in ARCHITECTURE.md)
-- Desktop dev: _TBD (M4)_
+- Releases: `docs/RELEASING.md`; a `v*` tag builds archives and a draft release
+- Desktop dev: _TBD_
 - CI: `.github/workflows/ci.yml` runs fmt, clippy and tests on `macos-26` for every PR and
   push to `main`. Keep it green; run the same three commands locally before pushing.
 - Building needs **Xcode 26** (macOS 26 SDK): `screencapturekit`'s `apple-metal` Swift bridge

@@ -36,6 +36,7 @@ for label in $(ls -1 *.json 2>/dev/null | sed -E 's/-[0-9]+\.json$//' | sort -u)
     | .report.ssim as $ssim
     | (if ($profile == "outage-5s") then ($stall <= 8)
        elif ($profile == "bandwidth-drop") then ($stall <= 3)
+       elif ($profile | startswith("stall-")) then ($stall <= 6)
        elif ($profile == "udp-blocked") then ($rtt != null)
        elif ($profile == "lan" or $profile == "wifi-good") then
          ($rtt != null and $rtt.p50 <= $net + 25 and $rtt.p95 <= $net + 60
@@ -45,3 +46,19 @@ for label in $(ls -1 *.json 2>/dev/null | sed -E 's/-[0-9]+\.json$//' | sort -u)
     | "| \($label) | \(.avg_fps | floor) | \(r($rtt.p50)) | \(r($rtt.p95)) | \(r4($ssim.p5)) | \(r4(.report.ssim_fast_scroll.p5)) | \(r($loss))% | \($freezes) | \($stall) s | \([.net[] | .local.path // empty] | last // "-") | \(if $ok then "pass" else "**FAIL**" end) |"
   ' "$f"
 done
+
+# Input path, for runs made with VIEW_FLAGS=--measure-input.
+rows=$(for label in $(ls -1 *.json 2>/dev/null | sed -E 's/-[0-9]+\.json$//' | sort -u); do
+  f=$(ls -1t | grep -E "^${label}-[0-9]+\.json$" | head -1)
+  jq -r --arg label "$label" '
+    def r(x): if x == null then "-" else (x * 10 | round / 10 | tostring) end;
+    (.report.input // [])[]
+    | "| \($label) | \(.stream) | \(r(.one_way.p50)) | \(r(.one_way.p95)) | \(r(.one_way.max)) | \(r(.rtt.p50)) | \(r(.rtt.p95)) | \(.sent - .received)/\(.sent) | \(.out_of_order) |"
+  ' "$f"
+done)
+if [[ -n $rows ]]; then
+  echo
+  echo "| run | stream | one-way p50 | p95 | max | RTT p50 | RTT p95 | lost | out of order |"
+  echo "|---|---|---|---|---|---|---|---|---|"
+  echo "$rows"
+fi

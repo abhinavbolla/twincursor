@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "M1 spike: share a screen, view it, measure latency"
+description = "Development tool: share a screen, view it, and measure latency and quality"
 publish = false
 
 [[bin]]

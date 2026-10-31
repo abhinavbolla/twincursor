@@ -1,6 +1,8 @@
 # TwinCursor: Architecture
 
-Status: draft. Validate each decision with a spike before building on it.
+Status: living document. The app shell, audio, remote control and server below are planned; the
+media path and measurement tools exist today. Validate each decision with a spike before
+building on it.
 
 ## Overview
 
@@ -28,9 +30,9 @@ Status: draft. Validate each decision with a spike before building on it.
   into audio glitches, browser codec limits, no access to frame buffers, and no WebRTC in the
   default WebKitGTK build (which blocks Linux). They are now migrating media to Rust. We start there.
 - The shared screen is shown in a **native window** we render ourselves. That also lets us
-  apply render-side sharpening and upscaling. M1 uses winit + softbuffer (CPU conversion),
+  apply render-side sharpening and upscaling. Today it uses winit + softbuffer (CPU conversion),
   which costs about 9–11 ms per frame. The real viewer should render the decoder's
-  CVPixelBuffer with Metal/wgpu (see `research/m1-results.md`).
+  CVPixelBuffer with Metal/wgpu.
 - Capture on macOS uses ScreenCaptureKit directly (ADR 0001).
 
 ### 2. WebRTC through LiveKit (self-hostable SFU)
@@ -41,7 +43,8 @@ Status: draft. Validate each decision with a spike before building on it.
 - One LiveKit participant per person (screen, camera, and audio are tracks, not separate participants).
 
 ### 3. Encoding: tune for latency, choose per platform
-Codecs are configurable (`tc-spike share --codec`). M1 measurements (`research/m1-results.md`):
+Codecs are configurable (`tc-spike share --codec`). Measurements are in
+[performance.md](performance.md):
 - **H.264 (hardware) is the default** (ADR 0002). It matches VP8's latency on macOS at about
   1/5 of the sharer's CPU. Its text is measurably sharper (SSIM p5 0.9995 vs 0.98), and it
   uses ~4x less bandwidth.
@@ -57,13 +60,17 @@ Codecs are configurable (`tc-spike share --codec`). M1 measurements (`research/m
   on its monitor (e.g. 1440p onto a 1080p screen).
 - `is_screencast` showed no frame-rate cap and no latency difference.
 
-Encoder tuning (Hopp's rate-control and buffer settings, `research/hopp-lessons.md`) needs a
+Encoder tuning (Hopp's rate-control and buffer settings, [research note](research/hopp-lessons.md)) needs a
 custom libwebrtc build. Do it only if real-network numbers call for it.
 
 ### 4. Remote control over a data channel
 - The guest's viewer captures mouse, keyboard and scroll events and normalizes coordinates
-  to the shared surface (0..1). It sends them over a reliable, ordered LiveKit data channel
-  using `crates/protocol` messages.
+  to the shared surface (0..1). It sends them over LiveKit data channels using
+  `crates/protocol` messages:
+  - clicks, keys and scrolls on the reliable, ordered channel: they must never drop or reorder;
+  - pointer moves on the lossy channel: a lost move is replaced by the next one, and it avoids
+    retransmission tails. Each click carries its own position, so it can't land in the wrong
+    place by overtaking a move. ADR 0003 has the reasoning, including stale moves after a stall.
 - The sharer validates the events (control granted? within the shared display?) and injects
   them with `enigo` (macOS CGEvent, Windows SendInput, Linux X11/libei).
 - The sharer gets a transparent, click-through, always-on-top overlay window that draws the
@@ -80,8 +87,11 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
 
 ## Measuring latency
 
-Built in M1 (`crates/media/src/{marker,latency}.rs`, `tc-spike`, `bench/run-matrix.sh`):
-1. The viewer sends a tick (lossy data packet) every 250 ms.
+Built into `crates/media/src/{marker,latency}.rs`, `tc-spike` and `bench/run-matrix.sh`:
+1. The viewer sends a tick (lossy data packet) every 247 ms. The interval must not be a multiple
+   of the frame time. At 250 ms (15 frames at 60 fps) every tick lands at the same point of the
+   frame clock, so one run samples a single point of the real 14–33 ms spread and p50 jumps
+   between runs.
 2. The sharer stamps the latest tick id into outgoing frames as a black/white block marker in
    the top-left of the luma plane (4 guard bits + a 20-bit id). It re-sends the last frame
    immediately when a tick arrives.
@@ -90,13 +100,19 @@ Built in M1 (`crates/media/src/{marker,latency}.rs`, `tc-spike`, `bench/run-matr
 4. Each frame also carries the sharer's capture timestamp in the RTP packet trailer
    (`PTF_USER_TIMESTAMP`). **One-way** = capture → presented. Valid on one machine or with
    synced clocks.
-5. Every run logs p50/p95/max and writes JSON to `bench/results/`. Use Network Link
-   Conditioner (macOS) to simulate poor networks.
+5. Every run logs p50/p95/max and writes JSON to `bench/results/`.
 
 Limitation: the marker is stamped after capture, so the app redraw and part of the capture
 delay aren't in RTT. A planned `--marker screen` mode fixes that.
 
 Every media-path PR reports before and after numbers (`bench/run-matrix.sh`).
+
+`tc-spike view --measure-input` measures the data path input takes, with pings on both data
+channels that the sharer echoes. It reports the round trip and, where both ends share a clock
+(one machine, the network lab), the one-way delay. Use one-way for input: the round trip's
+return leg shares the viewer's downlink with the video.
+
+**Input SLO:** one-way p50 ≤ network delay + 15 ms and p95 ≤ network delay + 40 ms on clean links.
 
 ## Measuring quality
 
@@ -130,7 +146,7 @@ with a fixed IP on a private bridge. Each profile's conditions are applied with 
 - the viewer's downlink is shaped on the SFU's interface, filtered to the viewer's IP.
 
 Run it with `bench/netlab/run.sh [--build] [profile ...]` (`CODEC`, `RES`, `DURATION`,
-`ADAPT=off`, `SHARE_FLAGS`, `TAG`), and summarise with `bench/netlab/report.sh`.
+`ADAPT=off`, `SHARE_FLAGS`, `VIEW_FLAGS`, `TAG`), and summarise with `bench/netlab/report.sh`.
 
 Lab notes:
 - Rate limits use a token bucket (tbf) under netem. netem's own `rate` combined with jitter
@@ -152,6 +168,7 @@ checked on real machines instead.
 | bandwidth-drop | sharer uplink 10 → 1.5 → 10 Mbit, 20 s each |
 | udp-blocked | viewer drops all outgoing UDP (ICE must use TCP) |
 | outage-5s | viewer cut off completely for 5 s at t = 25 s |
+| stall-0.6s, stall-1.2s, stall-2.5s | viewer cut off both ways, every 15 s, three times |
 
 **SLOs** (checked by `report.sh`; "network RTT" is the RTT the profile adds):
 - lan, wifi-good: RTT p50 ≤ network RTT + 25 ms; p95 ≤ network RTT + 60 ms; SSIM p5 ≥ 0.97;
@@ -159,6 +176,7 @@ checked on real machines instead.
 - ≤ 2% average loss: at most one freeze a minute.
 - bandwidth-drop: no stall longer than 3 s.
 - outage-5s: video back within 3 s of the network returning (longest stall ≤ 8 s).
+- stall-*: video back within 3 s of the network returning (longest stall ≤ 6 s).
 - udp-blocked: the call connects and measures latency.
 
 ## Auto-throttle (adaptive frame rate and resolution)
@@ -230,4 +248,4 @@ and reports it as `publisher_stats`; `subscriber_stats` is then empty. The polle
 
 ## Platform plan
 
-macOS first (M1–M5), Linux next (Wayland via PipeWire capture and libei input, plus X11), Windows after that.
+macOS first, Linux next (Wayland via PipeWire capture and libei input, plus X11), Windows after that.

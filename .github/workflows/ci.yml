@@ -11,9 +11,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Prebuilt libwebrtc is unpacked here and used instead of the LiveKit SDK's own download
-  # (which re-fetches ~277 MB per build profile and fails on flaky connections).
-  LK_CUSTOM_WEBRTC: ${{ github.workspace }}/.libwebrtc/mac-arm64-release
 
 jobs:
   rust:
@@ -37,31 +34,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Resolve libwebrtc tag
-        id: webrtc
-        run: |
-          cargo fetch --locked
-          tag=$(grep -h 'pub const WEBRTC_TAG' ~/.cargo/registry/src/*/webrtc-sys-build-*/src/lib.rs \
-            | sed -E 's/.*"(.*)".*/\1/' | sort -u)
-          [ "$(echo "$tag" | wc -l)" -eq 1 ] || { echo "expected one WEBRTC_TAG, got: $tag"; exit 1; }
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-
-      - name: Cache libwebrtc
-        id: webrtc-cache
-        uses: actions/cache@v4
+      - uses: ./.github/actions/setup-libwebrtc
         with:
-          path: .libwebrtc/webrtc.zip
-          key: libwebrtc-mac-arm64-release-${{ steps.webrtc.outputs.tag }}
-
-      - name: Download libwebrtc
-        if: steps.webrtc-cache.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p .libwebrtc
-          curl -fL --retry 10 --retry-all-errors -C - -o .libwebrtc/webrtc.zip \
-            "https://github.com/livekit/rust-sdks/releases/download/${{ steps.webrtc.outputs.tag }}/webrtc-mac-arm64-release.zip"
-
-      - name: Unpack libwebrtc
-        run: unzip -q .libwebrtc/webrtc.zip -d .libwebrtc && ls "$LK_CUSTOM_WEBRTC"
+          triple: mac-arm64-release
 
       - name: Clippy
         run: cargo clippy --locked --release --workspace --all-targets -- -D warnings
@@ -74,3 +49,50 @@ jobs:
           v=$(grep '^rust-version' Cargo.toml | cut -d'"' -f2)
           rustup toolchain install "$v" --profile minimal
           cargo +"$v" build --locked --release -p twincursor-media-spike
+
+  # The viewer runs on Windows too, so make sure it keeps building there.
+  windows-viewer:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: ./.github/actions/setup-libwebrtc
+        with:
+          triple: win-x64-release
+
+      - name: Build
+        run: cargo build --locked --release -p twincursor-media-spike
+
+      - name: Smoke test
+        run: target/release/tc-spike.exe view --help
+
+  # Enforces the license rule in CONTRIBUTING.md, and that crates only come from crates.io.
+  dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses sources
+
+  # New advisories appear without any change here, so this reports but doesn't block a PR.
+  advisories:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
