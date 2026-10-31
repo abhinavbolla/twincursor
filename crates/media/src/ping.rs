@@ -1,7 +1,8 @@
 //! Measures the data-packet path remote-control input takes: viewer → SFU → sharer.
 //!
 //! The viewer sends pings and the sharer echoes them at once, so the round trip needs only the
-//! viewer's clock. There are four streams: both data channels (reliable and lossy), each
+//! viewer's clock. Where both ends share a clock (one machine, the network lab) it also gives
+//! the one-way delay, which is what input feels. There are four streams: both data channels (reliable and lossy), each
 //! answered from the sharer's main loop or from a task of its own. The main loop also awaits
 //! stats polls and republishing, so comparing the routes shows what that costs.
 
@@ -16,6 +17,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
+use crate::capture::wall_clock_us;
 use crate::latency::Recorder;
 use crate::stats::{summarize, Summary};
 use crate::wire::{self, Ping};
@@ -83,6 +85,7 @@ struct StreamLog {
     last_id: u32,
     out_of_order: u64,
     rtt: Vec<f64>,
+    one_way: Vec<f64>,
     send_await: Vec<f64>,
     echo_await: Vec<f64>,
 }
@@ -96,6 +99,8 @@ pub struct StreamReport {
     pub out_of_order: u64,
     /// Ping sent → echo received.
     pub rtt: Option<Summary>,
+    /// Ping sent → reached the sharer. Only meaningful when both ends share a clock.
+    pub one_way: Option<Summary>,
     /// Time the viewer spent in `publish_data`.
     pub send_await: Option<Summary>,
     /// Time the sharer spent in `publish_data` for its echoes.
@@ -127,6 +132,10 @@ impl PingLog {
         log.last_id = log.last_id.max(ping.id);
         log.rtt
             .push(at.saturating_duration_since(sent).as_secs_f64() * 1000.0);
+        if ping.arrived_at_us >= ping.sent_at_us {
+            log.one_way
+                .push((ping.arrived_at_us - ping.sent_at_us) as f64 / 1000.0);
+        }
         // The sharer reports its previous echo: it can't know this one's time yet.
         if ping.echo_await_us > 0 {
             log.echo_await.push(f64::from(ping.echo_await_us) / 1000.0);
@@ -145,6 +154,7 @@ impl PingLog {
                     received: log.rtt.len(),
                     out_of_order: log.out_of_order,
                     rtt: summarize(&log.rtt),
+                    one_way: summarize(&log.one_way),
                     send_await: summarize(&log.send_await),
                     echo_await: summarize(&log.echo_await),
                 })
@@ -191,6 +201,8 @@ async fn send_pings(
                 id,
                 stream,
                 echo_await_us: 0,
+                sent_at_us: wall_clock_us(),
+                arrived_at_us: 0,
             }),
             topic: Some(wire::PING_TOPIC.into()),
             reliable: stream.reliable,
@@ -234,6 +246,7 @@ pub async fn answer(
     let Some(mut ping) = wire::decode_ping(payload).filter(|p| p.stream.route == route) else {
         return;
     };
+    ping.arrived_at_us = wall_clock_us();
     ping.echo_await_us = last_await_us.load(Ordering::Relaxed);
     let packet = DataPacket {
         payload: wire::encode_ping(ping),
@@ -286,6 +299,8 @@ mod tests {
             id,
             stream,
             echo_await_us,
+            sent_at_us: 1_000_000,
+            arrived_at_us: 1_004_000,
         }
     }
 
@@ -307,6 +322,20 @@ mod tests {
         assert_eq!(report[1].stream, "lossy/task");
         assert_eq!(report[1].rtt.unwrap().p50, 10.0);
         assert_eq!(report[1].echo_await.unwrap().p50, 2.0);
+        assert_eq!(report[1].one_way.unwrap().p50, 4.0);
+    }
+
+    #[test]
+    fn skips_one_way_when_clocks_disagree() {
+        let t0 = Instant::now();
+        let mut log = PingLog::default();
+        log.sent(LOSSY, 1, t0);
+        let mut skewed = echo(1, LOSSY, 0);
+        skewed.arrived_at_us = skewed.sent_at_us - 1;
+        log.echoed(skewed, t0 + Duration::from_millis(5));
+        let report = log.report();
+        assert_eq!(report[0].one_way, None);
+        assert_eq!(report[0].received, 1);
     }
 
     #[test]

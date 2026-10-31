@@ -343,9 +343,10 @@ fn log_report(
     }
     for stream in &report.input {
         tracing::info!(
-            "  input {}: RTT {} | lost {}/{} | out of order {}",
+            "  input {}: RTT {} | one-way {} | lost {}/{} | out of order {}",
             stream.stream,
             fmt(stream.rtt),
+            fmt(stream.one_way),
             stream.sent - stream.received as u64,
             stream.sent,
             stream.out_of_order,

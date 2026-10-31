@@ -22,6 +22,10 @@ pub struct Ping {
     pub stream: Stream,
     /// On echoes: how long the sharer's previous echo took to send, in µs (0 = unknown).
     pub echo_await_us: u32,
+    /// Viewer's wall clock when it sent the ping, in µs.
+    pub sent_at_us: u64,
+    /// On echoes: the sharer's wall clock when the ping reached it, in µs.
+    pub arrived_at_us: u64,
 }
 
 pub fn encode_tick(id: u32) -> Vec<u8> {
@@ -38,6 +42,8 @@ pub fn encode_ping(ping: Ping) -> Vec<u8> {
     out[4] = u8::from(ping.stream.reliable);
     out[5] = u8::from(ping.stream.route == Route::Task);
     out[6..10].copy_from_slice(&ping.echo_await_us.to_le_bytes());
+    out[10..18].copy_from_slice(&ping.sent_at_us.to_le_bytes());
+    out[18..26].copy_from_slice(&ping.arrived_at_us.to_le_bytes());
     out
 }
 
@@ -56,6 +62,8 @@ pub fn decode_ping(payload: &[u8]) -> Option<Ping> {
             },
         },
         echo_await_us: u32::from_le_bytes(payload[6..10].try_into().ok()?),
+        sent_at_us: u64::from_le_bytes(payload[10..18].try_into().ok()?),
+        arrived_at_us: u64::from_le_bytes(payload[18..26].try_into().ok()?),
     })
 }
 
@@ -89,6 +97,8 @@ mod tests {
                 id: 0xdead_beef,
                 stream,
                 echo_await_us: 1234,
+                sent_at_us: 1_793_000_000_000_000,
+                arrived_at_us: 1_793_000_000_001_500,
             };
             assert_eq!(decode_ping(&encode_ping(ping)), Some(ping));
         }

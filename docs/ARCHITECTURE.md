@@ -81,7 +81,10 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
 ## Measuring latency
 
 Built in M1 (`crates/media/src/{marker,latency}.rs`, `tc-spike`, `bench/run-matrix.sh`):
-1. The viewer sends a tick (lossy data packet) every 250 ms.
+1. The viewer sends a tick (lossy data packet) every 247 ms. The interval must not be a multiple
+   of the frame time. At 250 ms (15 frames at 60 fps) every tick lands at the same point of the
+   frame clock, so one run samples a single point of the real 14–33 ms spread and p50 jumps
+   between runs.
 2. The sharer stamps the latest tick id into outgoing frames as a black/white block marker in
    the top-left of the luma plane (4 guard bits + a 20-bit id). It re-sends the last frame
    immediately when a tick arrives.

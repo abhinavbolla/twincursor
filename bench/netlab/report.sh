@@ -52,12 +52,12 @@ rows=$(for label in $(ls -1 *.json 2>/dev/null | sed -E 's/-[0-9]+\.json$//' | s
   jq -r --arg label "$label" '
     def r(x): if x == null then "-" else (x * 10 | round / 10 | tostring) end;
     (.report.input // [])[]
-    | "| \($label) | \(.stream) | \(r(.rtt.p50)) | \(r(.rtt.p95)) | \(r(.rtt.max)) | \(.sent - .received)/\(.sent) | \(.out_of_order) |"
+    | "| \($label) | \(.stream) | \(r(.one_way.p50)) | \(r(.one_way.p95)) | \(r(.one_way.max)) | \(r(.rtt.p50)) | \(r(.rtt.p95)) | \(.sent - .received)/\(.sent) | \(.out_of_order) |"
   ' "$f"
 done)
 if [[ -n $rows ]]; then
   echo
-  echo "| run | stream | input RTT p50 | p95 | max | lost | out of order |"
-  echo "|---|---|---|---|---|---|---|"
+  echo "| run | stream | one-way p50 | p95 | max | RTT p50 | RTT p95 | lost | out of order |"
+  echo "|---|---|---|---|---|---|---|---|---|"
   echo "$rows"
 fi
