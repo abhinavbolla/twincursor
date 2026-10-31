@@ -104,11 +104,11 @@ and counts the frames it drops. A/B: headless pattern, H.264 1080, 4 alternating
 
 - p50 doesn't change, and p95 is a little lower and steadier (median 35 vs 49 ms), but noisy.
 - **The run-to-run p50 swing (~10 vs ~20 ms) is not in the video path.** One-way latency
-  (capture → decode) is steady at 11–14 ms in every run. The swing is in the tick's path:
-  viewer → SFU → sharer over a LiveKit data packet.
-- This matters for M2, because remote-control input will take the same path. Measure the
-  data-channel one-way delay on its own (reliable vs lossy, ordered vs not) before building
-  input on it.
+  (capture → decode) is steady at 11–14 ms in every run.
+- Corrected in M2: we blamed the data packet path for the swing, and that was wrong. That path
+  takes 1.3 ms round trip on one Mac. The swing came from the tick interval itself: 250 ms is
+  exactly 15 frames at 60 fps, so all of a run's ticks landed at one phase of the frame clock
+  (`research/m2-results.md`). RTT tables here that used 250 ms ticks show one phase per run.
 
 ## Mac → Windows over home Wi-Fi (PR 6)
 Sharer: this Mac (Wi-Fi, AWDL active) running `livekit-server --dev --bind 0.0.0.0`. Viewer:

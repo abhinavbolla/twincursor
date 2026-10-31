@@ -13,6 +13,7 @@ use livekit::webrtc::video_stream::native::NativeVideoStream;
 use crate::latency::Recorder;
 use crate::netstats::{Board, Poller, Side};
 use crate::pattern::{self, fast_scrolling};
+use crate::ping;
 use crate::quality::{self, Plane, Snapshots};
 use crate::{marker, wire};
 
@@ -27,6 +28,8 @@ pub struct ViewConfig {
     pub net_stats: bool,
     /// Score decoded frames against the synthetic pattern (`share --capture pattern`).
     pub measure_quality: bool,
+    /// Measure the data-packet path input takes (the sharer echoes pings).
+    pub measure_input: bool,
     pub snapshots: Option<Snapshots>,
 }
 
@@ -66,6 +69,11 @@ pub async fn run(
         recorder.clone(),
         config.tick_interval,
     ));
+    let pingers = if config.measure_input {
+        ping::start_probe(room.local_participant(), room.subscribe(), recorder.clone())
+    } else {
+        Vec::new()
+    };
 
     let started = Instant::now();
     let mut poller = Poller::new(Side::Subscriber);
@@ -122,6 +130,7 @@ pub async fn run(
     }
 
     ticker.abort();
+    pingers.iter().for_each(|task| task.abort());
     room.close().await?;
     Ok(())
 }

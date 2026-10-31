@@ -62,8 +62,12 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
 
 ### 4. Remote control over a data channel
 - The guest's viewer captures mouse, keyboard and scroll events and normalizes coordinates
-  to the shared surface (0..1). It sends them over a reliable, ordered LiveKit data channel
-  using `crates/protocol` messages.
+  to the shared surface (0..1). It sends them over LiveKit data channels using
+  `crates/protocol` messages:
+  - clicks, keys and scrolls on the reliable, ordered channel: they must never drop or reorder;
+  - pointer moves on the lossy channel: a lost move is replaced by the next one, and it avoids
+    retransmission tails (`research/m2-results.md`). Each click carries its own position, so it
+    can't land in the wrong place by overtaking a move.
 - The sharer validates the events (control granted? within the shared display?) and injects
   them with `enigo` (macOS CGEvent, Windows SendInput, Linux X11/libei).
 - The sharer gets a transparent, click-through, always-on-top overlay window that draws the
@@ -81,7 +85,10 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
 ## Measuring latency
 
 Built in M1 (`crates/media/src/{marker,latency}.rs`, `tc-spike`, `bench/run-matrix.sh`):
-1. The viewer sends a tick (lossy data packet) every 250 ms.
+1. The viewer sends a tick (lossy data packet) every 247 ms. The interval must not be a multiple
+   of the frame time. At 250 ms (15 frames at 60 fps) every tick lands at the same point of the
+   frame clock, so one run samples a single point of the real 14–33 ms spread and p50 jumps
+   between runs.
 2. The sharer stamps the latest tick id into outgoing frames as a black/white block marker in
    the top-left of the luma plane (4 guard bits + a 20-bit id). It re-sends the last frame
    immediately when a tick arrives.
@@ -97,6 +104,13 @@ Limitation: the marker is stamped after capture, so the app redraw and part of t
 delay aren't in RTT. A planned `--marker screen` mode fixes that.
 
 Every media-path PR reports before and after numbers (`bench/run-matrix.sh`).
+
+`tc-spike view --measure-input` measures the data path input takes, with pings on both data
+channels that the sharer echoes. It reports the round trip and, where both ends share a clock
+(one machine, the network lab), the one-way delay. Use one-way for input: the round trip's
+return leg shares the viewer's downlink with the video.
+
+**Input SLO:** one-way p50 ≤ network delay + 15 ms and p95 ≤ network delay + 40 ms on clean links.
 
 ## Measuring quality
 
@@ -130,7 +144,7 @@ with a fixed IP on a private bridge. Each profile's conditions are applied with 
 - the viewer's downlink is shaped on the SFU's interface, filtered to the viewer's IP.
 
 Run it with `bench/netlab/run.sh [--build] [profile ...]` (`CODEC`, `RES`, `DURATION`,
-`ADAPT=off`, `SHARE_FLAGS`, `TAG`), and summarise with `bench/netlab/report.sh`.
+`ADAPT=off`, `SHARE_FLAGS`, `VIEW_FLAGS`, `TAG`), and summarise with `bench/netlab/report.sh`.
 
 Lab notes:
 - Rate limits use a token bucket (tbf) under netem. netem's own `rate` combined with jitter
@@ -152,6 +166,7 @@ checked on real machines instead.
 | bandwidth-drop | sharer uplink 10 → 1.5 → 10 Mbit, 20 s each |
 | udp-blocked | viewer drops all outgoing UDP (ICE must use TCP) |
 | outage-5s | viewer cut off completely for 5 s at t = 25 s |
+| stall-0.6s, stall-1.2s, stall-2.5s | viewer cut off both ways, every 15 s, three times |
 
 **SLOs** (checked by `report.sh`; "network RTT" is the RTT the profile adds):
 - lan, wifi-good: RTT p50 ≤ network RTT + 25 ms; p95 ≤ network RTT + 60 ms; SSIM p5 ≥ 0.97;
@@ -159,6 +174,7 @@ checked on real machines instead.
 - ≤ 2% average loss: at most one freeze a minute.
 - bandwidth-drop: no stall longer than 3 s.
 - outage-5s: video back within 3 s of the network returning (longest stall ≤ 8 s).
+- stall-*: video back within 3 s of the network returning (longest stall ≤ 6 s).
 - udp-blocked: the call connects and measures latency.
 
 ## Auto-throttle (adaptive frame rate and resolution)

@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use serde::Serialize;
 
+use crate::ping::{PingLog, StreamReport};
 use crate::quality::{summarize_low, LowSummary, Scores};
 use crate::stats::{summarize, Summary};
 
@@ -28,6 +29,8 @@ pub struct Recorder {
     pub quality: Vec<Scores>,
     /// The subset taken while the pattern was scrolling fast.
     pub quality_fast: Vec<Scores>,
+    /// Input-path measurements, when `--measure-input` is on.
+    pub input: PingLog,
 }
 
 /// Summaries for one reporting window or a whole run.
@@ -42,6 +45,8 @@ pub struct Report {
     pub ssim: Option<LowSummary>,
     pub psnr_db: Option<LowSummary>,
     pub ssim_fast_scroll: Option<LowSummary>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub input: Vec<StreamReport>,
 }
 
 impl Recorder {
@@ -92,6 +97,7 @@ impl Recorder {
             ssim_fast_scroll: summarize_low(
                 &self.quality_fast.iter().map(|q| q.ssim).collect::<Vec<_>>(),
             ),
+            input: self.input.report(),
         }
     }
 }

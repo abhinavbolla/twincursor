@@ -8,6 +8,7 @@ pub mod latency;
 pub mod marker;
 pub mod netstats;
 pub mod pattern;
+pub mod ping;
 pub mod publish;
 pub mod quality;
 pub mod stats;

@@ -13,8 +13,9 @@ DURATION=${DURATION:-60}
 # Linux in Docker has no hardware encoder; VP8 is the software path we'd use there too.
 CODEC=${CODEC:-vp8}
 RES=${RES:-1080}
-# Extra sharer flags, e.g. SHARE_FLAGS="--fps 30", and a label suffix for them.
+# Extra flags, e.g. SHARE_FLAGS="--fps 30" or VIEW_FLAGS=--measure-input, and a label suffix.
 SHARE_FLAGS=${SHARE_FLAGS:-}
+VIEW_FLAGS=${VIEW_FLAGS:-}
 TAG=${TAG:-}
 # Auto-throttle on (default) or off, to compare.
 ADAPT=${ADAPT:-on}
@@ -35,6 +36,9 @@ PROFILES=(
   "bandwidth-drop|||delay 5ms rate 10mbit"
   "udp-blocked|||"
   "outage-5s|||"
+  "stall-0.6s|||"
+  "stall-1.2s|||"
+  "stall-2.5s|||"
 )
 
 dc() { docker compose -f compose.yml "$@"; }
@@ -46,9 +50,20 @@ wanted() {
   return 1
 }
 
+# Cuts the viewer off both ways for $1 seconds. The sleep runs inside the containers, because
+# `docker compose exec` alone takes long enough to blur a sub-second stall.
+stall() {
+  dc exec -T sfu-net sh -c "shape set --to $VIEWER loss 100%; sleep $1; shape clear" &
+  dc exec -T viewer sh -c "shape set loss 100%; sleep $1; shape clear" &
+  wait
+}
+
 # Timed changes during the viewer's run, for the dynamic profiles. Runs in the background.
 steps() {
   case $1 in
+    stall-*)
+      local secs=${1#stall-}
+      for _ in 1 2 3; do sleep 15; stall "${secs%s}"; done ;;
     bandwidth-drop)
       sleep 20; dc exec -T sharer shape change delay 5ms rate 1500kbit
       sleep 20; dc exec -T sharer shape change delay 5ms rate 10mbit ;;
@@ -98,7 +113,8 @@ for entry in "${PROFILES[@]}"; do
 
   steps "$name" &
   stepper=$!
-  dc exec -T viewer tc-spike view --headless --measure-quality --url "$URL" \
+  # shellcheck disable=SC2086
+  dc exec -T viewer tc-spike view --headless --measure-quality $VIEW_FLAGS --url "$URL" \
     --duration "$DURATION" --label "$label" --out /results >/dev/null 2>&1 \
     || echo "viewer failed for $label"
   wait "$stepper" 2>/dev/null || true

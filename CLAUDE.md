@@ -51,6 +51,7 @@ Fill these in as code lands; keep them accurate.
   and `target/release/tc-spike view` (see `--help`; `S` toggles the stats HUD)
 - Quality without windows or screen capture: `tc-spike share --capture pattern` +
   `tc-spike view --headless --measure-quality` (SSIM/PSNR vs the synthetic pattern)
+- Input path: `tc-spike view --headless --measure-input` (reliable vs lossy data channels)
 - Latency matrix: `bench/run-matrix.sh [config ...]` → `bench/results/*.json` (git-ignored)
 - Network lab (Docker): `bench/netlab/run.sh [--build] [profile ...]`, then
   `bench/netlab/report.sh` (profiles and SLOs in ARCHITECTURE.md)

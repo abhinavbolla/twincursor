@@ -47,8 +47,8 @@ Done: the lab's SLO misses are explained (software VP8 in Linux; `research/m15-r
 the real-world Wi-Fi runs are documented. Open items moved to M6.
 
 ## M2: Remote control (macOS)
-- [ ] First: measure the data-channel delay viewer → sharer on its own. Latency ticks show a
-      run-to-run 10–20 ms swing there that the video path doesn't have (`research/m15-results.md`)
+- [x] First: measure the data-channel delay viewer → sharer on its own. It isn't the source of
+      the run-to-run swing: that came from the 250 ms tick interval (`research/m2-results.md`)
 - [ ] `crates/protocol`: input event messages
 - [ ] Viewer captures mouse, keyboard, and scroll and sends them over the data channel
 - [ ] Sharer injects them with enigo; Accessibility permission check
