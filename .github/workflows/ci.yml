@@ -44,6 +44,12 @@ jobs:
       - name: Test
         run: cargo test --locked --release --workspace
 
+      - name: Build on the minimum supported Rust version
+        run: |
+          v=$(grep '^rust-version' Cargo.toml | cut -d'"' -f2)
+          rustup toolchain install "$v" --profile minimal
+          cargo +"$v" build --locked --release -p twincursor-media-spike
+
   # The viewer runs on Windows too, so make sure it keeps building there.
   windows-viewer:
     runs-on: windows-latest

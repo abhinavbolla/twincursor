@@ -55,7 +55,7 @@ yet include the app's own redraw time, so they aren't full glass-to-glass latenc
 Today's build is `tc-spike`, a command-line tool for sharing a screen and measuring the result.
 
 You'll need an Apple Silicon Mac with [Xcode 26](https://developer.apple.com/xcode/) and
-[Rust](https://rustup.rs). The first build downloads a prebuilt WebRTC library of about 277 MB.
+[Rust](https://rustup.rs) 1.89 or newer. The first build downloads a prebuilt WebRTC library of about 277 MB.
 
 ```bash
 brew install livekit
