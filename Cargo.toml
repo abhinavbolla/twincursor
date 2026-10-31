@@ -8,7 +8,7 @@ license = "AGPL-3.0-only"
 repository = "https://github.com/abhinavbolla/twincursor"
 
 [workspace.dependencies]
-livekit = { version = "0.9.7", features = ["rustls-tls-native-roots"] }
+livekit = { version = "0.10.0", features = ["rustls-tls-native-roots"] }
 livekit-api = { version = "0.9.1", default-features = false, features = ["access-token"] }
 screencapturekit = { version = "=11.1.1", features = ["macos_15_0"] }
 winit = "0.30"
