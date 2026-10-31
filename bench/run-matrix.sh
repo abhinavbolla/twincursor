@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the M1 latency matrix on one Mac: for each config, start a sharer, run the viewer
+# Runs the latency matrix on one Mac: for each config, start a sharer, run the viewer
 # for $DURATION seconds, then stop the sharer. Results land in bench/results/*.json.
 #
 # Needs `livekit-server --dev` running and a release build:

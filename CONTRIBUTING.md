@@ -5,9 +5,11 @@ voice and remote control, all in Rust.
 
 ## How to contribute
 
-1. **Pick something.** Start with [docs/ROADMAP.md](docs/ROADMAP.md) and the current
-   milestone, or an open issue. For anything bigger than a small fix, open an issue first so we
-   can agree on the approach.
+1. **Pick something.** Try a
+   [good first issue](https://github.com/abhinavbolla/twincursor/labels/good%20first%20issue), an
+   item from the [roadmap](docs/ROADMAP.md), or anything else in the issue tracker. For anything
+   bigger than a small fix, open an issue first so we can agree on the approach. Questions and
+   ideas belong in [Discussions](https://github.com/abhinavbolla/twincursor/discussions).
 2. **Fork** the repository and create a branch in your fork.
 3. **Build and check** (macOS needs Xcode 26):
    ```bash
@@ -36,8 +38,8 @@ maintainer merges it.
 3. **Remote control stays consent-based.** The sharer must grant control explicitly, see who
    is controlling, and be able to revoke it instantly. Changes that weaken this won't be
    merged.
-4. **New dependencies** need a one-line reason in the PR, and an AGPL-compatible license (MIT,
-   Apache-2.0, BSD, MPL-2.0, LGPL, GPL-3.0 or AGPL-3.0).
+4. **New dependencies** need a one-line reason in the PR, and an AGPL-compatible license. CI
+   checks licenses with `cargo deny` against the list in [deny.toml](deny.toml).
 5. **Small PRs**, reviewable in about 15 minutes, with
    [Conventional Commit](https://www.conventionalcommits.org) messages (`feat:`, `fix:`,
    `perf:`, `docs:`, `chore:`).
@@ -49,6 +51,16 @@ TwinCursor is licensed under [AGPL-3.0](LICENSE). Contributions are accepted und
 project the right to use it, and to offer TwinCursor under other licenses too, for example a
 commercial license, without asking every contributor again.
 
+## Measurements count as contributions
+
+Running TwinCursor on hardware or networks we don't have is useful on its own. If you run the
+benchmarks, open an issue with your setup and results, using the commands in
+[docs/performance.md](docs/performance.md#reproduce-these-numbers).
+
 ## Security
 
 Please don't report security problems in public issues. See [SECURITY.md](SECURITY.md).
+
+## Code of conduct
+
+Everyone taking part follows our [code of conduct](CODE_OF_CONDUCT.md).

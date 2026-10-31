@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      rust-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # Pinned on purpose: its Swift bridge is tied to the Xcode SDK we build with.
+      - dependency-name: screencapturekit
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        patterns: ["*"]

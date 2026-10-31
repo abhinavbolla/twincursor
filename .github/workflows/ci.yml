@@ -68,3 +68,74 @@ jobs:
 
       - name: Test
         run: cargo test --locked --release --workspace
+
+  # The viewer runs on Windows too, so make sure it keeps building there.
+  windows-viewer:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      LK_CUSTOM_WEBRTC: ${{ github.workspace }}\.libwebrtc\win-x64-release
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Resolve libwebrtc tag
+        id: webrtc
+        run: |
+          cargo fetch --locked
+          tag=$(grep -h 'pub const WEBRTC_TAG' ~/.cargo/registry/src/*/webrtc-sys-build-*/src/lib.rs \
+            | sed -E 's/.*"(.*)".*/\1/' | sort -u)
+          [ "$(echo "$tag" | wc -l)" -eq 1 ] || { echo "expected one WEBRTC_TAG, got: $tag"; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Cache libwebrtc
+        id: webrtc-cache
+        uses: actions/cache@v4
+        with:
+          path: .libwebrtc/webrtc.zip
+          key: libwebrtc-win-x64-release-${{ steps.webrtc.outputs.tag }}
+
+      - name: Download libwebrtc
+        if: steps.webrtc-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .libwebrtc
+          curl -fL --retry 10 --retry-all-errors -C - -o .libwebrtc/webrtc.zip \
+            "https://github.com/livekit/rust-sdks/releases/download/${{ steps.webrtc.outputs.tag }}/webrtc-win-x64-release.zip"
+
+      - name: Unpack libwebrtc
+        run: unzip -q .libwebrtc/webrtc.zip -d .libwebrtc && ls .libwebrtc/win-x64-release
+
+      - name: Build
+        run: cargo build --locked --release -p twincursor-media-spike
+
+      - name: Smoke test
+        run: target/release/tc-spike.exe view --help
+
+  # Enforces the license rule in CONTRIBUTING.md, and that crates only come from crates.io.
+  dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses sources
+
+  # New advisories appear without any change here, so this reports but doesn't block a PR.
+  advisories:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
