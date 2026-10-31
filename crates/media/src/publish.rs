@@ -13,6 +13,7 @@ use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use crate::adapt::{Adapter, BitrateCap};
 use crate::capture::{self, wall_clock_us, Backend, CaptureConfig, Frame, FrameBuffer, Tier};
 use crate::netstats::{NetSnapshot, Poller, Side};
+use crate::ping::{self, Route};
 use crate::quality::Snapshots;
 use crate::{marker, wire};
 
@@ -220,6 +221,9 @@ pub async fn run(
         })?
     };
 
+    let pings = tokio::spawn(ping::serve(room.local_participant(), room.subscribe()));
+    let main_echo_await_us = AtomicU32::new(0);
+
     let mut poller = Poller::new(Side::Publisher);
     let mut stats_timer = tokio::time::interval(STATS_EVERY);
     tokio::pin!(shutdown);
@@ -268,7 +272,7 @@ pub async fn run(
                 }
             }
             event = events.recv() => match event {
-                Some(RoomEvent::DataReceived { payload, topic, .. }) => {
+                Some(RoomEvent::DataReceived { payload, topic, participant, .. }) => {
                     if topic.as_deref() == Some(wire::STATS_TOPIC) {
                         viewer_net = wire::decode_stats(&payload);
                     } else if topic.as_deref() == Some(wire::TICK_TOPIC) {
@@ -277,6 +281,15 @@ pub async fn run(
                             stats.ticks.fetch_add(1, Ordering::Relaxed);
                             mailbox.tick();
                         }
+                    } else if topic.as_deref() == Some(wire::PING_TOPIC) {
+                        ping::answer(
+                            &room.local_participant(),
+                            Route::Main,
+                            &payload,
+                            participant.as_ref(),
+                            &main_echo_await_us,
+                        )
+                        .await;
                     }
                 }
                 Some(RoomEvent::Disconnected { reason }) => {
@@ -289,6 +302,7 @@ pub async fn run(
         }
     }
 
+    pings.abort();
     drop(_capture);
     mailbox.close();
     let _ = sender.join();
