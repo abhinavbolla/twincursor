@@ -13,8 +13,9 @@ DURATION=${DURATION:-60}
 # Linux in Docker has no hardware encoder; VP8 is the software path we'd use there too.
 CODEC=${CODEC:-vp8}
 RES=${RES:-1080}
-# Extra sharer flags, e.g. SHARE_FLAGS="--fps 30", and a label suffix for them.
+# Extra flags, e.g. SHARE_FLAGS="--fps 30" or VIEW_FLAGS=--measure-input, and a label suffix.
 SHARE_FLAGS=${SHARE_FLAGS:-}
+VIEW_FLAGS=${VIEW_FLAGS:-}
 TAG=${TAG:-}
 # Auto-throttle on (default) or off, to compare.
 ADAPT=${ADAPT:-on}
@@ -98,7 +99,8 @@ for entry in "${PROFILES[@]}"; do
 
   steps "$name" &
   stepper=$!
-  dc exec -T viewer tc-spike view --headless --measure-quality --url "$URL" \
+  # shellcheck disable=SC2086
+  dc exec -T viewer tc-spike view --headless --measure-quality $VIEW_FLAGS --url "$URL" \
     --duration "$DURATION" --label "$label" --out /results >/dev/null 2>&1 \
     || echo "viewer failed for $label"
   wait "$stepper" 2>/dev/null || true

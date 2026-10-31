@@ -36,8 +36,9 @@ const REPORT_EVERY: Duration = Duration::from_secs(10);
 pub struct ViewArgs {
     #[command(flatten)]
     connection: Connection,
-    /// Interval between latency ticks, in milliseconds.
-    #[arg(long, default_value_t = 250)]
+    /// Interval between latency ticks, in milliseconds. Not a multiple of the frame time:
+    /// at 250 ms (15 frames at 60 fps) every tick lands at the same point of the frame clock.
+    #[arg(long, default_value_t = 247)]
     tick_ms: u64,
     /// Stop automatically after this many seconds.
     #[arg(long)]
@@ -55,6 +56,9 @@ pub struct ViewArgs {
     /// Score frames against the synthetic pattern (needs `share --capture pattern`).
     #[arg(long)]
     measure_quality: bool,
+    /// Measure the data-packet path remote-control input takes (reliable vs lossy).
+    #[arg(long)]
+    measure_input: bool,
     /// Save the frame carrying every Nth latency tick as a PGM (see `tc-spike compare`).
     #[arg(long, default_value_t = 0)]
     snapshot_every: u32,
@@ -85,6 +89,7 @@ fn view_config(args: &ViewArgs) -> anyhow::Result<ViewConfig> {
         tick_interval: Duration::from_millis(args.tick_ms),
         net_stats: !args.no_stats,
         measure_quality: args.measure_quality,
+        measure_input: args.measure_input,
         snapshots: (args.snapshot_every > 0).then(|| Snapshots {
             every: args.snapshot_every,
             dir: args.snapshot_dir.clone(),
@@ -334,6 +339,16 @@ fn log_report(
             psnr.p50,
             psnr.p5,
             ssim.count
+        );
+    }
+    for stream in &report.input {
+        tracing::info!(
+            "  input {}: RTT {} | lost {}/{} | out of order {}",
+            stream.stream,
+            fmt(stream.rtt),
+            stream.sent - stream.received as u64,
+            stream.sent,
+            stream.out_of_order,
         );
     }
     for line in hud::lines(&board.lock().unwrap(), recent) {
