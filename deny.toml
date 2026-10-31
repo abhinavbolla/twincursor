@@ -1,0 +1,34 @@
+# Checked by `cargo deny` in CI. See "New dependencies" in CONTRIBUTING.md.
+[graph]
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+  "x86_64-unknown-linux-gnu",
+]
+
+[licenses]
+# Licenses compatible with AGPL-3.0.
+allow = [
+  "AGPL-3.0-only",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "MIT",
+  "Unicode-3.0",
+  "Zlib",
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+
+[advisories]
+ignore = [
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained, not vulnerable. It comes from winit's Linux window decorations, and we don't ship Linux yet." },
+]

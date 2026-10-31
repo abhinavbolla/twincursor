@@ -23,7 +23,7 @@ apps/desktop/src-tauri/gen/
 .vscode/*
 !.vscode/extensions.json
 
-# Latency run output (summaries go in docs/research)
+# Latency run output (summaries go in docs/performance.md)
 bench/results/
 
 # Prebuilt libwebrtc unpacked by CI (see .github/workflows/ci.yml)

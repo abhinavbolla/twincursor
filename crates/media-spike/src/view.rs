@@ -195,7 +195,7 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
         let attributes = Window::default_attributes()
-            .with_title("TwinCursor M1 viewer")
+            .with_title("TwinCursor viewer")
             .with_inner_size(PhysicalSize::new(1662, 1080));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
         let context = softbuffer::Context::new(window.clone()).expect("softbuffer context");
