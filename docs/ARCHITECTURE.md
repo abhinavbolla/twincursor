@@ -62,8 +62,12 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
 
 ### 4. Remote control over a data channel
 - The guest's viewer captures mouse, keyboard and scroll events and normalizes coordinates
-  to the shared surface (0..1). It sends them over a reliable, ordered LiveKit data channel
-  using `crates/protocol` messages.
+  to the shared surface (0..1). It sends them over LiveKit data channels using
+  `crates/protocol` messages:
+  - clicks, keys and scrolls on the reliable, ordered channel: they must never drop or reorder;
+  - pointer moves on the lossy channel: a lost move is replaced by the next one, and it avoids
+    retransmission tails (`research/m2-results.md`). Each click carries its own position, so it
+    can't land in the wrong place by overtaking a move.
 - The sharer validates the events (control granted? within the shared display?) and injects
   them with `enigo` (macOS CGEvent, Windows SendInput, Linux X11/libei).
 - The sharer gets a transparent, click-through, always-on-top overlay window that draws the
@@ -101,6 +105,13 @@ delay aren't in RTT. A planned `--marker screen` mode fixes that.
 
 Every media-path PR reports before and after numbers (`bench/run-matrix.sh`).
 
+`tc-spike view --measure-input` measures the data path input takes, with pings on both data
+channels that the sharer echoes. It reports the round trip and, where both ends share a clock
+(one machine, the network lab), the one-way delay. Use one-way for input: the round trip's
+return leg shares the viewer's downlink with the video.
+
+**Input SLO:** one-way p50 ≤ network delay + 15 ms and p95 ≤ network delay + 40 ms on clean links.
+
 ## Measuring quality
 
 Latency alone doesn't tell us whether text is readable, so we measure picture quality too:
@@ -133,7 +144,7 @@ with a fixed IP on a private bridge. Each profile's conditions are applied with 
 - the viewer's downlink is shaped on the SFU's interface, filtered to the viewer's IP.
 
 Run it with `bench/netlab/run.sh [--build] [profile ...]` (`CODEC`, `RES`, `DURATION`,
-`ADAPT=off`, `SHARE_FLAGS`, `TAG`), and summarise with `bench/netlab/report.sh`.
+`ADAPT=off`, `SHARE_FLAGS`, `VIEW_FLAGS`, `TAG`), and summarise with `bench/netlab/report.sh`.
 
 Lab notes:
 - Rate limits use a token bucket (tbf) under netem. netem's own `rate` combined with jitter
