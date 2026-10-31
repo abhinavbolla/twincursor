@@ -17,6 +17,15 @@ be fast, private, and free, with Linux treated as a first-class platform.
 - Self-host with one `docker compose up`
 - macOS first, then Linux and Windows
 
+## Try it
+
+Needs Rust **1.89** or newer (macOS, Xcode 26) and a LiveKit server; see
+[CLAUDE.md](CLAUDE.md#commands) for the full commands.
+
+```bash
+cargo build --release -p twincursor-media-spike
+```
+
 ## Docs
 
 - [Product](docs/PRODUCT.md)

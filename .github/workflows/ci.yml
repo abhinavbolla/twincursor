@@ -68,3 +68,9 @@ jobs:
 
       - name: Test
         run: cargo test --locked --release --workspace
+
+      - name: Build on the minimum supported Rust version
+        run: |
+          v=$(grep '^rust-version' Cargo.toml | cut -d'"' -f2)
+          rustup toolchain install "$v" --profile minimal
+          cargo +"$v" build --locked --release -p twincursor-media-spike
