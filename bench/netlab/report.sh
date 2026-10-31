@@ -36,6 +36,7 @@ for label in $(ls -1 *.json 2>/dev/null | sed -E 's/-[0-9]+\.json$//' | sort -u)
     | .report.ssim as $ssim
     | (if ($profile == "outage-5s") then ($stall <= 8)
        elif ($profile == "bandwidth-drop") then ($stall <= 3)
+       elif ($profile | startswith("stall-")) then ($stall <= 6)
        elif ($profile == "udp-blocked") then ($rtt != null)
        elif ($profile == "lan" or $profile == "wifi-good") then
          ($rtt != null and $rtt.p50 <= $net + 25 and $rtt.p95 <= $net + 60

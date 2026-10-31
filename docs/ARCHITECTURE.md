@@ -166,6 +166,7 @@ checked on real machines instead.
 | bandwidth-drop | sharer uplink 10 → 1.5 → 10 Mbit, 20 s each |
 | udp-blocked | viewer drops all outgoing UDP (ICE must use TCP) |
 | outage-5s | viewer cut off completely for 5 s at t = 25 s |
+| stall-0.6s, stall-1.2s, stall-2.5s | viewer cut off both ways, every 15 s, three times |
 
 **SLOs** (checked by `report.sh`; "network RTT" is the RTT the profile adds):
 - lan, wifi-good: RTT p50 ≤ network RTT + 25 ms; p95 ≤ network RTT + 60 ms; SSIM p5 ≥ 0.97;
@@ -173,6 +174,7 @@ checked on real machines instead.
 - ≤ 2% average loss: at most one freeze a minute.
 - bandwidth-drop: no stall longer than 3 s.
 - outage-5s: video back within 3 s of the network returning (longest stall ≤ 8 s).
+- stall-*: video back within 3 s of the network returning (longest stall ≤ 6 s).
 - udp-blocked: the call connects and measures latency.
 
 ## Auto-throttle (adaptive frame rate and resolution)

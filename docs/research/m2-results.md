@@ -30,7 +30,7 @@ What this means:
   ~300 ms on `hotel`, from retransmissions.
 - **Pointer moves go on the lossy channel.** It has no such tail (p95 50 ms on `hotel`), and a
   lost move doesn't matter because the next one replaces it. That settles the transport question
-  in the M2 plan.
+  in the M2 plan, with one guard for link stalls (below).
 - **Use one-way delay, not round trip, on congested links.** On `hotel` the reliable round trip
   has p95 600 ms against 132 ms one way, because the echo returns over the viewer's downlink,
   which the video fills. Input only uses the viewer's uplink. The first 30 s hotel run, before the
@@ -87,17 +87,47 @@ per run, the one in flight when the run ended, so `lost` above counts none.
   this doc only matters under loss.
 - **The tail is this Mac's Wi-Fi, not our path.** Pings from the Mac to its router, with no video
   and one hop, gave p50 4.1 ms, p90 49 ms, p95 73 ms and max 95 ms: the same tail on their own. They
-  aren't random. Spikes start every 0.5 s, in bursts of 2–4 s with 2–3 s of quiet between.
-  That timing fits AWDL, but we haven't confirmed it; the check is the AWDL-off run in ROADMAP.
-  The laptop doesn't answer ping, so its side wasn't measured the same way.
+  aren't random. Spikes start every 0.5 s, in bursts of 2–4 s with 2–3 s of quiet between. The
+  laptop's own link to the same router is clean: p50 1 ms, p95 4 ms, one spike over 20 ms in 600
+  pings, so the tail is on the Mac's side.
+- **AWDL is the likely cause, not yet proven.** Public reports say AWDL prefers channels 44 and 149
+  on 5 GHz, and that a Mac on another channel keeps hopping away from it, with delays near 90 ms
+  ([The Register](https://www.theregister.com/2025/10/23/apple_airdrop_awdl_latency_research/)).
+  This router is on channel 100 and our spikes peak at 93–95 ms. Apple documents none of this. The
+  proof is the same ping with AWDL off.
 - **The tail falls on the direction input uses.** Clocks differ here, so one-way values are
   meaningless and the offset moved 23 ms between runs, but within a run the shape still holds.
   One-way p95 minus p50 is 60–66 ms against 68–73 ms for RTT, and max minus p50 matches RTT within
   3 ms. That is what a late-arriving ping looks like: it waits for the Mac's radio, and the echo
   then leaves at once. Expect 20–100 ms extra on about 1 input in 7 on this setup.
-- **No link stall happened.** The 0.6–2.5 s stalls from M1.5 didn't appear in these 6 minutes, so
-  this says nothing about them. The heartbeat deadman in PR 2 needs a scripted stall, not this
-  link.
+- **No link stall happened** in these 6 minutes, so the lab tests those instead (below).
+
+## Link stalls
+
+Real stalls of 0.6–2.5 s came and went in M1.5, so the lab now scripts them: the viewer is cut off
+both ways three times per run. VP8 1080p, 60 s each, one run per length, one-way delay:
+
+| stall | reliable max | lossy max | lossy lost (per stream) | out of order | longest video stall | freezes |
+|---|---|---|---|---|---|---|
+| 0.6 s | 1.2 s | 0.8 s | 15–16 of 600 | 0 | 1 s | 5 |
+| 1.2 s | 2.8 s | 2.3 s | 13 of 600 | 0 | 3 s | 3 |
+| 2.5 s | 2.8 s | 2.3 s | 13–15 of 600 | 0 | 2 s | 4 |
+
+The calls survived every stall, and video came back within 3 s of the network returning.
+
+- **Reliable keeps its promise, at a price.** Every ping arrived in order, apart from the last one
+  of each run, still in flight. But recovery outlasts the stall: a 1.2 s stall cost up to 2.8 s.
+  That fits retransmit backoff (a timer near 1 s, then doubling), though we haven't confirmed it.
+- **Lossy doesn't drop stale data in a stall.** It queues it. A 2.5 s stall spans 75 lossy pings per
+  stream over its three repeats, and only 13–15 were lost; the rest arrived up to 2.3 s late and
+  in order. So a sequence number can't catch these moves, and without a guard the guest's cursor
+  would replay seconds of old movement.
+- **PR 2 has to handle both.** Moves carry the viewer's timestamp. The sharer keeps the smallest
+  arrival-minus-timestamp as a baseline, which needs no shared clock, and drops any move more than
+  150 ms over it. After the heartbeat deadman fires, late key-ups must be no-ops and a late
+  button-down must not start a drag. Keys typed during a stall still arrive, in order.
+- **Data tracks are worth checking.** Both channels share one SCTP connection, which may be why
+  lossy waits behind reliable here. LiveKit's newer data tracks might avoid it for moves.
 
 ## Latency effect of PR 1
 
@@ -117,8 +147,8 @@ are the same with and without them.
   and at either tick interval. The tail is in the video's one-way delay (p95 60–123 ms, p50 8 ms),
   from software VP8 in Docker. The final M1.5 lab sweep ran before the pacing fix, at ~50 fps
   instead of 59, which likely hid it. Worth a look on hardware H.264 in M6, not an M2 blocker.
-- **The Mac's Wi-Fi spikes need a cause.** Repeat the router ping and these runs with AWDL off and
-  on Ethernet (already in ROADMAP). It may also explain the video tail in `m1-results.md`.
+- **Prove the AWDL cause.** Repeat the router ping with AWDL off, then with the router on channel
+  44 or 149. It may also explain the video tail in `m1-results.md`.
 - `input-sck-h264` in the matrix produced nothing in the unattended runs, likely because the
   display was asleep, so the numbers above use the synthetic pattern. Pings don't depend on the
   capture source.
