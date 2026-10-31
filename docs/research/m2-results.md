@@ -68,6 +68,37 @@ start timing:
 - `tc-spike view` now ticks every 247 ms by default. Compare new RTT numbers only with each other:
   p50 remains noisy because the spread has two humps, so also look at p95.
 
+## Mac → Windows over real Wi-Fi
+
+Sharer and LiveKit on this Mac (Wi-Fi, -47 dBm, AWDL active), viewer on the Windows laptop (signal
+88%), both on the same 5 GHz access point on channel 100, so each packet takes two wireless hops.
+H.264 1080p pattern, headless, 247 ms ticks, 3 runs of 120 s. Range is across the four streams:
+
+| run | input RTT p50 | p95 | max | lost | out of order | video RTT p50 | p95 | fps |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 6.9–7.0 ms | 76–80 ms | 101–112 ms | 0 | 0 | 29 ms | 105 ms | 60 |
+| 2 | 6.8–6.9 ms | 75–78 ms | 101–113 ms | 0 | 0 | 29 ms | 103 ms | 60 |
+| 3 | 6.8–7.1 ms | 75–78 ms | 101–103 ms | 0 | 0 | 29 ms | 107 ms | 60 |
+
+Video loss was 0.0%, with no freezes and no reconnects. `reliable/task` shows one ping unanswered
+per run, the one in flight when the run ended, so `lost` above counts none.
+
+- **Reliable and lossy match on this link.** So do the task and main-loop routes. The choice in
+  this doc only matters under loss.
+- **The tail is this Mac's Wi-Fi, not our path.** Pings from the Mac to its router, with no video
+  and one hop, gave p50 4.1 ms, p90 49 ms, p95 73 ms and max 95 ms: the same tail on their own. They
+  aren't random. Spikes start every 0.5 s, in bursts of 2–4 s with 2–3 s of quiet between.
+  That timing fits AWDL, but we haven't confirmed it; the check is the AWDL-off run in ROADMAP.
+  The laptop doesn't answer ping, so its side wasn't measured the same way.
+- **The tail falls on the direction input uses.** Clocks differ here, so one-way values are
+  meaningless and the offset moved 23 ms between runs, but within a run the shape still holds.
+  One-way p95 minus p50 is 60–66 ms against 68–73 ms for RTT, and max minus p50 matches RTT within
+  3 ms. That is what a late-arriving ping looks like: it waits for the Mac's radio, and the echo
+  then leaves at once. Expect 20–100 ms extra on about 1 input in 7 on this setup.
+- **No link stall happened.** The 0.6–2.5 s stalls from M1.5 didn't appear in these 6 minutes, so
+  this says nothing about them. The heartbeat deadman in PR 2 needs a scripted stall, not this
+  link.
+
 ## Latency effect of PR 1
 
 A/B against `main`, headless pattern, H.264 1080p, 247 ms ticks on both, 3 alternating runs of 30 s:
@@ -86,8 +117,8 @@ are the same with and without them.
   and at either tick interval. The tail is in the video's one-way delay (p95 60–123 ms, p50 8 ms),
   from software VP8 in Docker. The final M1.5 lab sweep ran before the pacing fix, at ~50 fps
   instead of 59, which likely hid it. Worth a look on hardware H.264 in M6, not an M2 blocker.
-- **Mac → Windows over real Wi-Fi isn't measured yet.** Link stalls of 0.6–2.5 s are the case to
-  check, since the lab doesn't reproduce them.
+- **The Mac's Wi-Fi spikes need a cause.** Repeat the router ping and these runs with AWDL off and
+  on Ethernet (already in ROADMAP). It may also explain the video tail in `m1-results.md`.
 - `input-sck-h264` in the matrix produced nothing in the unattended runs, likely because the
   display was asleep, so the numbers above use the synthetic pattern. Pings don't depend on the
   capture source.
