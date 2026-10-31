@@ -17,6 +17,11 @@ Please include:
 We'll acknowledge your report within 7 days. We'll keep you updated while we fix it, and credit
 you in the advisory unless you'd rather stay anonymous.
 
+## What TwinCursor protects
+
+The [threat model](docs/threat-model.md) explains what's protected, what isn't, and how control
+consent works.
+
 ## Scope
 
 Especially relevant:

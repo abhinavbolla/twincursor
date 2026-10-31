@@ -1,0 +1,44 @@
+name: Set up libwebrtc
+description: >-
+  Downloads the prebuilt libwebrtc and points LK_CUSTOM_WEBRTC at it. The LiveKit SDK's own
+  download re-fetches ~277 MB per build profile and fails on flaky connections.
+
+inputs:
+  triple:
+    description: Name of the prebuilt library, e.g. mac-arm64-release
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve libwebrtc tag
+      id: webrtc
+      shell: bash
+      run: |
+        cargo fetch --locked
+        tag=$(grep -h 'pub const WEBRTC_TAG' ~/.cargo/registry/src/*/webrtc-sys-build-*/src/lib.rs \
+          | sed -E 's/.*"(.*)".*/\1/' | sort -u)
+        [ "$(echo "$tag" | wc -l)" -eq 1 ] || { echo "expected one WEBRTC_TAG, got: $tag"; exit 1; }
+        echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+    - name: Cache libwebrtc
+      id: webrtc-cache
+      uses: actions/cache@v4
+      with:
+        path: .libwebrtc/webrtc.zip
+        key: libwebrtc-${{ inputs.triple }}-${{ steps.webrtc.outputs.tag }}
+
+    - name: Download libwebrtc
+      if: steps.webrtc-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        mkdir -p .libwebrtc
+        curl -fL --retry 10 --retry-all-errors -C - -o .libwebrtc/webrtc.zip \
+          "https://github.com/livekit/rust-sdks/releases/download/${{ steps.webrtc.outputs.tag }}/webrtc-${{ inputs.triple }}.zip"
+
+    - name: Unpack libwebrtc
+      shell: bash
+      run: |
+        unzip -q .libwebrtc/webrtc.zip -d .libwebrtc
+        ls ".libwebrtc/${{ inputs.triple }}"
+        echo "LK_CUSTOM_WEBRTC=$GITHUB_WORKSPACE/.libwebrtc/${{ inputs.triple }}" >> "$GITHUB_ENV"
