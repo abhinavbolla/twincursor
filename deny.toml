@@ -27,3 +27,8 @@ allow-wildcard-paths = true
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+
+[advisories]
+ignore = [
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained, not vulnerable. It comes from winit's Linux window decorations, and we don't ship Linux yet." },
+]
