@@ -51,7 +51,7 @@ pub struct Level {
 
 impl Level {
     /// Smallest bitrate (kbit/s) at which this level still shows sharp text while scrolling.
-    /// The tier bases are from the synthetic pattern with H.264 (`research/m15-results.md`);
+    /// The tier bases are from the synthetic pattern with H.264 (`docs/performance.md`);
     /// VP8 needs about twice. Bitrate grows less than linearly with frame rate.
     fn floor_kbps(self, codec_factor: f64) -> f64 {
         let base = match self.tier {
@@ -252,7 +252,7 @@ impl Adapter {
 /// The ladder alone can't help when the viewer's downlink is the bottleneck: the encoder spends
 /// whatever target the sharer's own uplink estimate allows, at any frame rate. In the lab, VP8
 /// kept sending 4–5 Mbps into a 3 Mbit downlink at 720p 15 fps, and the viewer decoded nothing.
-/// A cap at 1.5 Mbps fixed it (`research/m15-results.md`). This controller sets the cap from
+/// A cap at 1.5 Mbps fixed it (`docs/performance.md`). This controller sets the cap from
 /// the viewer's goodput when it's losing packets, and lifts it slowly when things are calm.
 #[derive(Debug, Clone)]
 pub struct BitrateCap {

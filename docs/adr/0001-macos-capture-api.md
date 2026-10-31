@@ -5,8 +5,7 @@ Status: accepted (2026-10-27)
 ## Context
 The sharer has to capture the display at about 1080p and up to 60 fps, with as little delay
 and CPU as possible, and hand frames to the LiveKit/libwebrtc encoder. Two options were
-built and measured in M1 (`crates/media/src/capture/`, results in
-`docs/research/m1-results.md`):
+built and measured (`crates/media/src/capture/`):
 
 - **ScreenCaptureKit** through the `screencapturekit` crate (MIT/Apache-2.0). SCK scales and
   converts to NV12 on the GPU, and pushes frames only when the screen changes.
