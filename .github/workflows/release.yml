@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # Checks that the builds still work when this workflow changes. Nothing is published.
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - .github/actions/**
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            webrtc: mac-arm64-release
+            platform: macos-arm64
+            binary: tc-spike
+          - runner: windows-latest
+            webrtc: win-x64-release
+            platform: windows-x64
+            binary: tc-spike.exe
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: ./.github/actions/setup-libwebrtc
+        with:
+          triple: ${{ matrix.webrtc }}
+
+      - name: Build
+        run: cargo build --locked --release -p twincursor-media-spike
+
+      - name: Package
+        run: |
+          name="tc-spike-${GITHUB_REF_NAME//\//-}-${{ matrix.platform }}"
+          mkdir -p "dist/$name"
+          cp "target/release/${{ matrix.binary }}" LICENSE README.md "dist/$name/"
+          cd dist
+          if [ "${{ runner.os }}" = Windows ]; then
+            7z a -bd "$name.zip" "$name"
+          else
+            tar czf "$name.tar.gz" "$name"
+          fi
+          rm -r "$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: dist/*
+
+  # Creates a draft: a maintainer reads it and presses publish.
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
+
+      - name: Release notes from the changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            index($0, "## [" v "]") == 1 { found = 1; next }
+            /^## \[/ { found = 0 }
+            found
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "CHANGELOG.md has no section for $version"; exit 1; }
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --draft --verify-tag --title "$GITHUB_REF_NAME" --notes-file notes.md

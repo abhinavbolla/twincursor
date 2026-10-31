@@ -51,6 +51,13 @@ TwinCursor is licensed under [AGPL-3.0](LICENSE). Contributions are accepted und
 project the right to use it, and to offer TwinCursor under other licenses too, for example a
 commercial license, without asking every contributor again.
 
+A CLA on AGPL code is a fair thing to ask about, so here's what it means in practice:
+
+- Anything released under AGPL-3.0 stays available under AGPL-3.0. That can't be taken back.
+- You can still use your own contribution however you like, including in other projects.
+- Other licenses can only be offered in addition to AGPL-3.0, for the code as it was released.
+- We intend to keep developing TwinCursor in the open, under AGPL-3.0.
+
 ## Measurements count as contributions
 
 Running TwinCursor on hardware or networks we don't have is useful on its own. If you run the
