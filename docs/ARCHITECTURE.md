@@ -72,13 +72,16 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
     retransmission tails. Each click carries its own position, so it can't land in the wrong
     place by overtaking a move. ADR 0003 has the reasoning, including stale moves after a stall.
 - The sharer validates the events (control granted? within the shared display?) and injects
-  them with `enigo` (macOS CGEvent, Windows SendInput, Linux X11/libei).
+  them with `enigo` (macOS CGEvent, Windows SendInput, Linux X11/libei). `crates/protocol`
+  rejects malformed or out-of-range messages, and `crates/control` decides what gets through:
+  the consent state, held keys and the deadman, stale moves, and the sharer winning the pointer.
+  It has no network or platform code, so its tests are scripted traces on a fake clock.
 - The sharer gets a transparent, click-through, always-on-top overlay window that draws the
   guest's cursor and name.
 - macOS needs Screen Recording and Accessibility permissions. Onboarding must guide the user
   through both.
-- Keyboard layouts: send key *codes* plus the produced *text*, and decide per platform which
-  to inject. This is a known hard part, so it gets its own ADR.
+- Keyboard layouts: the viewer sends the physical key and the text it produced, and the sharer
+  types the text unless it's a shortcut. ADR 0004 has the rules.
 
 ### 5. Server
 - Rust + axum + Postgres. Handles accounts, teams, rooms, and issuing LiveKit access tokens.

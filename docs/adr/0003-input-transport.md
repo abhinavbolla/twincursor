@@ -36,3 +36,13 @@ confirmed that.
   modifier on the sharer's machine is worse.
 - The 150 ms limit is a starting point, to be tuned by hand once remote control works.
 - LiveKit's data tracks may avoid queueing for moves. Revisit this if they do.
+
+## Update (2026-11-05)
+Building it in `crates/control` refined two details:
+
+- Every input message and heartbeat carries the timestamp, not only moves. They all feed the
+  baseline, and a fresh message tells the sharer that a stall's backlog has cleared.
+- The baseline is the smallest value over the last 10 to 20 s, not all time. Clocks drift by tens
+  of ppm, about 100 ms an hour, which would otherwise make every move look late in a long
+  session. The window only moves when messages arrive, so a backlog after a long stall is still
+  measured against the time before it.

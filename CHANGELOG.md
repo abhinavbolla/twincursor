@@ -16,6 +16,8 @@ Notable changes to TwinCursor. The format follows
 - Call health stats on both ends, and an on-screen HUD in the viewer.
 - Measurement tools: latency markers, text quality against a synthetic code editor, input path
   pings, and a Docker network lab with pass/fail targets.
+- Remote-control messages and the sharer's control session: consent, input checks, release of
+  held keys after a stall, and the keyboard model. Nothing injects real input yet.
 
 ### Security
 

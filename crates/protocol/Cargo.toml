@@ -1,0 +1,15 @@
+[package]
+name = "twincursor-protocol"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Versioned remote-control messages between TwinCursor guests and sharers"
+
+[lib]
+name = "protocol"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
