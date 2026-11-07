@@ -23,6 +23,8 @@ Notable changes to TwinCursor. The format follows
   order.
 - The viewer sends your mouse, keyboard and scroll while you're in control (F9 asks), and the
   sharer can take control back at any time with ⌃⌥⌘R.
+- Real input injection on macOS. It pauses while the sharer's screen is locked, so a guest can't
+  type into the lock screen.
 
 ### Security
 

@@ -10,6 +10,8 @@ mod held;
 mod injector;
 mod keyboard;
 mod lateness;
+#[cfg(target_os = "macos")]
+pub mod macos;
 mod revoke;
 #[cfg(test)]
 mod tests;

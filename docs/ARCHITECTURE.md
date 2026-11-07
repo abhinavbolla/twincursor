@@ -92,6 +92,17 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
   `Gated`, which checks the switch before every action and lets only releases through while a
   revoke is pending, so injection stops even if the control thread is behind. The control
   thread then revokes properly, telling the guest and releasing everything held.
+- On macOS, `control::macos::MacInjector` posts real events through `enigo` (CGEvent). Events
+  come from a private event source, so the sharer's own held keys don't leak into the guest's
+  input. Positions map onto the main display in global points; fractional scroll is carried
+  over, so slow trackpad scrolls aren't lost. Keys go as Mac virtual key codes from a table of
+  `KeyboardEvent.code` names. Nothing but releases is injected while the screen is locked (see
+  the threat model). Without the Accessibility permission it stops with a message that says
+  where to grant it.
+- `tc-spike probe` is a full-screen window that records the input it receives, using the
+  viewer's own event mapping. `bench/control-inject.sh` sends a script through the whole path
+  (guest, network, sharer, CGEvent, macOS, probe) and checks the text, shortcuts, clicks and
+  scrolls that arrive.
 - `bench/control-e2e.sh` runs a sharer and a scripted headless guest on one machine. The sharer
   records what it would inject, and `tc-spike replay` checks it against what the guest sent:
   every key, click, scroll and character once and in order, and pointer moves never invented
