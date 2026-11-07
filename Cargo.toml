@@ -6,6 +6,7 @@ members = ["crates/*"]
 edition = "2021"
 license = "AGPL-3.0-only"
 repository = "https://github.com/abhinavbolla/twincursor"
+rust-version = "1.89"
 
 [workspace.dependencies]
 livekit = { version = "0.9.7", features = ["rustls-tls-native-roots"] }

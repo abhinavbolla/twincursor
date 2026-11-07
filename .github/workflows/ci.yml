@@ -44,6 +44,28 @@ jobs:
       - name: Test
         run: cargo test --locked --release --workspace
 
+  # Builds with the oldest Rust the workspace promises to support (`rust-version` in Cargo.toml).
+  msrv:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the minimum supported Rust version
+        run: |
+          v=$(grep '^rust-version' Cargo.toml | cut -d'"' -f2)
+          rustup toolchain install "$v" --profile minimal
+          rustup default "$v"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: ./.github/actions/setup-libwebrtc
+        with:
+          triple: mac-arm64-release
+
+      - name: Build
+        run: cargo build --locked --release -p twincursor-media-spike
+
   # The viewer runs on Windows too, so make sure it keeps building there.
   windows-viewer:
     runs-on: windows-latest
