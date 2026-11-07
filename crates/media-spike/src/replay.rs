@@ -14,12 +14,30 @@ use control::{Action, Config, Controller, Effect, RecordInjector};
 use protocol::Message;
 use serde::de::DeserializeOwned;
 
-pub fn run(sent: &Path, actions: &Path) -> anyhow::Result<()> {
+/// With `revoked`, the sharer took control back partway: what was recorded must be the start of
+/// what was sent, then only releases, leaving nothing held.
+pub fn run(sent: &Path, actions: &Path, revoked: bool) -> anyhow::Result<()> {
     let messages: Vec<Message> =
         read_lines(sent).with_context(|| format!("reading {}", sent.display()))?;
     let recorded: Vec<Action> =
         read_lines(actions).with_context(|| format!("reading {}", actions.display()))?;
     let expected = simulate(&messages);
+    if revoked {
+        anyhow::ensure!(
+            !messages.contains(&Message::ReleaseControl),
+            "FAIL: the guest gave control back itself, so this run wasn't revoked"
+        );
+        return match compare_revoked(&expected, &recorded) {
+            Ok(n) => {
+                println!(
+                    "PASS: the first {n} of {} keys, clicks, scrolls and characters arrived in order, then only releases, and nothing is left held",
+                    split(&expected).1.len()
+                );
+                Ok(())
+            }
+            Err(e) => anyhow::bail!("FAIL: {e}"),
+        };
+    }
     let report = compare(&expected, &recorded);
     println!(
         "{} messages sent; {} actions expected, {} recorded",
@@ -111,6 +129,52 @@ pub fn compare(expected: &[Action], recorded: &[Action]) -> Result<Report, Strin
     })
 }
 
+/// Checks a run the sharer revoked partway. Returns how many actions got through before it.
+pub fn compare_revoked(expected: &[Action], recorded: &[Action]) -> Result<usize, String> {
+    let (_, exp) = split(expected);
+    let (_, rec) = split(recorded);
+    // Messages the guest sent before it heard of the revoke are turned away, so the recording
+    // may stop short of what was sent.
+    let n = exp.iter().zip(&rec).take_while(|(e, r)| e == r).count();
+    if let Some(a) = rec[n..].iter().find(|a| !is_release(a)) {
+        return Err(format!(
+            "after action {n}, {a:?} got through, but only releases may follow a revoke"
+        ));
+    }
+    let held = still_held(recorded);
+    if !held.is_empty() {
+        return Err(format!("still held at the end: {held:?}"));
+    }
+    Ok(n)
+}
+
+fn is_release(a: &Action) -> bool {
+    matches!(
+        a,
+        Action::Key { pressed: false, .. } | Action::Button { pressed: false, .. }
+    )
+}
+
+/// Keys and buttons pressed and never released.
+fn still_held(actions: &[Action]) -> Vec<String> {
+    let mut held: Vec<String> = Vec::new();
+    for a in actions {
+        let (name, pressed) = match a {
+            Action::Key { code, pressed } => (code.clone(), *pressed),
+            Action::Button { button, pressed } => (format!("{button:?}"), *pressed),
+            _ => continue,
+        };
+        if pressed {
+            if !held.contains(&name) {
+                held.push(name);
+            }
+        } else {
+            held.retain(|h| *h != name);
+        }
+    }
+    held
+}
+
 fn split(actions: &[Action]) -> (Vec<&Action>, Vec<&Action>) {
     actions.iter().partition(|a| matches!(a, Action::MoveTo(_)))
 }
@@ -156,6 +220,44 @@ mod tests {
         assert!(
             compare(&expected, &[mv(0.9), text("a"), text("b")]).is_err(),
             "invented move"
+        );
+    }
+
+    #[test]
+    fn a_revoke_may_cut_the_run_short_but_must_release_everything() {
+        let key = |code: &str, pressed| Action::Key {
+            code: code.into(),
+            pressed,
+        };
+        let expected = [
+            key("ShiftLeft", true),
+            text("a"),
+            text("b"),
+            key("ShiftLeft", false),
+        ];
+        assert_eq!(
+            compare_revoked(
+                &expected,
+                &[key("ShiftLeft", true), text("a"), key("ShiftLeft", false)]
+            ),
+            Ok(2)
+        );
+        assert!(
+            compare_revoked(&expected, &[key("ShiftLeft", true), text("a")]).is_err(),
+            "shift left held"
+        );
+        assert!(
+            compare_revoked(
+                &expected,
+                &[key("ShiftLeft", true), text("b"), key("ShiftLeft", false)]
+            )
+            .is_err(),
+            "typing went on after the cut"
+        );
+        assert_eq!(
+            compare_revoked(&expected, &expected),
+            Ok(4),
+            "the revoke landed after the last message"
         );
     }
 

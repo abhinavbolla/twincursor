@@ -55,7 +55,11 @@ Fill these in as code lands; keep them accurate.
   `tc-spike view --headless --measure-quality` (SSIM/PSNR vs the synthetic pattern)
 - Input path: `tc-spike view --headless --measure-input` (reliable vs lossy data channels)
 - Remote control end to end: `bench/control-e2e.sh` (headless scripted guest, sharer records what
-  it would inject, `tc-spike replay` checks it); `ANSWER=n` checks a refusal
+  it would inject, `tc-spike replay` checks it); `ANSWER=n` checks a refusal; `REVOKE=r` takes
+  control back mid-typing; `REVOKE=hotkey` presses ⌃⌥⌘R for real (unlocked screen only: macOS
+  doesn't deliver synthetic key presses to apps while the screen is locked)
+- Remote control by hand: `tc-spike share --allow-control` and `tc-spike view`; F9 in the viewer
+  asks for control and gives it back, F10 toggles the HUD while in control
 - Latency matrix: `bench/run-matrix.sh [config ...]` → `bench/results/*.json` (git-ignored)
 - Network lab (Docker): `bench/netlab/run.sh [--build] [profile ...]`, then
   `bench/netlab/report.sh` (profiles and SLOs in ARCHITECTURE.md)

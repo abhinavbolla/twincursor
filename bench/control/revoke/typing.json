@@ -1,0 +1,9 @@
+[
+  {"do": "request"},
+  {"do": "input", "event": {"kind": "key", "code": "ShiftLeft", "pressed": true}},
+  {"do": "input", "event": {"kind": "button", "button": "left", "pressed": true, "x": 0.5, "y": 0.5}},
+  {"do": "type", "text": "The quick brown fox jumps over the lazy dog while the sharer decides to take control back. The quick brown fox jumps over the lazy dog while the sharer decides to take control back. The quick brown fox jumps over the lazy dog while the sharer decides to take control back. The quick brown fox jumps over the lazy dog while the sharer decides to take control back. ", "gap_ms": 15},
+  {"do": "input", "event": {"kind": "button", "button": "left", "pressed": false, "x": 0.5, "y": 0.5}},
+  {"do": "input", "event": {"kind": "key", "code": "ShiftLeft", "pressed": false}},
+  {"do": "release"}
+]

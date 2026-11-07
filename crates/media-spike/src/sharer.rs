@@ -10,7 +10,9 @@ use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use control::{Config, Controller, Effect, Injector, LogInjector, RecordInjector};
+use control::{
+    Config, Controller, Effect, Gated, Injector, LogInjector, RecordInjector, RevokeSwitch,
+};
 use media::link::{ControlLink, LinkEvent, Outgoing};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -49,8 +51,9 @@ pub struct Sharer {
 }
 
 impl Sharer {
-    /// Starts the control thread. Returns the link to hand to `publish::run`.
-    pub fn start(inject: &Inject) -> anyhow::Result<(Self, ControlLink)> {
+    /// Starts the control thread. Returns the link to hand to `publish::run`. Tripping `revoke`
+    /// stops injection at once and ends control.
+    pub fn start(inject: &Inject, revoke: RevokeSwitch) -> anyhow::Result<(Self, ControlLink)> {
         let injector: Box<dyn Injector + Send> = match inject {
             Inject::Log => Box::new(LogInjector),
             Inject::Record(path) => Box::new(RecordInjector::new(std::fs::File::create(path)?)),
@@ -75,9 +78,19 @@ impl Sharer {
         }
         let thread = std::thread::Builder::new()
             .name("control".into())
-            .spawn(move || run(Controller::new(injector, Config::default()), &rx, &outgoing))?;
+            .spawn(move || {
+                let injector = Gated::new(injector, revoke.clone());
+                run(
+                    Controller::new(injector, Config::default()),
+                    &rx,
+                    &outgoing,
+                    &revoke,
+                )
+            })?;
         println!(
-            "Remote control is allowed to be requested. You'll be asked before anyone gets it."
+            "Remote control is allowed to be requested. You'll be asked before anyone gets it, \
+             and {} takes it back at any time.",
+            crate::hotkey::REVOKE
         );
         Ok((Self { tx, thread }, link))
     }
@@ -90,12 +103,20 @@ impl Sharer {
 }
 
 fn run<I: Injector>(
-    mut controller: Controller<I>,
+    mut controller: Controller<Gated<I>>,
     rx: &mpsc::Receiver<In>,
     outgoing: &UnboundedSender<Outgoing>,
+    revoke: &RevokeSwitch,
 ) {
     let mut bad_messages = 0u64;
     loop {
+        if controller.injector().pending() {
+            if let Some(guest) = controller.controller().or(controller.requester()) {
+                println!("Revoked: {} no longer has control.", guest.name);
+            }
+            apply(controller.revoke(), outgoing);
+            controller.injector_mut().settle();
+        }
         let effects = match rx.recv_timeout(TICK) {
             Ok(In::Link(LinkEvent::Data { from, payload })) => match protocol::decode(&payload) {
                 Ok(message) => controller.handle(&from, message, Instant::now()),
@@ -107,7 +128,7 @@ fn run<I: Injector>(
             },
             Ok(In::Link(LinkEvent::Left(identity))) => controller.left(&identity),
             Ok(In::Link(_)) => vec![],
-            Ok(In::Line(line)) => answer(&mut controller, line.trim()),
+            Ok(In::Line(line)) => answer(&mut controller, line.trim(), revoke),
             Ok(In::Stop) | Err(RecvTimeoutError::Disconnected) => {
                 apply(controller.revoke(), outgoing);
                 break;
@@ -118,15 +139,21 @@ fn run<I: Injector>(
         controller.tick(Instant::now());
     }
     let counters = controller.counters();
-    tracing::info!(?counters, bad_messages, "control stopped");
+    let blocked = controller.injector().blocked();
+    tracing::info!(?counters, bad_messages, blocked, "control stopped");
 }
 
-fn answer<I: Injector>(controller: &mut Controller<I>, line: &str) -> Vec<Effect> {
+fn answer<I: Injector>(
+    controller: &mut Controller<Gated<I>>,
+    line: &str,
+    revoke: &RevokeSwitch,
+) -> Vec<Effect> {
     if let Some(guest) = controller.requester().cloned() {
         if matches!(line, "y" | "Y" | "yes") {
             println!(
-                "{} now controls this computer. Type r and Enter to take it back.",
-                guest.name
+                "{} now controls this computer. Press {} (or type r and Enter) to take it back.",
+                guest.name,
+                crate::hotkey::REVOKE
             );
             controller.grant(Instant::now())
         } else {
@@ -134,8 +161,9 @@ fn answer<I: Injector>(controller: &mut Controller<I>, line: &str) -> Vec<Effect
             controller.deny()
         }
     } else if controller.controller().is_some() && line == "r" {
-        println!("Control taken back.");
-        controller.revoke()
+        // The same switch the hotkey trips, so both take the same path.
+        revoke.trip();
+        vec![]
     } else {
         vec![]
     }
