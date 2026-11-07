@@ -500,6 +500,7 @@ mod tests {
         let input = |seq, event| Message::Input {
             seq,
             sent_at_us: seq * 1000,
+            after: 0,
             event,
         };
         let messages = [

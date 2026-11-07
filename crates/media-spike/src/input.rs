@@ -157,6 +157,7 @@ mod tests {
             let message = protocol::Message::Input {
                 seq: 1,
                 sent_at_us: 0,
+                after: 0,
                 event: InputEvent::Key {
                     code: key_code(code),
                     pressed: true,

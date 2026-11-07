@@ -177,6 +177,11 @@ struct ShareArgs {
     /// it, or `record:PATH` it as JSON lines (see `replay`).
     #[arg(long, default_value = "real", requires = "allow_control")]
     inject: sharer::Inject,
+    /// Run without the revoke hotkey and the on-screen label, for test runs on machines without
+    /// a display (the network lab). Only with `--inject log` or `record`: real control always
+    /// shows the sharer who is in control.
+    #[arg(long, requires = "allow_control")]
+    headless: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -280,9 +285,19 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
     if !args.allow_control {
         return network(None);
     }
-    let ui = hotkey::SharerUi::new()?;
     let revoke = control::RevokeSwitch::default();
-    let (sharer, link) = sharer::Sharer::start(&args.inject, revoke.clone(), ui.overlay())?;
+    if args.headless {
+        anyhow::ensure!(
+            !matches!(args.inject, sharer::Inject::Real),
+            "--headless only works with --inject log or record: real control needs the label"
+        );
+        let (sharer, link) = sharer::Sharer::start(&args.inject, revoke, None)?;
+        let result = network(Some(link));
+        sharer.stop();
+        return result;
+    }
+    let ui = hotkey::SharerUi::new()?;
+    let (sharer, link) = sharer::Sharer::start(&args.inject, revoke.clone(), Some(ui.overlay()))?;
     let result = ui.run(revoke, move || network(Some(link)));
     // Release anything a guest still holds before exiting.
     sharer.stop();

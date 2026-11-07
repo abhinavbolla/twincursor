@@ -36,6 +36,7 @@ Notable changes to TwinCursor. The format follows
 ### Fixed
 
 - The viewer window can be resized: the frame is letterboxed instead of drawn at a fixed size.
+- A guest leaving right after a fast burst of typing no longer loses the end of it.
 
 - Frame pacing no longer drops frames at the full frame rate.
 - The sharer keeps only the newest frame when the encoder falls behind, instead of queueing them.

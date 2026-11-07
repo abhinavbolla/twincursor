@@ -37,10 +37,15 @@ pub enum Message {
         sent_at_us: u64,
     },
     /// `seq` counts up across all input from one viewer. `sent_at_us` is the viewer's monotonic
-    /// clock, from any fixed start: the sharer only compares it with itself.
+    /// clock, from any fixed start: the sharer only compares it with itself. `after` is how many
+    /// reliable inputs (everything but moves) the viewer had sent in this grant before this one:
+    /// a move waits until the sharer has applied that many, so it can't overtake a click or key
+    /// sent before it.
     Input {
         seq: u64,
         sent_at_us: u64,
+        #[serde(default)]
+        after: u64,
         event: InputEvent,
     },
 
@@ -48,6 +53,9 @@ pub enum Message {
     Grant,
     Deny,
     Revoke,
+    /// Answers the guest's `ReleaseControl`. Everything the guest sent before it has been
+    /// applied, so the guest can leave without cutting off its last input.
+    Released,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -228,6 +236,7 @@ mod tests {
         Message::Input {
             seq: 7,
             sent_at_us: 1_234_567,
+            after: 3,
             event,
         }
     }
@@ -268,6 +277,7 @@ mod tests {
             Message::Grant,
             Message::Deny,
             Message::Revoke,
+            Message::Released,
         ];
         for message in messages {
             assert_eq!(decode(&encode(&message)).unwrap(), message);
@@ -279,7 +289,7 @@ mod tests {
         let bytes = encode(&input(InputEvent::Move { x: 0.5, y: 0.25 }));
         assert_eq!(
             std::str::from_utf8(&bytes).unwrap(),
-            r#"{"v":1,"msg":{"type":"input","seq":7,"sent_at_us":1234567,"event":{"kind":"move","x":0.5,"y":0.25}}}"#
+            r#"{"v":1,"msg":{"type":"input","seq":7,"sent_at_us":1234567,"after":3,"event":{"kind":"move","x":0.5,"y":0.25}}}"#
         );
     }
 

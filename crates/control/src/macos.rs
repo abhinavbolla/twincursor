@@ -25,6 +25,11 @@ use crate::{Action, Injector, Point};
 /// How long a lock-screen check or the display's bounds are trusted before asking again.
 const RECHECK: Duration = Duration::from_millis(50);
 const BOUNDS_RECHECK: Duration = Duration::from_secs(2);
+/// The system may still report the pointer where an earlier move put it for a moment. A pointer
+/// at any of our targets from this long ago is ours, not the sharer's.
+const IN_FLIGHT: Duration = Duration::from_millis(100);
+/// How long a click waits for the pointer to reach the position it carries.
+const SETTLE: Duration = Duration::from_millis(15);
 
 #[derive(Debug, thiserror::Error)]
 pub enum MacError {
@@ -47,6 +52,8 @@ pub struct MacInjector {
     locked_at: Option<Instant>,
     /// Scroll left over from fractional deltas, so slow trackpad scrolls aren't lost.
     carry: [(f64, f64); 2],
+    /// Recent pointer targets, newest last, in global points.
+    targets: Vec<(Instant, (i32, i32))>,
     /// Actions held back because the screen was locked.
     pub paused: u64,
     /// Actions the system refused.
@@ -72,6 +79,7 @@ impl MacInjector {
             locked: false,
             locked_at: None,
             carry: [(0.0, 0.0); 2],
+            targets: Vec::new(),
             paused: 0,
             failed: 0,
         })
@@ -105,11 +113,25 @@ impl MacInjector {
         match action {
             Action::MoveTo(p) => {
                 let (x, y) = to_points(*p, self.display());
+                let now = Instant::now();
+                self.targets
+                    .retain(|(t, _)| now.duration_since(*t) < IN_FLIGHT);
+                self.targets.push((now, (x, y)));
                 self.enigo.move_mouse(x, y, Coordinate::Abs)
             }
-            Action::Button { button, pressed } => self
-                .enigo
-                .button(enigo_button(*button), direction(*pressed)),
+            Action::Button { button, pressed } => {
+                // enigo clicks where the pointer is: make sure the move before it has landed.
+                if let Some(&(_, target)) = self.targets.last() {
+                    let start = Instant::now();
+                    while start.elapsed() < SETTLE
+                        && real_pointer().is_some_and(|at| !same_point(at, target))
+                    {
+                        std::thread::sleep(Duration::from_micros(500));
+                    }
+                }
+                self.enigo
+                    .button(enigo_button(*button), direction(*pressed))
+            }
             Action::Scroll { dx, dy, unit } => {
                 let slot = usize::from(*unit == ScrollUnit::Line);
                 let (sx, sy) = &mut self.carry[slot];
@@ -154,14 +176,36 @@ impl Injector for MacInjector {
     }
 
     fn pointer(&self) -> Option<Point> {
-        let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState).ok()?;
-        let at = CGEvent::new(source).ok()?.location();
+        let at = real_pointer()?;
+        let now = Instant::now();
+        let ours = self
+            .targets
+            .iter()
+            .any(|(t, p)| now.duration_since(*t) < IN_FLIGHT && same_point(at, *p));
+        // Still on its way to where we sent it: report the newest target, so a move in flight
+        // isn't mistaken for the sharer taking the mouse.
+        let (x, y) = match (ours, self.targets.last()) {
+            (true, Some(&(_, newest))) => newest,
+            _ => at,
+        };
         let (x0, y0, w, h) = self.bounds;
         Some(Point {
-            x: ((at.x - x0) / w).clamp(0.0, 1.0),
-            y: ((at.y - y0) / h).clamp(0.0, 1.0),
+            x: ((f64::from(x) - x0) / w).clamp(0.0, 1.0),
+            y: ((f64::from(y) - y0) / h).clamp(0.0, 1.0),
         })
     }
+}
+
+/// Where the pointer is, in global points.
+fn real_pointer() -> Option<(i32, i32)> {
+    let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState).ok()?;
+    let at = CGEvent::new(source).ok()?.location();
+    Some((at.x.round() as i32, at.y.round() as i32))
+}
+
+/// Within a point, which is as close as the system reports.
+fn same_point(a: (i32, i32), b: (i32, i32)) -> bool {
+    (a.0 - b.0).abs() <= 1 && (a.1 - b.1).abs() <= 1
 }
 
 impl Drop for MacInjector {
