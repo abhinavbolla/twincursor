@@ -124,6 +124,10 @@ guest sent.
   over about 4 s, never reached the sharer, though both sides were connected and the video was
   flowing. Once one got through, nothing else was lost. The guest now repeats an unanswered
   request every second, and the sharer treats a repeat as the same request.
+- **A revoke stops typing at once.** Taking control back 1.5 s into typing 368 characters, with
+  Shift and the mouse button held: 5 runs out of 5 stopped mid-text, released both, and let
+  nothing but releases through afterwards. In one run, 3 keys the guest sent before it heard of
+  the revoke were turned away.
 - **Carrying control costs no measurable latency.** Two interleaved 30 s runs each, 1080p H.264,
   synthetic pattern:
 
@@ -132,6 +136,9 @@ guest sent.
 | Before (main) | 15.8–15.9 ms | 17.2–17.6 ms | 0.8–1.0 ms |
 | After, control off | 15.7–15.9 ms | 17.4–17.6 ms | 0.7 ms |
 | After, `--allow-control` | 15.7–15.8 ms | 17.6 ms | 0.8 ms |
+
+The viewer window's new letterboxed drawing costs nothing either: capture → presented p50 19.7–19.8
+ms against 19.8–20.0 ms before (two interleaved 25 s runs each, 1080p, windowed).
 
 ## Network lab
 
@@ -205,6 +212,8 @@ Remote control end to end, with nothing injected for real:
 ```bash
 bench/control-e2e.sh                # every script in bench/control/
 ANSWER=n bench/control-e2e.sh       # the sharer says no: nothing may be injected
+REVOKE=r bench/control-e2e.sh       # the sharer takes control back mid-typing
+REVOKE=hotkey bench/control-e2e.sh  # the same with ⌃⌥⌘R, pressed for real (unlocked screen)
 ```
 
 The network lab needs Docker, and runs its own LiveKit server:

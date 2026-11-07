@@ -10,6 +10,7 @@ mod held;
 mod injector;
 mod keyboard;
 mod lateness;
+mod revoke;
 #[cfg(test)]
 mod tests;
 
@@ -21,6 +22,7 @@ pub use injector::{Action, Injector, LogInjector, Point, RecordInjector};
 use keyboard::{Keyboard, Press};
 use lateness::Lateness;
 use protocol::{InputEvent, Message, Platform};
+pub use revoke::{Gated, RevokeSwitch};
 
 #[derive(Debug, Clone)]
 pub struct Config {

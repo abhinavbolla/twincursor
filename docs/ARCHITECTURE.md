@@ -82,6 +82,16 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
   most 120 times a second (the newest position always goes out), heartbeats every 250 ms, and
   repeats an unanswered request every second, because packets sent just after joining can be
   lost.
+- The viewer maps window positions through the letterbox the frame is drawn in, so clicks land
+  right at any window size, and ignores presses on the black bars (releases always go, clamped
+  to the edge). Losing focus sends `ReleaseAll`. F9 asks for control and gives it back; the
+  title says which state you're in, so you never type blind. The macOS app menu is off, so ⌘Q
+  and ⌘H reach the sharer.
+- Revoking doesn't wait for anything. The sharer's global hotkey (⌃⌥⌘R) and the terminal's `r`
+  trip the same `RevokeSwitch`: an atomic, no lock or channel. The injector is wrapped in
+  `Gated`, which checks the switch before every action and lets only releases through while a
+  revoke is pending, so injection stops even if the control thread is behind. The control
+  thread then revokes properly, telling the guest and releasing everything held.
 - `bench/control-e2e.sh` runs a sharer and a scripted headless guest on one machine. The sharer
   records what it would inject, and `tc-spike replay` checks it against what the guest sent:
   every key, click, scroll and character once and in order, and pointer moves never invented

@@ -10,16 +10,23 @@
 #   cargo build --release -p twincursor-media-spike
 # Usage: bench/control-e2e.sh [script.json ...]   (default: bench/control/*.json)
 # Set ANSWER=n to check that a refused request injects nothing.
+# Set REVOKE=r to take control back partway, by typing r into the sharer's terminal, or
+# REVOKE=hotkey to press the global hotkey (⌃⌥⌘R) for real. Typing must stop at once and nothing
+# may stay held (default script: bench/control/revoke/*.json). The hotkey needs an unlocked
+# screen and Accessibility permission for this terminal, to post the key press.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 BIN=${BIN:-target/release/tc-spike}
 ANSWER=${ANSWER:-y}
+REVOKE=${REVOKE:-}
 OUT=bench/results/control-e2e-$(date +%s)
 mkdir -p "$OUT"
 
 scripts=("$@")
-[[ ${#scripts[@]} -eq 0 ]] && scripts=(bench/control/*.json)
+if [[ ${#scripts[@]} -eq 0 ]]; then
+  if [[ -n $REVOKE ]]; then scripts=(bench/control/revoke/*.json); else scripts=(bench/control/*.json); fi
+fi
 
 failed=0
 for script in "${scripts[@]}"; do
@@ -54,6 +61,16 @@ for script in "${scripts[@]}"; do
     echo "the sharer never asked"
   fi
 
+  if [[ -n $REVOKE && $asked -eq 1 ]]; then
+    for _ in $(seq 40); do grep -q "now controls this computer" "$dir/share.log" && break; sleep 0.25; done
+    sleep 1.5
+    case $REVOKE in
+      r) echo r >&3 ;;
+      hotkey) swift bench/control/post-hotkey.swift ;;
+      *) echo "REVOKE must be r or hotkey"; exit 2 ;;
+    esac
+  fi
+
   viewer_ok=1
   wait "$viewer" || viewer_ok=0
   kill -INT "$sharer" 2>/dev/null || true
@@ -61,7 +78,18 @@ for script in "${scripts[@]}"; do
   exec 3>&-
   rm -f "$dir/answer"
 
-  if [[ $ANSWER == y ]]; then
+  if [[ -n $REVOKE ]]; then
+    # Revoked partway: the viewer must notice, the sharer must say so, and the recording must
+    # be the start of the run followed only by releases.
+    if [[ $viewer_ok -eq 0 ]] && grep -q "control ended while the script was still running" "$dir/view.log" \
+      && grep -q "Revoked: .* no longer has control" "$dir/share.log" \
+      && "$BIN" replay --revoked --sent "$dir/sent.jsonl" --actions "$dir/actions.jsonl"; then
+      echo "$name: PASS (revoked with $REVOKE)"
+    else
+      echo "$name: FAIL (logs in $dir)"
+      failed=1
+    fi
+  elif [[ $ANSWER == y ]]; then
     if [[ $viewer_ok -eq 1 ]] && "$BIN" replay --sent "$dir/sent.jsonl" --actions "$dir/actions.jsonl"; then
       echo "$name: PASS"
     else

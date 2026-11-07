@@ -23,6 +23,8 @@ const TICK: Duration = Duration::from_millis(4);
 #[derive(Debug, Clone)]
 pub enum Ui {
     Input(InputEvent),
+    /// Ask for control, or give it back.
+    Toggle,
     Request,
     Release,
 }
@@ -157,6 +159,10 @@ fn run(
                 Ui::Input(event) => out.extend(session.input(event, now)),
                 Ui::Request => out.extend(session.request(now)),
                 Ui::Release => out.extend(session.release()),
+                Ui::Toggle => out.extend(match session.state() {
+                    GuestState::Idle => session.request(now),
+                    _ => session.release(),
+                }),
             },
             Ok(In::Stop) | Err(RecvTimeoutError::Disconnected) => {
                 if let Some(m) = session.release() {

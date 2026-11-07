@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use clap::Args;
+use control::guest::GuestState;
 use livekit::webrtc::native::yuv_helper;
 use livekit::webrtc::video_frame::VideoBuffer;
 use media::capture::wall_clock_us;
@@ -20,14 +21,17 @@ use media::netstats::Board;
 use media::quality::Snapshots;
 use media::stats::{summarize, Summary};
 use media::subscribe::{self, DecodedFrame, ViewConfig};
+use protocol::InputEvent;
 use serde_json::json;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::Key;
+use winit::keyboard::{Key, KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+use crate::guest::{Guest, Ui};
+use crate::input::{self, Rect};
 use crate::{hud, Connection};
 
 const REPORT_EVERY: Duration = Duration::from_secs(10);
@@ -85,6 +89,8 @@ enum UserEvent {
     Stop,
 }
 
+const TITLE: &str = "TwinCursor viewer";
+
 /// Newest decoded frame, plus a flag so we only wake the event loop once per redraw.
 #[derive(Default)]
 struct Latest {
@@ -111,7 +117,14 @@ pub fn run(args: ViewArgs) -> anyhow::Result<()> {
     if args.headless {
         return run_headless(args);
     }
-    let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
+    let mut builder = EventLoop::<UserEvent>::with_user_event();
+    #[cfg(target_os = "macos")]
+    {
+        // Without the default menu, ⌘Q and ⌘H reach the sharer instead of closing this window.
+        use winit::platform::macos::EventLoopBuilderExtMacOS;
+        builder.with_default_menu(false);
+    }
+    let event_loop = builder.build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     let proxy = event_loop.create_proxy();
 
@@ -121,6 +134,7 @@ pub fn run(args: ViewArgs) -> anyhow::Result<()> {
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
 
     let config = view_config(&args)?;
+    let (guest, link, guest_thread) = Guest::start(args.name.clone(), args.sent_log.as_deref())?;
     let network = {
         let latest = latest.clone();
         let recorder = recorder.clone();
@@ -139,7 +153,12 @@ pub fn run(args: ViewArgs) -> anyhow::Result<()> {
                 let _ = stop_rx.await;
             };
             let result = runtime.block_on(subscribe::run(
-                config, recorder, board, None, on_frame, shutdown,
+                config,
+                recorder,
+                board,
+                Some(link),
+                on_frame,
+                shutdown,
             ));
             if let Err(e) = &result {
                 tracing::error!("viewer failed: {e}");
@@ -170,9 +189,22 @@ pub fn run(args: ViewArgs) -> anyhow::Result<()> {
         frame_size: (0, 0),
         last_report: Instant::now(),
         frames_since_report: 0,
+        guest: guest.clone(),
+        shown_state: GuestState::Idle,
+        rect: Rect {
+            x: 0,
+            y: 0,
+            w: 1,
+            h: 1,
+        },
+        cursor: None,
+        surface_size: (0, 0),
     };
+    tracing::info!("press F9 to ask for control, and F9 again to give it back");
     event_loop.run_app(&mut app)?;
 
+    guest.stop();
+    let _ = guest_thread.join();
     let _ = stop_tx.send(());
     let _ = network.join();
     let recorder = recorder.lock().unwrap();
@@ -198,6 +230,14 @@ struct App {
     frame_size: (u32, u32),
     last_report: Instant,
     frames_since_report: u64,
+    guest: Guest,
+    /// The control state the title last showed.
+    shown_state: GuestState,
+    /// Where the frame is drawn in the window.
+    rect: Rect,
+    /// The pointer in window pixels, while it's over the window.
+    cursor: Option<(f64, f64)>,
+    surface_size: (u32, u32),
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -206,7 +246,7 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
         let attributes = Window::default_attributes()
-            .with_title("TwinCursor viewer")
+            .with_title(TITLE)
             .with_inner_size(PhysicalSize::new(1662, 1080));
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
         let context = softbuffer::Context::new(window.clone()).expect("softbuffer context");
@@ -216,22 +256,99 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
-            UserEvent::NewFrame => self.present_latest(),
+            UserEvent::NewFrame => {
+                self.present_latest();
+                self.show_state();
+            }
             UserEvent::Stop => event_loop.exit(),
         }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+        let controlling = self.guest.status.get() == GuestState::InControl;
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
-                    && matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("s")) =>
-            {
-                self.hud = !self.hud;
+            WindowEvent::Resized(size) => self.resize(size),
+            WindowEvent::Focused(false) => {
+                // Keys held when the window loses focus would never see their key-up here.
+                self.guest.send(Ui::Input(InputEvent::ReleaseAll));
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                let pressed = event.state == ElementState::Pressed;
+                let PhysicalKey::Code(code) = event.physical_key else {
+                    return;
+                };
+                match code {
+                    KeyCode::F9 => {
+                        if pressed && !event.repeat {
+                            self.guest.send(Ui::Toggle);
+                        }
+                    }
+                    KeyCode::F10 => {
+                        if pressed && !event.repeat {
+                            self.hud = !self.hud;
+                        }
+                    }
+                    _ if controlling => {
+                        let text = if pressed {
+                            input::key_text(event.text.as_deref())
+                        } else {
+                            None
+                        };
+                        self.guest.send(Ui::Input(InputEvent::Key {
+                            code: input::key_code(code),
+                            pressed,
+                            text,
+                        }));
+                    }
+                    _ => {
+                        let is_s = matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("s"));
+                        if pressed && is_s {
+                            self.hud = !self.hud;
+                        }
+                    }
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                let at = (position.x, position.y);
+                self.cursor = Some(at);
+                if controlling {
+                    if let Some((x, y)) = input::to_surface(self.rect, at) {
+                        self.guest.send(Ui::Input(InputEvent::Move { x, y }));
+                    }
+                }
+            }
+            WindowEvent::CursorLeft { .. } => self.cursor = None,
+            WindowEvent::MouseInput { state, button, .. } if controlling => {
+                let (Some(button), Some(at)) = (input::button(button), self.cursor) else {
+                    return;
+                };
+                let pressed = state == ElementState::Pressed;
+                // A press needs to be on the frame; a release goes wherever the pointer is, so
+                // nothing stays held on the sharer.
+                let point = if pressed {
+                    input::to_surface(self.rect, at)
+                } else {
+                    Some(input::to_surface_clamped(self.rect, at))
+                };
+                if let Some((x, y)) = point {
+                    self.guest.send(Ui::Input(InputEvent::Button {
+                        button,
+                        pressed,
+                        x,
+                        y,
+                    }));
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } if controlling => {
+                let scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor());
+                if let Some(event) = input::scroll(delta, scale) {
+                    self.guest.send(Ui::Input(event));
+                }
             }
             _ => {}
         }
+        self.show_state();
     }
 }
 
@@ -250,22 +367,22 @@ impl App {
         let frame_size = (frame.i420.width(), frame.i420.height());
         if frame_size != self.frame_size {
             // Show frames 1:1 for the sharpest text, unless they don't fit on this monitor.
-            // The window only grows: when the sharer's auto-throttle drops to a lower tier,
-            // frames are scaled up to the window instead of the window jumping around.
-            if frame_size.0 > self.size.0 || frame_size.1 > self.size.1 {
+            // After the first frame the window only grows on its own: when the sharer's
+            // auto-throttle drops to a lower tier, frames are scaled up instead of the window
+            // jumping around. The guest can resize it; the frame is then letterboxed.
+            let first = self.frame_size == (0, 0);
+            if first || frame_size.0 > self.size.0 || frame_size.1 > self.size.1 {
                 let monitor = window
                     .current_monitor()
                     .map(|m| (m.size().width, m.size().height));
                 let (w, h) = monitor.map_or(frame_size, |m| fit_within(frame_size, usable(m)));
-                let _ = window.request_inner_size(PhysicalSize::new(w, h));
-                surface
-                    .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
-                    .expect("resize surface");
-                self.size = (w, h);
+                if let Some(size) = window.request_inner_size(PhysicalSize::new(w, h)) {
+                    self.size = (size.width, size.height);
+                }
             }
             self.frame_size = frame_size;
             tracing::info!(
-                "receiving {}x{}, showing at {}x{}",
+                "receiving {}x{}, window {}x{}",
                 frame_size.0,
                 frame_size.1,
                 self.size.0,
@@ -273,21 +390,59 @@ impl App {
             );
         }
         let (w, h) = self.size;
+        if w < 2 || h < 2 {
+            return;
+        }
+        let rect = input::letterbox(frame_size, (w, h));
+        if rect != self.rect {
+            tracing::info!(
+                "drawing {}x{} at ({}, {}) in a {w}x{h} window",
+                rect.w,
+                rect.h,
+                rect.x,
+                rect.y
+            );
+            self.rect = rect;
+        }
         let mut i420 = frame.i420;
-        if (w, h) != frame_size {
-            i420 = i420.scale(w as i32, h as i32);
+        if (rect.w, rect.h) != frame_size {
+            i420 = i420.scale(rect.w as i32, rect.h as i32);
         }
 
+        if self.surface_size != (w, h) {
+            if surface
+                .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
+                .is_err()
+            {
+                return;
+            }
+            self.surface_size = (w, h);
+        }
         let mut buffer = surface.buffer_mut().expect("buffer");
+        if (rect.w, rect.h) != (w, h) {
+            buffer.fill(0);
+        }
         // softbuffer pixels are 0RGB u32s, i.e. B,G,R,X bytes on little-endian, which is
         // what libyuv calls ARGB.
         // SAFETY: reinterpreting initialized u32s as bytes; alignment only gets looser.
         let bytes = unsafe {
             std::slice::from_raw_parts_mut(buffer.as_mut_ptr().cast::<u8>(), buffer.len() * 4)
         };
+        let offset = (rect.y * w + rect.x) as usize * 4;
         let (y, u, v) = i420.data();
         let (sy, su, sv) = i420.strides();
-        yuv_helper::i420_to_argb(y, sy, u, su, v, sv, bytes, w * 4, w as i32, h as i32);
+        yuv_helper::i420_to_argb(
+            y,
+            sy,
+            u,
+            su,
+            v,
+            sv,
+            &mut bytes[offset..],
+            w * 4,
+            rect.w as i32,
+            rect.h as i32,
+        );
         if self.hud {
             let lines = hud::lines(&self.board.lock().unwrap(), self.recent_rtt);
             hud::draw(&mut buffer, w as usize, h as usize, &lines);
@@ -306,6 +461,28 @@ impl App {
         if self.last_report.elapsed() >= REPORT_EVERY {
             self.report();
         }
+    }
+
+    fn resize(&mut self, size: PhysicalSize<u32>) {
+        self.size = (size.width, size.height);
+    }
+
+    /// Shows in the title whether this guest has control, so they never type blind.
+    fn show_state(&mut self) {
+        let state = self.guest.status.get();
+        if state == self.shown_state {
+            return;
+        }
+        self.shown_state = state;
+        let title = match state {
+            GuestState::Idle => format!("{TITLE} (F9 asks for control)"),
+            GuestState::Requested => format!("{TITLE}: asking for control…"),
+            GuestState::InControl => format!("{TITLE}: you're in control (F9 gives it back)"),
+        };
+        if let Some(window) = &self.window {
+            window.set_title(&title);
+        }
+        tracing::info!("{title}");
     }
 
     fn report(&mut self) {

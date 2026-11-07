@@ -54,10 +54,7 @@ pub enum Message {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InputEvent {
     /// Pointer position, 0..1 over the shared surface from its top left.
-    Move {
-        x: f64,
-        y: f64,
-    },
+    Move { x: f64, y: f64 },
     /// Carries its own position, so it can't land in the wrong place by overtaking a move.
     Button {
         button: Button,
@@ -65,11 +62,8 @@ pub enum InputEvent {
         x: f64,
         y: f64,
     },
-    Scroll {
-        dx: f64,
-        dy: f64,
-        unit: ScrollUnit,
-    },
+    /// Positive values scroll right and down, as on the web: the content moves left and up.
+    Scroll { dx: f64, dy: f64, unit: ScrollUnit },
     /// `code` names the physical key as `KeyboardEvent.code` does (`KeyA`, `ShiftLeft`), whatever
     /// the guest's layout. `text` is what the key produced in that layout, if anything.
     Key {
