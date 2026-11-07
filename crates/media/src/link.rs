@@ -4,7 +4,9 @@
 //! runs on tasks of its own, with its own copy of the room's events, so input never waits behind
 //! stats polls or republishing in the main loop (see `ping.rs` for the measurement).
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use livekit::prelude::*;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -36,11 +38,47 @@ pub struct Outgoing {
 
 pub type OnEvent = Arc<dyn Fn(LinkEvent) + Send + Sync>;
 
+/// The app's end for sending. It counts what hasn't gone out yet, so the app can wait for the
+/// last messages before it leaves the room.
+#[derive(Clone)]
+pub struct LinkSender {
+    tx: UnboundedSender<Outgoing>,
+    pending: Arc<AtomicUsize>,
+}
+
+impl LinkSender {
+    pub fn send(&self, out: Outgoing) {
+        self.pending.fetch_add(1, Ordering::AcqRel);
+        if self.tx.send(out).is_err() {
+            self.pending.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    /// Messages handed over but not sent yet.
+    pub fn pending(&self) -> usize {
+        self.pending.load(Ordering::Acquire)
+    }
+
+    /// Waits until everything handed over has been sent, or `limit` passes. Returns whether it
+    /// all went out.
+    pub fn flush(&self, limit: Duration) -> bool {
+        let start = Instant::now();
+        while self.pending() > 0 {
+            if start.elapsed() >= limit {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        true
+    }
+}
+
 /// The media side of a link, handed to `publish::run` or `subscribe::run`.
 pub struct ControlLink {
     pub topic: String,
     pub on_event: OnEvent,
     pub outgoing: UnboundedReceiver<Outgoing>,
+    pending: Arc<AtomicUsize>,
 }
 
 impl ControlLink {
@@ -48,14 +86,16 @@ impl ControlLink {
     pub fn new(
         topic: impl Into<String>,
         on_event: impl Fn(LinkEvent) + Send + Sync + 'static,
-    ) -> (Self, UnboundedSender<Outgoing>) {
+    ) -> (Self, LinkSender) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let pending = Arc::new(AtomicUsize::new(0));
         let link = Self {
             topic: topic.into(),
             on_event: Arc::new(on_event),
             outgoing: rx,
+            pending: pending.clone(),
         };
-        (link, tx)
+        (link, LinkSender { tx, pending })
     }
 }
 
@@ -66,6 +106,7 @@ pub(crate) fn start(room: &Room, link: ControlLink) -> [JoinHandle<()>; 2] {
         topic,
         on_event,
         outgoing,
+        pending,
     } = link;
     let events = room.subscribe();
     // Participants already in the room produce no connect event.
@@ -74,7 +115,7 @@ pub(crate) fn start(room: &Room, link: ControlLink) -> [JoinHandle<()>; 2] {
     }
     [
         tokio::spawn(receive(events, topic.clone(), on_event)),
-        tokio::spawn(send(room.local_participant(), outgoing, topic)),
+        tokio::spawn(send(room.local_participant(), outgoing, topic, pending)),
     ]
 }
 
@@ -111,7 +152,12 @@ async fn receive(mut events: UnboundedReceiver<RoomEvent>, topic: String, on_eve
     }
 }
 
-async fn send(local: LocalParticipant, mut outgoing: UnboundedReceiver<Outgoing>, topic: String) {
+async fn send(
+    local: LocalParticipant,
+    mut outgoing: UnboundedReceiver<Outgoing>,
+    topic: String,
+    pending: Arc<AtomicUsize>,
+) {
     while let Some(out) = outgoing.recv().await {
         let packet = DataPacket {
             payload: out.payload,
@@ -122,5 +168,38 @@ async fn send(local: LocalParticipant, mut outgoing: UnboundedReceiver<Outgoing>
         if let Err(e) = local.publish_data(packet).await {
             tracing::warn!("control message not sent: {e}");
         }
+        pending.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn out() -> Outgoing {
+        Outgoing {
+            to: None,
+            payload: vec![1],
+            reliable: true,
+        }
+    }
+
+    #[test]
+    fn counts_what_has_not_gone_out() {
+        let (link, sender) = ControlLink::new("t", |_| {});
+        sender.send(out());
+        sender.send(out());
+        assert_eq!(sender.pending(), 2);
+        assert!(
+            !sender.flush(Duration::from_millis(10)),
+            "nothing sends them"
+        );
+        // The send task subtracts one per message it has sent.
+        link.pending.fetch_sub(2, Ordering::AcqRel);
+        assert!(sender.flush(Duration::from_millis(10)));
+        // Once the link is gone, sends are dropped and not counted as pending forever.
+        drop(link);
+        sender.send(out());
+        assert_eq!(sender.pending(), 0);
     }
 }

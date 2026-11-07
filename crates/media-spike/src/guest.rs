@@ -12,10 +12,9 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use control::guest::{GuestSession, GuestState};
-use media::link::{ControlLink, LinkEvent, Outgoing};
+use media::link::{ControlLink, LinkEvent, LinkSender, Outgoing};
 use protocol::{InputEvent, Message, Platform};
 use serde::Deserialize;
-use tokio::sync::mpsc::UnboundedSender;
 
 const TICK: Duration = Duration::from_millis(4);
 
@@ -32,7 +31,9 @@ pub enum Ui {
 enum In {
     Link(LinkEvent),
     Ui(Ui),
-    Stop,
+    /// Give control back and end, after the sharer confirms it has applied everything (or
+    /// this long passes).
+    Stop(Duration),
 }
 
 /// The guest session's state, readable from any thread.
@@ -62,6 +63,7 @@ impl Status {
 pub struct Guest {
     tx: Sender<In>,
     pub status: Status,
+    sender: LinkSender,
 }
 
 impl Guest {
@@ -83,32 +85,51 @@ impl Guest {
         let status = Status::default();
         let thread = {
             let status = status.clone();
-            std::thread::Builder::new()
-                .name("guest".into())
-                .spawn(move || run(name, &rx, &outgoing, &status, log))?
+            std::thread::Builder::new().name("guest".into()).spawn({
+                let outgoing = outgoing.clone();
+                move || run(name, &rx, &outgoing, &status, log)
+            })?
         };
-        Ok((Self { tx, status }, link, thread))
+        Ok((
+            Self {
+                tx,
+                status,
+                sender: outgoing,
+            },
+            link,
+            thread,
+        ))
     }
 
     pub fn send(&self, ui: Ui) {
         let _ = self.tx.send(In::Ui(ui));
     }
 
-    /// Gives control back and ends the thread.
-    pub fn stop(&self) {
-        let _ = self.tx.send(In::Stop);
+    /// Gives control back and ends the thread once the sharer confirms it has applied
+    /// everything sent, so leaving the room doesn't cut off the guest's last input. Waits at most
+    /// `limit` for that. Join the thread to wait for it.
+    pub fn stop(&self, limit: Duration) {
+        let _ = self.tx.send(In::Stop(limit));
+    }
+
+    /// Messages handed to the link but not sent yet.
+    pub fn unsent(&self) -> usize {
+        self.sender.pending()
     }
 }
 
 fn run(
     name: String,
     rx: &mpsc::Receiver<In>,
-    outgoing: &UnboundedSender<Outgoing>,
+    outgoing: &LinkSender,
     status: &Status,
     mut log: Option<std::fs::File>,
 ) {
     let mut session = GuestSession::new(Instant::now());
     let mut sharer: Option<String> = None;
+    // A release the sharer hasn't confirmed yet, and when we must leave anyway.
+    let mut awaiting_release = false;
+    let mut leave_by: Option<Instant> = None;
     let mut send = |sharer: &Option<String>, message: Message| {
         let Some(to) = sharer else {
             tracing::debug!(?message, "no sharer yet; not sent");
@@ -118,7 +139,7 @@ fn run(
             let line = serde_json::to_string(&message).expect("messages serialize");
             let _ = writeln!(log, "{line}");
         }
-        let _ = outgoing.send(Outgoing {
+        outgoing.send(Outgoing {
             to: Some(to.clone()),
             payload: protocol::encode(&message),
             reliable: message.reliable(),
@@ -143,6 +164,9 @@ fn run(
             Ok(In::Link(LinkEvent::Data { from, payload })) if Some(&from) == sharer.as_ref() => {
                 match protocol::decode(&payload) {
                     Ok(message) => {
+                        if matches!(message, Message::Released | Message::Revoke) {
+                            awaiting_release = false;
+                        }
                         if session.on_message(&message) {
                             tracing::info!(?message, state = ?session.state(), "sharer answered");
                         }
@@ -153,6 +177,7 @@ fn run(
             Ok(In::Link(LinkEvent::Left(identity))) if Some(&identity) == sharer.as_ref() => {
                 session.on_message(&Message::Revoke);
                 sharer = None;
+                awaiting_release = false;
             }
             Ok(In::Link(_)) => {}
             Ok(In::Ui(ui)) => match ui {
@@ -164,7 +189,11 @@ fn run(
                     _ => session.release(),
                 }),
             },
-            Ok(In::Stop) | Err(RecvTimeoutError::Disconnected) => {
+            Ok(In::Stop(limit)) => {
+                out.extend(session.release());
+                leave_by = Some(now + limit);
+            }
+            Err(RecvTimeoutError::Disconnected) => {
                 if let Some(m) = session.release() {
                     send(&sharer, m);
                 }
@@ -184,9 +213,21 @@ fn run(
             out.push(message);
         }
         for message in out {
+            if message == Message::ReleaseControl && sharer.is_some() {
+                awaiting_release = true;
+            }
             send(&sharer, message);
         }
         status.set(session.state());
+        if let Some(deadline) = leave_by {
+            if !awaiting_release {
+                return;
+            }
+            if Instant::now() >= deadline {
+                tracing::warn!("the sharer didn't confirm the release; leaving anyway");
+                return;
+            }
+        }
     }
 }
 
@@ -325,6 +366,7 @@ mod tests {
                 let message = Message::Input {
                     seq: 1,
                     sent_at_us: 0,
+                    after: 0,
                     event,
                 };
                 protocol::decode(&protocol::encode(&message)).expect("valid");

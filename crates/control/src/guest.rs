@@ -34,6 +34,8 @@ pub struct GuestSession {
     pending_move: Option<(f64, f64)>,
     last_sent: Option<Instant>,
     asked_at: Option<Instant>,
+    /// Reliable inputs sent in this grant: every input but moves.
+    reliable: u64,
 }
 
 impl GuestSession {
@@ -48,6 +50,7 @@ impl GuestSession {
             pending_move: None,
             last_sent: None,
             asked_at: None,
+            reliable: 0,
         }
     }
 
@@ -83,6 +86,8 @@ impl GuestSession {
         if next == GuestState::Idle {
             self.reset();
         } else {
+            // A new grant starts a new count on the sharer too.
+            self.reliable = 0;
             self.state = next;
         }
         true
@@ -164,9 +169,14 @@ impl GuestSession {
     fn stamp(&mut self, event: InputEvent, now: Instant) -> Message {
         self.seq += 1;
         self.last_sent = Some(now);
+        let after = self.reliable;
+        if !matches!(event, InputEvent::Move { .. }) {
+            self.reliable += 1;
+        }
         Message::Input {
             seq: self.seq,
             sent_at_us: self.clock_us(now),
+            after,
             event,
         }
     }
@@ -301,26 +311,39 @@ mod tests {
     }
 
     #[test]
-    fn sequence_and_clock_count_up() {
+    fn sequence_clock_and_reliable_count_go_up() {
         let t0 = Instant::now();
         let mut g = granted(t0);
         let a = g.input(InputEvent::ReleaseAll, ms(t0, 5)).remove(0);
-        let b = g.input(InputEvent::ReleaseAll, ms(t0, 9)).remove(0);
+        let b = g
+            .input(InputEvent::Move { x: 0.5, y: 0.5 }, ms(t0, 9))
+            .remove(0);
+        let c = g.input(InputEvent::ReleaseAll, ms(t0, 20)).remove(0);
+        let d = g
+            .input(InputEvent::Move { x: 0.6, y: 0.5 }, ms(t0, 30))
+            .remove(0);
+        let stamp = |m: &Message| match m {
+            Message::Input {
+                seq,
+                sent_at_us,
+                after,
+                ..
+            } => (*seq, *sent_at_us, *after),
+            other => panic!("{other:?}"),
+        };
+        // Moves don't count as reliable, and carry how many reliable inputs went before.
         assert_eq!(
-            (a, b),
-            (
-                Message::Input {
-                    seq: 1,
-                    sent_at_us: 5_000,
-                    event: InputEvent::ReleaseAll
-                },
-                Message::Input {
-                    seq: 2,
-                    sent_at_us: 9_000,
-                    event: InputEvent::ReleaseAll
-                }
-            )
+            [a, b, c, d].iter().map(stamp).collect::<Vec<_>>(),
+            [(1, 5_000, 0), (2, 9_000, 1), (3, 20_000, 1), (4, 30_000, 2)]
         );
+        // A new grant starts counting again, as the sharer does.
+        g.on_message(&Message::Revoke);
+        g.request(ms(t0, 40));
+        g.on_message(&Message::Grant);
+        let e = g
+            .input(InputEvent::Move { x: 0.1, y: 0.1 }, ms(t0, 50))
+            .remove(0);
+        assert_eq!(stamp(&e).2, 0);
     }
 
     #[test]

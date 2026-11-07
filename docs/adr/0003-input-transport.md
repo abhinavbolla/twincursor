@@ -46,3 +46,17 @@ Building it in `crates/control` refined two details:
   of ppm, about 100 ms an hour, which would otherwise make every move look late in a long
   session. The window only moves when messages arrive, so a backlog after a long stall is still
   measured against the time before it.
+
+## Update (2026-11-07)
+Running the scripted guest through the network lab found two gaps, both now closed:
+
+- **A move could overtake a click.** On `wifi-bad`, a button release was resent after a lost
+  packet and arrived after a pointer move the guest made later. The sharer moved the pointer
+  with the button still down: an unintended drag. Every input now carries `after`, the number of
+  reliable inputs the guest had sent in this grant before it. The sharer holds a move back until
+  it has applied that many, then applies the newest held-back position, unless a click since
+  then carried a newer one.
+- **Leaving could cut off the end of the input.** A guest that typed fast and left at once lost
+  the last characters still in flight on slow links (`hotel`). The sharer now answers
+  `ReleaseControl` with `Released`, and since the channel is ordered, everything before the
+  release has been applied by then. The guest waits for it before leaving the room.

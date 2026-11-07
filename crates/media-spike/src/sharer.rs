@@ -13,8 +13,7 @@ use std::time::{Duration, Instant};
 use control::{
     Config, Controller, Effect, Gated, Injector, LogInjector, RecordInjector, RevokeSwitch,
 };
-use media::link::{ControlLink, LinkEvent, Outgoing};
-use tokio::sync::mpsc::UnboundedSender;
+use media::link::{ControlLink, LinkEvent, LinkSender, Outgoing};
 
 use crate::overlay::{OverlayHandle, OverlayState};
 
@@ -61,7 +60,7 @@ impl Sharer {
     pub fn start(
         inject: &Inject,
         revoke: RevokeSwitch,
-        overlay: OverlayHandle,
+        overlay: Option<OverlayHandle>,
     ) -> anyhow::Result<(Self, ControlLink)> {
         let injector: Box<dyn Injector + Send> = match inject {
             Inject::Log => Box::new(LogInjector),
@@ -98,7 +97,7 @@ impl Sharer {
                     &rx,
                     &outgoing,
                     &revoke,
-                    &overlay,
+                    overlay.as_ref(),
                 )
             })?;
         println!(
@@ -119,9 +118,9 @@ impl Sharer {
 fn run<I: Injector>(
     mut controller: Controller<Gated<I>>,
     rx: &mpsc::Receiver<In>,
-    outgoing: &UnboundedSender<Outgoing>,
+    outgoing: &LinkSender,
     revoke: &RevokeSwitch,
-    overlay: &OverlayHandle,
+    overlay: Option<&OverlayHandle>,
 ) {
     let mut bad_messages = 0u64;
     loop {
@@ -152,13 +151,17 @@ fn run<I: Injector>(
         };
         apply(effects, outgoing);
         controller.tick(Instant::now());
-        overlay.show(OverlayState {
-            asking: controller.requester().map(|g| g.name.clone()),
-            controller: controller.controller().map(|g| g.name.clone()),
-            pointer: controller.guest_pointer(),
-        });
+        if let Some(overlay) = overlay {
+            overlay.show(OverlayState {
+                asking: controller.requester().map(|g| g.name.clone()),
+                controller: controller.controller().map(|g| g.name.clone()),
+                pointer: controller.guest_pointer(),
+            });
+        }
     }
-    overlay.show(OverlayState::default());
+    if let Some(overlay) = overlay {
+        overlay.show(OverlayState::default());
+    }
     let counters = controller.counters();
     let blocked = controller.injector().blocked();
     tracing::info!(?counters, bad_messages, blocked, "control stopped");
@@ -190,11 +193,11 @@ fn answer<I: Injector>(
     }
 }
 
-fn apply(effects: Vec<Effect>, outgoing: &UnboundedSender<Outgoing>) {
+fn apply(effects: Vec<Effect>, outgoing: &LinkSender) {
     for effect in effects {
         match effect {
             Effect::Send { to, message } => {
-                let _ = outgoing.send(Outgoing {
+                outgoing.send(Outgoing {
                     to: Some(to),
                     payload: protocol::encode(&message),
                     reliable: message.reliable(),

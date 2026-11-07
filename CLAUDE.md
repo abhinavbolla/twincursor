@@ -65,6 +65,10 @@ Fill these in as code lands; keep them accurate.
 - Real injection, read back: `bench/control-inject.sh` (screen unlocked, hands off for ~15 s; a
   full-screen `tc-spike probe` window records what arrives). Nothing is injected while the screen
   is locked
+- Remote-control checks that need someone at the Mac, in one go: `bench/control-acceptance.sh`
+  (hotkey, injection readback, overlay screenshot vs stream frame, capture latency)
+- Remote control under bad networks: `bench/netlab/control.sh [profile ...]` (Docker; the
+  sharer runs `share --allow-control --headless --inject record:…`)
 - Latency matrix: `bench/run-matrix.sh [config ...]` → `bench/results/*.json` (git-ignored)
 - Network lab (Docker): `bench/netlab/run.sh [--build] [profile ...]`, then
   `bench/netlab/report.sh` (profiles and SLOs in ARCHITECTURE.md)

@@ -81,7 +81,8 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
   polls or republishing. The guest's side, `control::guest`, asks for control, sends moves at
   most 120 times a second (the newest position always goes out), heartbeats every 250 ms, and
   repeats an unanswered request every second, because packets sent just after joining can be
-  lost.
+  lost. The link counts messages not yet sent, and the guest waits for them before leaving the
+  room, so the end of a fast burst isn't cut off.
 - The viewer maps window positions through the letterbox the frame is drawn in, so clicks land
   right at any window size, and ignores presses on the black bars (releases always go, clamped
   to the edge). Losing focus sends `ReleaseAll`. F9 asks for control and gives it back; the

@@ -77,9 +77,11 @@ for script in "${scripts[@]}"; do
   # While the guest is in control, the sharer must see who it is.
   label_during=0
   if [[ $ANSWER == y ]]; then
-    for _ in $(seq 40); do grep -q "now controls this computer" "$dir/share.log" && break; sleep 0.25; done
-    sleep 0.3
-    label_shown "$sharer" && label_during=1
+    for _ in $(seq 400); do
+      if label_shown "$sharer"; then label_during=1; break; fi
+      kill -0 "$viewer" 2>/dev/null || break
+      sleep 0.05
+    done
   fi
 
   viewer_ok=1

@@ -110,6 +110,10 @@ struct Control {
     expected: Option<Point>,
     sharer_until: Option<Instant>,
     guest_pointer: Option<Point>,
+    /// Reliable inputs applied in this grant, to compare with a move's `after`.
+    reliable_seen: u64,
+    /// The newest move that arrived ahead of a click or key sent before it: (seq, to, after).
+    held_move: Option<(u64, Point, u64)>,
 }
 
 pub struct Controller<I> {
@@ -150,13 +154,14 @@ impl<I: Injector> Controller<I> {
             Message::Input {
                 seq,
                 sent_at_us,
+                after,
                 event,
             } => {
-                self.on_input(from, seq, sent_at_us, event, now);
+                self.on_input(from, seq, sent_at_us, after, event, now);
                 vec![]
             }
             // Only the sharer sends these.
-            Message::Grant | Message::Deny | Message::Revoke => vec![],
+            Message::Grant | Message::Deny | Message::Revoke | Message::Released => vec![],
         }
     }
 
@@ -177,6 +182,8 @@ impl<I: Injector> Controller<I> {
                     expected: None,
                     sharer_until: None,
                     guest_pointer: None,
+                    reliable_seen: 0,
+                    held_move: None,
                 };
                 let to = guest.identity.clone();
                 self.phase = Phase::Granted(guest, Box::new(control));
@@ -303,10 +310,16 @@ impl<I: Injector> Controller<I> {
         if let Phase::Granted(_, mut control) = std::mem::replace(&mut self.phase, Phase::Idle) {
             self.release(&mut control);
         }
-        vec![Effect::Ended {
+        let mut effects = vec![Effect::Ended {
             identity: identity.to_owned(),
             reason,
-        }]
+        }];
+        // Everything the guest sent before its release has been applied: tell it, so it can
+        // leave without cutting off its last input.
+        if reason == EndReason::Released {
+            effects.push(send(identity.to_owned(), Message::Released));
+        }
+        effects
     }
 
     fn control_of(&mut self, from: &str) -> Option<&mut Control> {
@@ -322,7 +335,15 @@ impl<I: Injector> Controller<I> {
         }
     }
 
-    fn on_input(&mut self, from: &str, seq: u64, sent_at_us: u64, event: InputEvent, now: Instant) {
+    fn on_input(
+        &mut self,
+        from: &str,
+        seq: u64,
+        sent_at_us: u64,
+        after: u64,
+        event: InputEvent,
+        now: Instant,
+    ) {
         let config = &self.config;
         let Phase::Granted(guest, control) = &mut self.phase else {
             self.counters.rejected += 1;
@@ -335,81 +356,100 @@ impl<I: Injector> Controller<I> {
         let fresh = control.heard(sent_at_us, now, config.max_lateness);
         let injector = &mut self.injector;
 
-        match event {
-            InputEvent::Move { x, y } => {
-                let reordered = control.last_pointer_seq.is_some_and(|last| seq <= last);
-                if reordered || !fresh {
-                    self.counters.stale_moves += 1;
-                    return;
-                }
-                control.last_pointer_seq = Some(seq);
-                let to = Point { x, y };
-                control.guest_pointer = Some(to);
-                if control.sharer_has_pointer(injector.pointer(), now, config.sharer_priority) {
-                    return;
-                }
-                injector.inject(&Action::MoveTo(to));
-                control.expected = Some(to);
-            }
-            InputEvent::Button {
-                button,
-                pressed,
-                x,
-                y,
-            } => {
-                if pressed {
-                    // A late press after a deadman release would start a drag the guest
-                    // has already finished.
-                    if control.stalled {
-                        self.counters.stale_presses += 1;
-                        return;
+        let reliable = !matches!(event, InputEvent::Move { .. });
+        'apply: {
+            match event {
+                InputEvent::Move { x, y } => {
+                    let reordered = control.last_pointer_seq.is_some_and(|last| seq <= last);
+                    if reordered || !fresh {
+                        self.counters.stale_moves += 1;
+                        break 'apply;
                     }
-                    if !control.held.press_button(button) {
-                        return;
+                    control.last_pointer_seq = Some(seq);
+                    let to = Point { x, y };
+                    if after > control.reliable_seen {
+                        // It overtook a click or key the guest sent first. Moving now could drag
+                        // with a button the guest has already let go: wait for it.
+                        control.held_move = Some((seq, to, after));
+                        break 'apply;
                     }
-                } else if !control.held.release_button(button) {
-                    return;
+                    control.held_move = None;
+                    control.move_pointer(injector, to, now, config.sharer_priority);
                 }
-                control.last_pointer_seq =
-                    Some(control.last_pointer_seq.map_or(seq, |s| s.max(seq)));
-                // A click takes the pointer back from the sharer.
-                let at = Point { x, y };
-                control.guest_pointer = Some(at);
-                control.expected = Some(at);
-                control.sharer_until = None;
-                injector.inject(&Action::MoveTo(at));
-                injector.inject(&Action::Button { button, pressed });
-            }
-            InputEvent::Scroll { dx, dy, unit } => {
-                injector.inject(&Action::Scroll { dx, dy, unit });
-            }
-            InputEvent::Key {
-                code,
-                pressed,
-                text,
-            } => {
-                let code = control.keyboard.sharer_code(&code);
-                if pressed {
-                    match control.keyboard.press(code, text, &control.held) {
-                        Press::Text(text) => injector.inject(&Action::Text { text }),
-                        Press::Key(code) => {
-                            control.held.press_key(&code);
-                            injector.inject(&Action::Key {
-                                code,
-                                pressed: true,
-                            });
+                InputEvent::Button {
+                    button,
+                    pressed,
+                    x,
+                    y,
+                } => {
+                    if pressed {
+                        // A late press after a deadman release would start a drag the guest
+                        // has already finished.
+                        if control.stalled {
+                            self.counters.stale_presses += 1;
+                            break 'apply;
                         }
+                        if !control.held.press_button(button) {
+                            break 'apply;
+                        }
+                    } else if !control.held.release_button(button) {
+                        break 'apply;
                     }
-                } else if control.held.release_key(&code) {
-                    injector.inject(&Action::Key {
-                        code,
-                        pressed: false,
-                    });
+                    control.last_pointer_seq =
+                        Some(control.last_pointer_seq.map_or(seq, |s| s.max(seq)));
+                    // A click takes the pointer back from the sharer.
+                    let at = Point { x, y };
+                    control.guest_pointer = Some(at);
+                    control.expected = Some(at);
+                    control.sharer_until = None;
+                    injector.inject(&Action::MoveTo(at));
+                    injector.inject(&Action::Button { button, pressed });
+                }
+                InputEvent::Scroll { dx, dy, unit } => {
+                    injector.inject(&Action::Scroll { dx, dy, unit });
+                }
+                InputEvent::Key {
+                    code,
+                    pressed,
+                    text,
+                } => {
+                    let code = control.keyboard.sharer_code(&code);
+                    if pressed {
+                        match control.keyboard.press(code, text, &control.held) {
+                            Press::Text(text) => injector.inject(&Action::Text { text }),
+                            Press::Key(code) => {
+                                control.held.press_key(&code);
+                                injector.inject(&Action::Key {
+                                    code,
+                                    pressed: true,
+                                });
+                            }
+                        }
+                    } else if control.held.release_key(&code) {
+                        injector.inject(&Action::Key {
+                            code,
+                            pressed: false,
+                        });
+                    }
+                }
+                InputEvent::ReleaseAll => {
+                    for action in control.held.release_all() {
+                        injector.inject(&action);
+                    }
                 }
             }
-            InputEvent::ReleaseAll => {
-                for action in control.held.release_all() {
-                    injector.inject(&action);
+        }
+        // Everything but a move is reliable, applied or not. A move held back for it may go now,
+        // unless a click since then carried a newer position.
+        if !reliable {
+            return;
+        }
+        control.reliable_seen += 1;
+        if let Some((held_seq, to, held_after)) = control.held_move {
+            if held_after <= control.reliable_seen {
+                control.held_move = None;
+                if control.last_pointer_seq.is_none_or(|last| held_seq >= last) {
+                    control.move_pointer(injector, to, now, config.sharer_priority);
                 }
             }
         }
@@ -417,6 +457,21 @@ impl<I: Injector> Controller<I> {
 }
 
 impl Control {
+    fn move_pointer<I: Injector>(
+        &mut self,
+        injector: &mut I,
+        to: Point,
+        now: Instant,
+        priority: Duration,
+    ) {
+        self.guest_pointer = Some(to);
+        if self.sharer_has_pointer(injector.pointer(), now, priority) {
+            return;
+        }
+        injector.inject(&Action::MoveTo(to));
+        self.expected = Some(to);
+    }
+
     /// Notes that the guest is alive, and returns whether this message is on time.
     fn heard(&mut self, sent_at_us: u64, now: Instant, max_lateness: Duration) -> bool {
         self.last_heard = now;

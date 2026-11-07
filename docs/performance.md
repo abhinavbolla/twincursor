@@ -124,6 +124,10 @@ guest sent.
   over about 4 s, never reached the sharer, though both sides were connected and the video was
   flowing. Once one got through, nothing else was lost. The guest now repeats an unanswered
   request every second, and the sharer treats a repeat as the same request.
+- **2,000 characters typed as fast as the guest can send arrive exactly:** 2,019 actions (with
+  the release), 5 runs out of 5. The first try lost about 1,600 of them, and it wasn't the
+  network. A burst like that queues up on the guest's side, and the viewer left the room before
+  the queue was sent. The guest now waits for everything to go out before it leaves.
 - **A revoke stops typing at once.** Taking control back 1.5 s into typing 368 characters, with
   Shift and the mouse button held: 5 runs out of 5 stopped mid-text, released both, and let
   nothing but releases through afterwards. In one run, 3 keys the guest sent before it heard of

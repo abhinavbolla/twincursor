@@ -203,7 +203,7 @@ pub fn run(args: ViewArgs) -> anyhow::Result<()> {
     tracing::info!("press F9 to ask for control, and F9 again to give it back");
     event_loop.run_app(&mut app)?;
 
-    guest.stop();
+    guest.stop(Duration::from_secs(2));
     let _ = guest_thread.join();
     let _ = stop_tx.send(());
     let _ = network.join();
@@ -582,10 +582,12 @@ fn run_headless(args: ViewArgs) -> anyhow::Result<()> {
         link = Some(control);
         player = Some(std::thread::spawn(move || {
             let result = crate::guest::play(&guest, &steps);
-            // Let the last messages go out before the room closes.
-            guest.stop();
+            // Waits until the sharer confirms it has applied everything the script sent.
+            guest.stop(Duration::from_secs(60));
             let _ = thread.join();
-            std::thread::sleep(Duration::from_millis(500));
+            if guest.unsent() > 0 {
+                tracing::warn!("some control messages were still unsent when the viewer left");
+            }
             let _ = script_done_tx.send(());
             result
         }));

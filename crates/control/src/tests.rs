@@ -36,6 +36,8 @@ struct Trace {
     c: Controller<Recorder>,
     t0: Instant,
     seq: u64,
+    /// Reliable inputs sent so far, as the guest counts them.
+    reliable: u64,
 }
 
 impl Trace {
@@ -44,6 +46,7 @@ impl Trace {
             c: Controller::new(Recorder::default(), Config::default()),
             t0: Instant::now(),
             seq: 0,
+            reliable: 0,
         }
     }
 
@@ -71,9 +74,14 @@ impl Trace {
 
     fn send_from(&mut self, from: &str, event: InputEvent, sent_ms: u64, arrive_ms: u64) {
         self.seq += 1;
+        let after = self.reliable;
+        if !matches!(event, InputEvent::Move { .. }) {
+            self.reliable += 1;
+        }
         let message = Message::Input {
             seq: self.seq,
             sent_at_us: GUEST_CLOCK_US + sent_ms * 1_000,
+            after,
             event,
         };
         self.msg(from, message, arrive_ms);
@@ -289,13 +297,50 @@ fn the_guest_can_give_control_back() {
     let effects = t.msg(GUEST, Message::ReleaseControl, 30);
     assert_eq!(
         effects,
-        vec![Effect::Ended {
-            identity: GUEST.into(),
-            reason: EndReason::Released
-        }]
+        vec![
+            Effect::Ended {
+                identity: GUEST.into(),
+                reason: EndReason::Released
+            },
+            Effect::Send {
+                to: GUEST.into(),
+                message: Message::Released
+            }
+        ]
     );
     assert_eq!(t.take(), vec![left(false)]);
     assert!(t.c.controller().is_none());
+}
+
+/// Seen in the network lab on `wifi-bad`: a click's release, resent after a lost packet, arrived
+/// after a move the guest made later. Moving first would have dragged with the button down.
+#[test]
+fn a_move_never_overtakes_a_click_sent_before_it() {
+    let mut t = Trace::granted(Platform::Macos);
+    t.send(button(true, 0.25, 0.25), 0);
+    assert_eq!(t.take(), vec![to(0.25, 0.25), left(true)]);
+    // The release is sent at 5 ms but held up; two moves sent after it arrive first.
+    t.seq += 1;
+    let release_seq = t.seq;
+    t.reliable += 1;
+    t.send(mv(0.12, 0.11), 10);
+    t.send(mv(0.10, 0.10), 18);
+    assert!(
+        t.take().is_empty(),
+        "no move while the button is still down"
+    );
+    t.msg(
+        GUEST,
+        Message::Input {
+            seq: release_seq,
+            sent_at_us: GUEST_CLOCK_US + 5_000,
+            after: 1,
+            event: button(false, 0.25, 0.25),
+        },
+        90,
+    );
+    // The release lands where it was made, then the pointer catches up with the newest move.
+    assert_eq!(t.take(), vec![to(0.25, 0.25), left(false), to(0.10, 0.10)]);
 }
 
 #[test]
@@ -425,6 +470,7 @@ fn reordered_moves_are_dropped() {
         Message::Input {
             seq: 1,
             sent_at_us: GUEST_CLOCK_US,
+            after: 0,
             event: mv(0.9, 0.9),
         },
         t.at(35),
@@ -443,6 +489,7 @@ fn a_move_older_than_a_click_cannot_drag_the_pointer_back() {
         Message::Input {
             seq: 0,
             sent_at_us: GUEST_CLOCK_US,
+            after: 0,
             event: mv(0.1, 0.1),
         },
         t.at(25),
