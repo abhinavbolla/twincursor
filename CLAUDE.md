@@ -59,7 +59,11 @@ Fill these in as code lands; keep them accurate.
   control back mid-typing; `REVOKE=hotkey` presses ⌃⌥⌘R for real (unlocked screen only: macOS
   doesn't deliver synthetic key presses to apps while the screen is locked)
 - Remote control by hand: `tc-spike share --allow-control` and `tc-spike view`; F9 in the viewer
-  asks for control and gives it back, F10 toggles the HUD while in control
+  asks for control and gives it back, F10 toggles the HUD while in control. The sharer injects
+  real input by default (`--inject log` to only log); its terminal needs Accessibility
+- Real injection, read back: `bench/control-inject.sh` (screen unlocked, hands off for ~15 s; a
+  full-screen `tc-spike probe` window records what arrives). Nothing is injected while the screen
+  is locked
 - Latency matrix: `bench/run-matrix.sh [config ...]` → `bench/results/*.json` (git-ignored)
 - Network lab (Docker): `bench/netlab/run.sh [--build] [profile ...]`, then
   `bench/netlab/report.sh` (profiles and SLOs in ARCHITECTURE.md)

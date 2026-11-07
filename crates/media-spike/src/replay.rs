@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use control::{Action, Config, Controller, Effect, RecordInjector};
-use protocol::Message;
+use protocol::{Button, InputEvent, Message, ScrollUnit};
 use serde::de::DeserializeOwned;
 
 /// With `revoked`, the sharer took control back partway: what was recorded must be the start of
@@ -55,6 +55,164 @@ pub fn run(sent: &Path, actions: &Path, revoked: bool) -> anyhow::Result<()> {
         }
         Err(e) => anyhow::bail!("FAIL: {e}"),
     }
+}
+
+/// Checks what a `tc-spike probe` window received against what the guest sent: the text typed,
+/// the shortcuts pressed, the clicks (in order, within 2% of where they were aimed) and the
+/// scroll directions.
+pub fn run_probe(sent: &Path, probe: &Path) -> anyhow::Result<()> {
+    let messages: Vec<Message> =
+        read_lines(sent).with_context(|| format!("reading {}", sent.display()))?;
+    let received: Vec<InputEvent> =
+        read_lines(probe).with_context(|| format!("reading {}", probe.display()))?;
+    let sent: Vec<InputEvent> = messages
+        .into_iter()
+        .filter_map(|m| match m {
+            Message::Input { event, .. } => Some(event),
+            _ => None,
+        })
+        .collect();
+    match compare_probe(&sent, &received) {
+        Ok(r) => {
+            println!(
+                "PASS: {} characters typed exactly, {} shortcut keys, {} clicks in place, {} scrolls the right way",
+                r.chars, r.shortcuts, r.clicks, r.scrolls
+            );
+            Ok(())
+        }
+        Err(e) => anyhow::bail!("FAIL: {e}"),
+    }
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub struct ProbeReport {
+    pub chars: usize,
+    pub shortcuts: usize,
+    pub clicks: usize,
+    pub scrolls: usize,
+}
+
+#[derive(Default)]
+struct Seen {
+    text: String,
+    shortcuts: Vec<String>,
+    clicks: Vec<(Button, bool, f64, f64)>,
+    scrolls: Vec<(ScrollUnit, f64, f64)>,
+}
+
+fn is_shortcut_modifier(code: &str) -> bool {
+    matches!(
+        code,
+        "ControlLeft" | "ControlRight" | "MetaLeft" | "MetaRight"
+    )
+}
+
+/// What a stream of events amounts to. `sent` says which side it is: the guest's keys carry no
+/// text for Enter and Tab, where a window reports them as "\r" and "\t".
+fn digest(events: &[InputEvent], sent: bool) -> Seen {
+    let mut seen = Seen::default();
+    let mut shortcut_held: Vec<String> = Vec::new();
+    for event in events {
+        match event {
+            InputEvent::Key {
+                code,
+                pressed,
+                text,
+            } => {
+                if is_shortcut_modifier(code) {
+                    if *pressed {
+                        shortcut_held.push(code.clone());
+                    } else {
+                        shortcut_held.retain(|c| c != code);
+                    }
+                    continue;
+                }
+                if !*pressed {
+                    continue;
+                }
+                if shortcut_held.is_empty() {
+                    let typed = match (text, code.as_str()) {
+                        (Some(t), _) => Some(t.clone()),
+                        (None, "Enter" | "NumpadEnter") if sent => Some("\r".into()),
+                        (None, "Tab") if sent => Some("\t".into()),
+                        _ => None,
+                    };
+                    seen.text.extend(typed);
+                } else {
+                    seen.shortcuts
+                        .push(format!("{}+{code}", shortcut_held.join("+")));
+                }
+            }
+            InputEvent::Button {
+                button,
+                pressed,
+                x,
+                y,
+            } => seen.clicks.push((*button, *pressed, *x, *y)),
+            InputEvent::Scroll { dx, dy, unit } => seen.scrolls.push((*unit, *dx, *dy)),
+            InputEvent::Move { .. } | InputEvent::ReleaseAll => {}
+        }
+    }
+    seen
+}
+
+pub fn compare_probe(sent: &[InputEvent], received: &[InputEvent]) -> Result<ProbeReport, String> {
+    let want = digest(sent, true);
+    let got = digest(received, false);
+    if want.text != got.text {
+        let at = want
+            .text
+            .chars()
+            .zip(got.text.chars())
+            .take_while(|(a, b)| a == b)
+            .count();
+        return Err(format!(
+            "typed text differs at character {}: sent {:?}, received {:?}",
+            at + 1,
+            want.text.chars().skip(at).take(20).collect::<String>(),
+            got.text.chars().skip(at).take(20).collect::<String>()
+        ));
+    }
+    if want.shortcuts != got.shortcuts {
+        return Err(format!(
+            "shortcuts differ: sent {:?}, received {:?}",
+            want.shortcuts, got.shortcuts
+        ));
+    }
+    if want.clicks.len() != got.clicks.len() {
+        return Err(format!(
+            "{} button presses and releases sent, {} received",
+            want.clicks.len(),
+            got.clicks.len()
+        ));
+    }
+    for (i, (w, g)) in want.clicks.iter().zip(&got.clicks).enumerate() {
+        let near = (w.2 - g.2).abs() <= 0.02 && (w.3 - g.3).abs() <= 0.02;
+        if (w.0, w.1) != (g.0, g.1) || !near {
+            return Err(format!("click {}: sent {w:?}, received {g:?}", i + 1));
+        }
+    }
+    // macOS may split or merge scroll events, so compare the total per unit and direction.
+    for unit in [ScrollUnit::Pixel, ScrollUnit::Line] {
+        let total = |v: &[(ScrollUnit, f64, f64)]| {
+            v.iter()
+                .filter(|s| s.0 == unit)
+                .fold((0.0, 0.0), |(x, y), s| (x + s.1, y + s.2))
+        };
+        let (w, g) = (total(&want.scrolls), total(&got.scrolls));
+        let same_way = |a: f64, b: f64| a == 0.0 || a.signum() == b.signum();
+        if !same_way(w.0, g.0) || !same_way(w.1, g.1) {
+            return Err(format!(
+                "{unit:?} scrolling went the wrong way or nowhere: sent {w:?} in total, received {g:?}"
+            ));
+        }
+    }
+    Ok(ProbeReport {
+        chars: want.text.chars().count(),
+        shortcuts: want.shortcuts.len(),
+        clicks: want.clicks.len(),
+        scrolls: want.scrolls.len(),
+    })
 }
 
 fn read_lines<T: DeserializeOwned>(path: &Path) -> anyhow::Result<Vec<T>> {
@@ -183,7 +341,6 @@ fn split(actions: &[Action]) -> (Vec<&Action>, Vec<&Action>) {
 mod tests {
     use super::*;
     use control::Point;
-    use protocol::{Button, InputEvent};
 
     fn mv(x: f64) -> Action {
         Action::MoveTo(Point { x, y: 0.5 })
@@ -259,6 +416,83 @@ mod tests {
             Ok(4),
             "the revoke landed after the last message"
         );
+    }
+
+    #[test]
+    fn probe_comparison_checks_text_shortcuts_clicks_and_scrolls() {
+        let key = |code: &str, pressed, text: Option<&str>| InputEvent::Key {
+            code: code.into(),
+            pressed,
+            text: text.map(Into::into),
+        };
+        let click = |pressed, x| InputEvent::Button {
+            button: Button::Left,
+            pressed,
+            x,
+            y: 0.5,
+        };
+        let sent = vec![
+            key("KeyH", true, Some("h")),
+            key("KeyH", false, None),
+            key("Unidentified", true, Some("ä")),
+            key("Enter", true, None),
+            key("MetaLeft", true, None),
+            key("KeyA", true, Some("a")),
+            key("KeyA", false, None),
+            key("MetaLeft", false, None),
+            click(true, 0.25),
+            click(false, 0.25),
+            InputEvent::Scroll {
+                dx: 0.0,
+                dy: 40.0,
+                unit: ScrollUnit::Pixel,
+            },
+        ];
+        // What a window reports: text typed with an unknown physical key, "\r" for Enter, and
+        // the scroll split in two.
+        let received = vec![
+            key("KeyH", true, Some("h")),
+            key("KeyA", true, Some("ä")),
+            key("Enter", true, Some("\r")),
+            key("MetaLeft", true, None),
+            key("KeyA", true, None),
+            key("MetaLeft", false, None),
+            click(true, 0.251),
+            click(false, 0.251),
+            InputEvent::Scroll {
+                dx: 0.0,
+                dy: 30.0,
+                unit: ScrollUnit::Pixel,
+            },
+            InputEvent::Scroll {
+                dx: 0.0,
+                dy: 10.0,
+                unit: ScrollUnit::Pixel,
+            },
+        ];
+        assert_eq!(
+            compare_probe(&sent, &received),
+            Ok(ProbeReport {
+                chars: 3,
+                shortcuts: 1,
+                clicks: 2,
+                scrolls: 1
+            })
+        );
+        let mut wrong = received.clone();
+        wrong[1] = key("KeyA", true, Some("a"));
+        assert!(compare_probe(&sent, &wrong).is_err(), "wrong character");
+        let mut wrong = received.clone();
+        wrong[6] = click(true, 0.4);
+        assert!(compare_probe(&sent, &wrong).is_err(), "click off target");
+        let mut wrong = received.clone();
+        wrong[8] = InputEvent::Scroll {
+            dx: 0.0,
+            dy: -30.0,
+            unit: ScrollUnit::Pixel,
+        };
+        wrong[9] = wrong[8].clone();
+        assert!(compare_probe(&sent, &wrong).is_err(), "scrolled up");
     }
 
     #[test]

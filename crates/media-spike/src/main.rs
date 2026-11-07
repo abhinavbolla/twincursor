@@ -5,6 +5,7 @@ mod guest;
 mod hotkey;
 mod hud;
 mod input;
+mod probe;
 mod replay;
 mod sharer;
 mod view;
@@ -38,14 +39,19 @@ enum Command {
         sharer: std::path::PathBuf,
         viewer: std::path::PathBuf,
     },
+    /// A full-screen window that records the input it receives, to check real injection.
+    Probe(probe::ProbeArgs),
     /// Check that the actions a sharer recorded match the messages a viewer sent.
     Replay {
         /// The viewer's `--sent-log`.
         #[arg(long)]
         sent: std::path::PathBuf,
         /// The sharer's `--inject record:PATH` file.
-        #[arg(long)]
-        actions: std::path::PathBuf,
+        #[arg(long, required_unless_present = "probe")]
+        actions: Option<std::path::PathBuf>,
+        /// Instead, what a `tc-spike probe` window received from real injection.
+        #[arg(long, conflicts_with = "actions")]
+        probe: Option<std::path::PathBuf>,
         /// The sharer took control back partway: expect the start of the run, then releases.
         #[arg(long)]
         revoked: bool,
@@ -166,8 +172,9 @@ struct ShareArgs {
     /// Let viewers ask for remote control. You're asked in this terminal before anyone gets it.
     #[arg(long)]
     allow_control: bool,
-    /// What granted input does: `log` it, or `record:PATH` it as JSON lines (see `replay`).
-    #[arg(long, default_value = "log", requires = "allow_control")]
+    /// What granted input does: `real` input (the default; macOS, needs Accessibility), `log`
+    /// it, or `record:PATH` it as JSON lines (see `replay`).
+    #[arg(long, default_value = "real", requires = "allow_control")]
     inject: sharer::Inject,
 }
 
@@ -182,11 +189,17 @@ fn main() -> anyhow::Result<()> {
         Command::Share(args) => share(args),
         Command::View(args) => view::run(args),
         Command::Compare { sharer, viewer } => compare(&sharer, &viewer),
+        Command::Probe(args) => probe::run(args),
         Command::Replay {
             sent,
             actions,
+            probe,
             revoked,
-        } => replay::run(&sent, &actions, revoked),
+        } => match (actions, probe) {
+            (_, Some(probe)) => replay::run_probe(&sent, &probe),
+            (Some(actions), None) => replay::run(&sent, &actions, revoked),
+            (None, None) => anyhow::bail!("give --actions or --probe"),
+        },
     }
 }
 
@@ -231,7 +244,8 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
             width,
             height,
             max_fps: args.fps,
-            show_cursor: args.cursor,
+            // A guest in control needs to see where the pointer is.
+            show_cursor: args.cursor || args.allow_control,
         },
         codec: args.codec.into(),
         max_bitrate: bitrate_kbps * 1000,

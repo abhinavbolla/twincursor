@@ -42,11 +42,14 @@ weaken them won't be merged.
   during a grant, with a known version and values in range. The viewer isn't trusted.
 - **Nothing stays held down.** Every held key and button is released on revoke, on disconnect, when
   the guest's window loses focus, and after 1 s without a heartbeat.
+- **Nothing is injected while the sharer's screen is locked.** Typed keys would land in the lock
+  screen's password field, so a guest could try to unlock the computer. Input pauses until the
+  sharer unlocks it; releases still go through.
 
 The session logic lives in `crates/control` with no network or platform code, so these rules can
 be tested with scripted traces. *Status: the session rules are built and tested, and run over the network
-with a consent prompt in the sharer's terminal and the revoke hotkey. They log or record instead
-of injecting. The on-screen label and real injection come next.*
+with a consent prompt in the sharer's terminal and the revoke hotkey, and inject real input on
+macOS. The on-screen label comes next.*
 
 ## Known limits
 

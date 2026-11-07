@@ -25,6 +25,8 @@ pub enum Inject {
     Log,
     /// Write each action as a line of JSON to this file (see `tc-spike replay`).
     Record(PathBuf),
+    /// Move the real pointer and press real keys (macOS, with the Accessibility permission).
+    Real,
 }
 
 impl std::str::FromStr for Inject {
@@ -33,8 +35,9 @@ impl std::str::FromStr for Inject {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.split_once(':') {
             None if s == "log" => Ok(Inject::Log),
+            None if s == "real" => Ok(Inject::Real),
             Some(("record", path)) if !path.is_empty() => Ok(Inject::Record(path.into())),
-            _ => Err("expected `log` or `record:PATH`".into()),
+            _ => Err("expected `log`, `real` or `record:PATH`".into()),
         }
     }
 }
@@ -57,6 +60,10 @@ impl Sharer {
         let injector: Box<dyn Injector + Send> = match inject {
             Inject::Log => Box::new(LogInjector),
             Inject::Record(path) => Box::new(RecordInjector::new(std::fs::File::create(path)?)),
+            #[cfg(target_os = "macos")]
+            Inject::Real => Box::new(control::macos::MacInjector::new()?),
+            #[cfg(not(target_os = "macos"))]
+            Inject::Real => anyhow::bail!("real input injection is macOS only for now"),
         };
         let (tx, rx) = mpsc::channel();
         let (link, outgoing) = {
@@ -199,6 +206,7 @@ mod tests {
     #[test]
     fn parses_inject_modes() {
         assert!(matches!("log".parse(), Ok(Inject::Log)));
+        assert!(matches!("real".parse(), Ok(Inject::Real)));
         assert!(
             matches!("record:a.jsonl".parse(), Ok(Inject::Record(p)) if p == std::path::Path::new("a.jsonl"))
         );
