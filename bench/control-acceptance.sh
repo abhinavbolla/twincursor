@@ -10,6 +10,7 @@
 #
 # The terminal needs Accessibility and Screen Recording permission, and `livekit-server --dev`
 # must be running. Results land in bench/results/acceptance-<time>/.
+# STEPS="2 3" bench/control-acceptance.sh runs only those steps.
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
@@ -18,13 +19,19 @@ OUT=bench/results/acceptance-$(date +%s)
 mkdir -p "$OUT"
 status=0
 note() { echo; echo "=== $*"; }
+want() { [[ " ${STEPS:-1 2 3 4} " == *" $1 "* ]]; }
 
+if want 1; then
 note "1. Revoke hotkey"
 REVOKE=hotkey bench/control-e2e.sh || status=1
+fi
 
+if want 2; then
 note "2. Real injection, read back"
 bench/control-inject.sh || status=1
+fi
 
+if want 3; then
 note "3. Overlay on screen, not in the stream"
 room="accept-overlay-$$"
 mkfifo "$OUT/answer"
@@ -50,9 +57,17 @@ kill -INT "$sharer" 2>/dev/null
 wait "$sharer" 2>/dev/null
 exec 3>&-
 rm -f "$OUT/answer"
+if grep -q "leaving this app's own windows out of the capture" "$OUT/share.log"; then
+  echo "PASS: the sharer left its own windows out of the capture"
+else
+  echo "FAIL: the sharer didn't find its own windows, so the overlay is in the stream"
+  status=1
+fi
 echo "Your screen during control: $OUT/overlay-on-screen.png (the label and name tag should show)"
 echo "What the guest received: the newest PGM in $OUT/stream/ (neither should show)"
+fi
 
+if want 4; then
 note "4. Capture latency with and without --allow-control (25 s each)"
 for mode in plain control; do
   flags=""
@@ -70,6 +85,7 @@ done
 for f in "$OUT"/lat-*.json; do
   jq -r '"\(.label): capture → decode p50 \(.report.one_way_presented.p50 | . * 10 | round / 10) ms, p95 \(.report.one_way_presented.p95 | . * 10 | round / 10) ms, \(.avg_fps | . * 10 | round / 10) fps"' "$f"
 done
+fi
 
 echo
 if [[ $status -eq 0 ]]; then echo "Automatic checks passed. Look at the two images in step 3."; else echo "Some checks FAILED: see above."; fi

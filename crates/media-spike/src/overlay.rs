@@ -95,6 +95,9 @@ pub fn label(state: &OverlayState) -> Option<(String, u32)> {
     }
 }
 
+const LABEL_TITLE: &str = "TwinCursor control label";
+const TAG_TITLE: &str = "TwinCursor guest pointer";
+
 /// The overlay's windows, owned by the main thread.
 pub struct Overlay {
     state: Arc<Mutex<OverlayState>>,
@@ -111,6 +114,16 @@ impl Overlay {
         }
     }
 
+    /// Creates both panels, hidden. Call it before screen capture starts: ScreenCaptureKit only
+    /// leaves this app's windows out of the stream if the app has windows when capture starts,
+    /// and panels first made on a grant would be captured.
+    pub fn prepare(&mut self, event_loop: &ActiveEventLoop) {
+        self.label
+            .get_or_insert_with(|| Panel::new(event_loop, LABEL_TITLE));
+        self.tag
+            .get_or_insert_with(|| Panel::new(event_loop, TAG_TITLE));
+    }
+
     /// Brings the windows in line with the current state.
     pub fn update(&mut self, event_loop: &ActiveEventLoop) {
         let state = self.state.lock().unwrap().clone();
@@ -125,7 +138,7 @@ impl Overlay {
             Some((text, bg)) => {
                 let panel = self
                     .label
-                    .get_or_insert_with(|| Panel::new(event_loop, "TwinCursor control label"));
+                    .get_or_insert_with(|| Panel::new(event_loop, LABEL_TITLE));
                 let (w, _) = panel.show(&text, bg, scale);
                 let x = origin.x + (screen.width - w) / 2.0;
                 place(&panel.window, x, origin.y + LABEL_TOP);
@@ -141,7 +154,7 @@ impl Overlay {
             (Some(name), Some(p)) => {
                 let panel = self
                     .tag
-                    .get_or_insert_with(|| Panel::new(event_loop, "TwinCursor guest pointer"));
+                    .get_or_insert_with(|| Panel::new(event_loop, TAG_TITLE));
                 panel.show(name, TAG_BG, scale);
                 let x = origin.x + p.x * screen.width + TAG_OFFSET.0;
                 let y = origin.y + p.y * screen.height + TAG_OFFSET.1;
