@@ -22,6 +22,9 @@ ANSWER=${ANSWER:-y}
 REVOKE=${REVOKE:-}
 OUT=bench/results/control-e2e-$(date +%s)
 mkdir -p "$OUT"
+# Lists the sharer's on-screen windows, to check the "is controlling" label (hard rule 4).
+swiftc -O -o "$OUT/windows" bench/control/windows.swift
+label_shown() { "$OUT/windows" "$1" | grep -q '"name":"TwinCursor control label"'; }
 
 scripts=("$@")
 if [[ ${#scripts[@]} -eq 0 ]]; then
@@ -71,8 +74,19 @@ for script in "${scripts[@]}"; do
     esac
   fi
 
+  # While the guest is in control, the sharer must see who it is.
+  label_during=0
+  if [[ $ANSWER == y ]]; then
+    for _ in $(seq 40); do grep -q "now controls this computer" "$dir/share.log" && break; sleep 0.25; done
+    sleep 0.3
+    label_shown "$sharer" && label_during=1
+  fi
+
   viewer_ok=1
   wait "$viewer" || viewer_ok=0
+  sleep 0.3
+  label_after=0
+  label_shown "$sharer" && label_after=1
   kill -INT "$sharer" 2>/dev/null || true
   wait "$sharer" 2>/dev/null || true
   exec 3>&-
@@ -90,8 +104,11 @@ for script in "${scripts[@]}"; do
       failed=1
     fi
   elif [[ $ANSWER == y ]]; then
-    if [[ $viewer_ok -eq 1 ]] && "$BIN" replay --sent "$dir/sent.jsonl" --actions "$dir/actions.jsonl"; then
-      echo "$name: PASS"
+    if [[ $label_during -ne 1 || $label_after -ne 0 ]]; then
+      echo "$name: FAIL (the control label was $([[ $label_during -eq 1 ]] || echo "missing during control")$([[ $label_after -eq 1 ]] && echo "still up after control"))"
+      failed=1
+    elif [[ $viewer_ok -eq 1 ]] && "$BIN" replay --sent "$dir/sent.jsonl" --actions "$dir/actions.jsonl"; then
+      echo "$name: PASS (label shown during control, gone after)"
     else
       echo "$name: FAIL (logs in $dir)"
       tail -5 "$dir/view.log"

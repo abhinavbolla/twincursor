@@ -37,11 +37,23 @@ pub fn start(
         .into_iter()
         .next()
         .ok_or(CaptureError::NoDisplay)?;
-    let filter = SCContentFilter::create()
-        .with_display(&display)
-        .with_excluding_windows(&[])
-        .build()
-        .map_err(backend_err)?;
+    // Leave out this app's own windows, such as the remote-control overlay, so the guest
+    // doesn't see them in the stream. A command-line sharer without windows isn't listed.
+    let me = i32::try_from(std::process::id()).unwrap_or(-1);
+    let own_app = content
+        .applications()
+        .into_iter()
+        .find(|app| app.process_id() == me);
+    let builder = SCContentFilter::create().with_display(&display);
+    let filter = match &own_app {
+        Some(app) => {
+            tracing::info!("leaving this app's own windows out of the capture");
+            builder.with_excluding_applications(&[app], &[])
+        }
+        None => builder.with_excluding_windows(&[]),
+    }
+    .build()
+    .map_err(backend_err)?;
 
     let stream_config = SCStreamConfiguration::new()
         .with_width(config.width)

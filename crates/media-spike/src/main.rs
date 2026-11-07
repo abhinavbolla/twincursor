@@ -5,6 +5,7 @@ mod guest;
 mod hotkey;
 mod hud;
 mod input;
+mod overlay;
 mod probe;
 mod replay;
 mod sharer;
@@ -279,9 +280,10 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
     if !args.allow_control {
         return network(None);
     }
+    let ui = hotkey::SharerUi::new()?;
     let revoke = control::RevokeSwitch::default();
-    let (sharer, link) = sharer::Sharer::start(&args.inject, revoke.clone())?;
-    let result = hotkey::run_with_hotkey(revoke, move || network(Some(link)));
+    let (sharer, link) = sharer::Sharer::start(&args.inject, revoke.clone(), ui.overlay())?;
+    let result = ui.run(revoke, move || network(Some(link)));
     // Release anything a guest still holds before exiting.
     sharer.stop();
     result?

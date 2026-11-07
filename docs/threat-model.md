@@ -48,8 +48,8 @@ weaken them won't be merged.
 
 The session logic lives in `crates/control` with no network or platform code, so these rules can
 be tested with scripted traces. *Status: the session rules are built and tested, and run over the network
-with a consent prompt in the sharer's terminal and the revoke hotkey, and inject real input on
-macOS. The on-screen label comes next.*
+with a consent prompt in the sharer's terminal, the revoke hotkey, the on-screen label, and real
+input on macOS.*
 
 ## Known limits
 
