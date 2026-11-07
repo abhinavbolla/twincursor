@@ -3740,6 +3740,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "twincursor-control"
+version = "0.1.0"
+dependencies = [
+ "tracing",
+ "twincursor-protocol",
+]
+
+[[package]]
 name = "twincursor-media"
 version = "0.1.0"
 dependencies = [
@@ -3772,6 +3780,15 @@ dependencies = [
  "tracing-subscriber",
  "twincursor-media",
  "winit",
+]
+
+[[package]]
+name = "twincursor-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

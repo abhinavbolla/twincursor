@@ -22,7 +22,8 @@ The guest uses the sharer's Mac with their own mouse and keyboard, with consent 
 done when a guest can comfortably edit a file in the sharer's editor.
 
 - [x] Measure the path input takes, and choose its transport (ADR 0003)
-- [ ] Input event messages (`crates/protocol`) and the control session (`crates/control`)
+- [x] Input event messages (`crates/protocol`) and the control session (`crates/control`), with
+  the keyboard model (ADR 0004)
 - [ ] Viewer captures mouse, keyboard and scroll
 - [ ] Grant and revoke control, with a global revoke hotkey
 - [ ] Real input injection, with an Accessibility permission check

@@ -1,0 +1,15 @@
+[package]
+name = "twincursor-control"
+version = "0.1.0"
+publish = false
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The sharer's side of TwinCursor remote control: consent, input checks and safety"
+
+[lib]
+name = "control"
+
+[dependencies]
+twincursor-protocol = { path = "../protocol" }
+tracing.workspace = true
