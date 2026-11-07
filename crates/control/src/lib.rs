@@ -5,6 +5,7 @@
 //! show. That keeps the rules in `docs/threat-model.md` ("How control works") testable with
 //! scripted traces, in `tests.rs`.
 
+pub mod guest;
 mod held;
 mod injector;
 mod keyboard;
@@ -16,7 +17,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use held::Held;
-pub use injector::{Action, Injector, LogInjector, Point};
+pub use injector::{Action, Injector, LogInjector, Point, RecordInjector};
 use keyboard::{Keyboard, Press};
 use lateness::Lateness;
 use protocol::{InputEvent, Message, Platform};
@@ -386,7 +387,7 @@ impl<I: Injector> Controller<I> {
                 let code = control.keyboard.sharer_code(&code);
                 if pressed {
                     match control.keyboard.press(code, text, &control.held) {
-                        Press::Text(text) => injector.inject(&Action::Text(text)),
+                        Press::Text(text) => injector.inject(&Action::Text { text }),
                         Press::Key(code) => {
                             control.held.press_key(&code);
                             injector.inject(&Action::Key {

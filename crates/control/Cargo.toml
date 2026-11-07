@@ -5,7 +5,7 @@ publish = false
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "The sharer's side of TwinCursor remote control: consent, input checks and safety"
+description = "TwinCursor remote-control sessions: consent, input checks and safety on the sharer, and the guest's side"
 
 [lib]
 name = "control"
@@ -13,3 +13,5 @@ name = "control"
 [dependencies]
 twincursor-protocol = { path = "../protocol" }
 tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true

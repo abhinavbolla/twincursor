@@ -44,8 +44,9 @@ weaken them won't be merged.
   the guest's window loses focus, and after 1 s without a heartbeat.
 
 The session logic lives in `crates/control` with no network or platform code, so these rules can
-be tested with scripted traces. *Status: the session rules are built and tested, and log instead
-of injecting. The hotkey, the on-screen label and real injection come next.*
+be tested with scripted traces. *Status: the session rules are built and tested, and run over the network
+with a consent prompt in the sharer's terminal. They log or record instead of injecting. The
+hotkey, the on-screen label and real injection come next.*
 
 ## Known limits
 

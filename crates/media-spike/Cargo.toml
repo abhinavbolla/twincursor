@@ -13,6 +13,8 @@ path = "src/main.rs"
 
 [dependencies]
 twincursor-media = { path = "../media" }
+twincursor-control = { path = "../control" }
+twincursor-protocol = { path = "../protocol" }
 livekit.workspace = true
 winit.workspace = true
 softbuffer.workspace = true
@@ -23,4 +25,5 @@ clap.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+serde.workspace = true
 serde_json.workspace = true

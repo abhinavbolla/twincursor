@@ -142,7 +142,7 @@ fn code(code: &str, pressed: bool) -> Action {
 }
 
 fn text(s: &str) -> Action {
-    Action::Text(s.into())
+    Action::Text { text: s.into() }
 }
 
 // Consent.

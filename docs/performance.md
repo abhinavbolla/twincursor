@@ -111,6 +111,28 @@ A single 5 s outage delayed both channels by 5 s and lost 8 lossy pings per stre
   the stall is. The rest arrive late and in order, so a sequence number can't catch them. Without
   an age check, a guest's cursor would replay old movement.
 
+### Remote control end to end
+
+`bench/control-e2e.sh` sends a 168-step script (pointer sweeps, clicks, a drag, both kinds of
+scroll, 46 characters of code with accents and symbols, ⌘A ⌘C, and Shift-arrow selection) from a
+headless guest to a sharer on one Mac, then compares what the sharer would inject with what the
+guest sent.
+
+- **5 runs out of 5 matched exactly:** 72 keys, clicks, scrolls and characters each time, in order,
+  and every pointer move arrived. A refused request injected nothing.
+- **Packets sent just after joining can be lost.** In one run, the guest's first four requests,
+  over about 4 s, never reached the sharer, though both sides were connected and the video was
+  flowing. Once one got through, nothing else was lost. The guest now repeats an unanswered
+  request every second, and the sharer treats a repeat as the same request.
+- **Carrying control costs no measurable latency.** Two interleaved 30 s runs each, 1080p H.264,
+  synthetic pattern:
+
+| Build | Capture → decode p50 | p95 | Input one-way p50, reliable |
+|---|---|---|---|
+| Before (main) | 15.8–15.9 ms | 17.2–17.6 ms | 0.8–1.0 ms |
+| After, control off | 15.7–15.9 ms | 17.4–17.6 ms | 0.7 ms |
+| After, `--allow-control` | 15.7–15.8 ms | 17.6 ms | 0.8 ms |
+
 ## Network lab
 
 Sharer, viewer and LiveKit run in Docker on one Mac, with conditions applied by `tc netem`. It uses
@@ -176,6 +198,13 @@ Screen Recording permission.
 ```bash
 cargo build --release -p twincursor-media-spike
 DURATION=30 bench/run-matrix.sh q-h264-1080 q-vp8-1080 q-h264-1440 q-vp8-1440 input-h264
+```
+
+Remote control end to end, with nothing injected for real:
+
+```bash
+bench/control-e2e.sh                # every script in bench/control/
+ANSWER=n bench/control-e2e.sh       # the sharer says no: nothing may be injected
 ```
 
 The network lab needs Docker, and runs its own LiveKit server:

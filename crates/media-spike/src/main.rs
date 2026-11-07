@@ -1,7 +1,10 @@
 //! `tc-spike`: the media development tool. `share` publishes this Mac's screen, `view` shows it in a
 //! native window and measures latency. Start `livekit-server --dev` first.
 
+mod guest;
 mod hud;
+mod replay;
+mod sharer;
 mod view;
 
 use std::sync::atomic::Ordering;
@@ -32,6 +35,15 @@ enum Command {
     Compare {
         sharer: std::path::PathBuf,
         viewer: std::path::PathBuf,
+    },
+    /// Check that the actions a sharer recorded match the messages a viewer sent.
+    Replay {
+        /// The viewer's `--sent-log`.
+        #[arg(long)]
+        sent: std::path::PathBuf,
+        /// The sharer's `--inject record:PATH` file.
+        #[arg(long)]
+        actions: std::path::PathBuf,
     },
 }
 
@@ -146,6 +158,12 @@ struct ShareArgs {
     /// Include the mouse cursor in the capture.
     #[arg(long)]
     cursor: bool,
+    /// Let viewers ask for remote control. You're asked in this terminal before anyone gets it.
+    #[arg(long)]
+    allow_control: bool,
+    /// What granted input does: `log` it, or `record:PATH` it as JSON lines (see `replay`).
+    #[arg(long, default_value = "log", requires = "allow_control")]
+    inject: sharer::Inject,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -159,6 +177,7 @@ fn main() -> anyhow::Result<()> {
         Command::Share(args) => share(args),
         Command::View(args) => view::run(args),
         Command::Compare { sharer, viewer } => compare(&sharer, &viewer),
+        Command::Replay { sent, actions } => replay::run(&sent, &actions),
     }
 }
 
@@ -221,17 +240,28 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
         }),
     };
 
+    let control = args
+        .allow_control
+        .then(|| sharer::Sharer::start(&args.inject))
+        .transpose()?;
+    let (sharer, link) = control.unzip();
+
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async {
+    let result = runtime.block_on(async {
         let stats = Arc::new(ShareStats::default());
         let reporter = tokio::spawn(report_share_stats(stats.clone()));
         let shutdown = async {
             let _ = tokio::signal::ctrl_c().await;
         };
-        let result = publish::run(config, stats, shutdown).await;
+        let result = publish::run(config, stats, link, shutdown).await;
         reporter.abort();
         result.context("sharing failed")
-    })
+    });
+    // Release anything a guest still holds before exiting.
+    if let Some(sharer) = sharer {
+        sharer.stop();
+    }
+    result
 }
 
 fn compare(a: &std::path::Path, b: &std::path::Path) -> anyhow::Result<()> {

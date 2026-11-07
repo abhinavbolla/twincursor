@@ -12,6 +12,7 @@ use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 
 use crate::adapt::{Adapter, BitrateCap};
 use crate::capture::{self, wall_clock_us, Backend, CaptureConfig, Frame, FrameBuffer, Tier};
+use crate::link::{self, ControlLink};
 use crate::netstats::{NetSnapshot, Poller, Side};
 use crate::ping::{self, Route};
 use crate::quality::Snapshots;
@@ -130,10 +131,12 @@ impl Mailbox {
     }
 }
 
-/// Connects, publishes, and streams frames until `shutdown` resolves.
+/// Connects, publishes, and streams frames until `shutdown` resolves. With a `control` link,
+/// viewers' remote-control messages reach the app through it.
 pub async fn run(
     config: ShareConfig,
     stats: Arc<ShareStats>,
+    control: Option<ControlLink>,
     shutdown: impl std::future::Future<Output = ()>,
 ) -> Result<(), ShareError> {
     let (room, mut events) =
@@ -222,6 +225,7 @@ pub async fn run(
     };
 
     let pings = tokio::spawn(ping::serve(room.local_participant(), room.subscribe()));
+    let link_tasks = control.map(|c| link::start(&room, c));
     let main_echo_await_us = AtomicU32::new(0);
 
     let mut poller = Poller::new(Side::Publisher);
@@ -303,6 +307,7 @@ pub async fn run(
     }
 
     pings.abort();
+    link_tasks.iter().flatten().for_each(|t| t.abort());
     drop(_capture);
     mailbox.close();
     let _ = sender.join();

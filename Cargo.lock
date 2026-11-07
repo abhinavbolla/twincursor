@@ -3743,6 +3743,8 @@ dependencies = [
 name = "twincursor-control"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "tracing",
  "twincursor-protocol",
 ]
@@ -3773,12 +3775,15 @@ dependencies = [
  "font8x8",
  "futures",
  "livekit",
+ "serde",
  "serde_json",
  "softbuffer",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "twincursor-control",
  "twincursor-media",
+ "twincursor-protocol",
  "winit",
 ]
 
