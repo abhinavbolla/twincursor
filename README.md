@@ -29,7 +29,7 @@ behind your hands. TwinCursor is built around three ideas:
 | Screen sharing | ✅ Works from the command line: macOS sharer; macOS or Windows viewer |
 | Call health stats and on-screen HUD | ✅ Works |
 | Auto-throttle on poor networks | ✅ Works |
-| Remote control | 🚧 In progress |
+| Remote control | 🚧 Works from the command line (macOS sharer), in hands-on testing |
 | Voice | Planned |
 | Desktop app | Planned |
 | Self-hosting with one command | Planned |
@@ -80,6 +80,24 @@ target/release/tc-spike view
 
 macOS will ask you to allow Screen Recording for your terminal. Press `S` in the viewer to show or
 hide the stats HUD. Run `tc-spike --help` to see the options, such as `--resolution 1440`.
+
+### Remote control
+
+Share with `--allow-control`, and the viewer can ask for your mouse and keyboard:
+
+```bash
+target/release/tc-spike share --allow-control
+```
+
+In the viewer, press F9 to ask. The sharer's terminal asks whether to allow it, and nothing
+happens until they type `y`. While a guest is in control, a label at the top of the sharer's
+screen says who it is, and a name tag follows their pointer. The sharer takes control back at
+any time with ⌃⌥⌘R, and the guest gives it back with F9. Input pauses while the sharer's screen
+is locked.
+
+macOS will ask you to allow Accessibility for the sharer's terminal, which lets it move the
+pointer and type. The [threat model](docs/threat-model.md) explains what a guest in control can
+and can't do.
 
 ### Between two machines
 
