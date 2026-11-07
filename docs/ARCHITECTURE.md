@@ -103,7 +103,9 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
 - `tc-spike probe` is a full-screen window that records the input it receives, using the
   viewer's own event mapping. `bench/control-inject.sh` sends a script through the whole path
   (guest, network, sharer, CGEvent, macOS, probe) and checks the text, shortcuts, clicks and
-  scrolls that arrive.
+  scrolls that arrive. The probe measures clicks against the display, not its own window: on a
+  Mac with a notch, a full-screen window starts below the camera housing (32 pt on a 14-inch
+  MacBook Pro), so window-relative positions read a few percent too high.
 - `bench/control-e2e.sh` runs a sharer and a scripted headless guest on one machine. The sharer
   records what it would inject, and `tc-spike replay` checks it against what the guest sent:
   every key, click, scroll and character once and in order, and pointer moves never invented
@@ -115,8 +117,10 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
   on every Space and over full-screen apps, click-through, never focused, drawn with the HUD's
   8x8 font. They're not "stationary": macOS keeps a stationary window in the on-screen list
   after it's ordered out. Screen capture leaves the sharer's own app out, so the guest doesn't
-  see them in the stream. `bench/control-e2e.sh` checks that the label is on screen during
-  control and gone after.
+  see them in the stream. ScreenCaptureKit can only do that for an app that already has windows
+  when capture starts, so both windows are made, hidden, before the network thread starts
+  capture; made on the first grant, they were captured. `bench/control-e2e.sh` checks that the
+  label is on screen during control and gone after.
 - macOS needs Screen Recording and Accessibility permissions. Onboarding must guide the user
   through both.
 - Keyboard layouts: the viewer sends the physical key and the text it produced, and the sharer

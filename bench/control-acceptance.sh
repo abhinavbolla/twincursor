@@ -50,6 +50,12 @@ kill -INT "$sharer" 2>/dev/null
 wait "$sharer" 2>/dev/null
 exec 3>&-
 rm -f "$OUT/answer"
+if grep -q "leaving this app's own windows out of the capture" "$OUT/share.log"; then
+  echo "PASS: the sharer left its own windows out of the capture"
+else
+  echo "FAIL: the sharer didn't find its own windows, so the overlay is in the stream"
+  status=1
+fi
 echo "Your screen during control: $OUT/overlay-on-screen.png (the label and name tag should show)"
 echo "What the guest received: the newest PGM in $OUT/stream/ (neither should show)"
 

@@ -5,6 +5,7 @@
 //! async.
 
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
 use control::RevokeSwitch;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
@@ -72,28 +73,44 @@ impl SharerUi {
         }));
 
         let proxy = self.event_loop.create_proxy();
-        let worker = std::thread::spawn(move || {
-            let result = work();
-            let _ = proxy.send_event(UiEvent::Done);
-            result
-        });
+        let start = move || {
+            std::thread::spawn(move || {
+                let result = work();
+                let _ = proxy.send_event(UiEvent::Done);
+                result
+            })
+        };
         let mut app = App {
             overlay: Overlay::new(self.state),
+            start: Some(Box::new(start)),
+            worker: None,
         };
         self.event_loop.run_app(&mut app)?;
         let _ = manager.unregister(hotkey);
-        worker
+        app.worker
+            .ok_or_else(|| anyhow::anyhow!("the event loop ended before it started"))?
             .join()
             .map_err(|_| anyhow::anyhow!("the sharer's network thread panicked"))
     }
 }
 
-struct App {
+type Start<T> = Box<dyn FnOnce() -> JoinHandle<T>>;
+
+struct App<T> {
     overlay: Overlay,
+    /// Starts the network thread, which starts screen capture. It waits for `resumed`, so the
+    /// overlay's windows exist first and capture can leave them out.
+    start: Option<Start<T>>,
+    worker: Option<JoinHandle<T>>,
 }
 
-impl ApplicationHandler<UiEvent> for App {
-    fn resumed(&mut self, _: &ActiveEventLoop) {}
+impl<T> ApplicationHandler<UiEvent> for App<T> {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        self.overlay.prepare(event_loop);
+        if let Some(start) = self.start.take() {
+            self.worker = Some(start());
+        }
+    }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UiEvent) {
         match event {

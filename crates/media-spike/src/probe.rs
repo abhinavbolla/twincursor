@@ -56,11 +56,31 @@ impl Probe {
         let _ = writeln!(self.out, "{line}");
     }
 
-    /// The window covers the main display, so its size is the shared surface.
-    fn surface(&self) -> input::Rect {
-        let size = self.window.as_ref().map(|w| w.inner_size());
-        let (w, h) = size.map_or((1, 1), |s| (s.width.max(1), s.height.max(1)));
-        input::Rect { x: 0, y: 0, w, h }
+    /// Where a point in the window is on the shared surface, which is the whole display. The
+    /// window's own size isn't the display's: on a Mac with a notch, a full-screen window starts
+    /// below the camera housing (32 pt on a 14-inch MacBook Pro), so dividing by the window's
+    /// height would put every click a few percent too high.
+    fn on_display(&self, (x, y): (f64, f64)) -> (f64, f64) {
+        let Some(window) = &self.window else {
+            return (0.0, 0.0);
+        };
+        let placed = window.current_monitor().zip(window.inner_position().ok());
+        let (rect, offset) = match placed {
+            Some((monitor, inner)) => {
+                let (origin, size) = (monitor.position(), monitor.size());
+                let offset = (inner.x - origin.x, inner.y - origin.y);
+                (size, offset)
+            }
+            None => (window.inner_size(), (0, 0)),
+        };
+        let surface = input::Rect {
+            x: 0,
+            y: 0,
+            w: rect.width.max(1),
+            h: rect.height.max(1),
+        };
+        let at = (x + f64::from(offset.0), y + f64::from(offset.1));
+        input::to_surface_clamped(surface, at)
     }
 }
 
@@ -82,6 +102,11 @@ impl ApplicationHandler for Probe {
             .with_fullscreen(Some(Fullscreen::Borderless(None)));
         let window = event_loop.create_window(attributes).expect("probe window");
         window.focus_window();
+        tracing::info!(
+            window = ?window.inner_position().ok().zip(Some(window.inner_size())),
+            display = ?window.current_monitor().map(|m| (m.position(), m.size())),
+            "probe window placed"
+        );
         self.window = Some(window);
     }
 
@@ -109,7 +134,7 @@ impl ApplicationHandler for Probe {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 if let (Some(button), Some(at)) = (input::button(button), self.cursor) {
-                    let (x, y) = input::to_surface_clamped(self.surface(), at);
+                    let (x, y) = self.on_display(at);
                     self.record(&InputEvent::Button {
                         button,
                         pressed: state == ElementState::Pressed,
