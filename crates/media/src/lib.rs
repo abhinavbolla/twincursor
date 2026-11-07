@@ -5,6 +5,7 @@
 pub mod adapt;
 pub mod capture;
 pub mod latency;
+pub mod link;
 pub mod marker;
 pub mod netstats;
 pub mod pattern;

@@ -67,6 +67,16 @@ pub struct ViewArgs {
     /// Directory for the JSON results file.
     #[arg(long, default_value = "bench/results")]
     out: PathBuf,
+    /// Play a remote-control script (JSON steps; see `bench/control/`), then stop. Needs
+    /// `--headless` and a sharer started with `--allow-control`.
+    #[arg(long, requires = "headless")]
+    control_script: Option<PathBuf>,
+    /// Write every control message sent as a line of JSON (see `tc-spike replay`).
+    #[arg(long)]
+    sent_log: Option<PathBuf>,
+    /// The name the sharer sees when you ask for control.
+    #[arg(long, default_value = "guest")]
+    name: String,
 }
 
 #[derive(Debug)]
@@ -128,8 +138,9 @@ pub fn run(args: ViewArgs) -> anyhow::Result<()> {
             let shutdown = async {
                 let _ = stop_rx.await;
             };
-            let result =
-                runtime.block_on(subscribe::run(config, recorder, board, on_frame, shutdown));
+            let result = runtime.block_on(subscribe::run(
+                config, recorder, board, None, on_frame, shutdown,
+            ));
             if let Err(e) = &result {
                 tracing::error!("viewer failed: {e}");
             }
@@ -380,6 +391,29 @@ fn run_headless(args: ViewArgs) -> anyhow::Result<()> {
             );
         }
     };
+    let script = args
+        .control_script
+        .as_ref()
+        .map(crate::guest::read_script)
+        .transpose()?;
+    let (script_done_tx, script_done_rx) = tokio::sync::oneshot::channel::<()>();
+    let mut link = None;
+    let mut player = None;
+    if let Some(steps) = script {
+        let (guest, control, thread) =
+            crate::guest::Guest::start(args.name.clone(), args.sent_log.as_deref())?;
+        link = Some(control);
+        player = Some(std::thread::spawn(move || {
+            let result = crate::guest::play(&guest, &steps);
+            // Let the last messages go out before the room closes.
+            guest.stop();
+            let _ = thread.join();
+            std::thread::sleep(Duration::from_millis(500));
+            let _ = script_done_tx.send(());
+            result
+        }));
+    }
+
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
         let reporter = {
@@ -398,16 +432,30 @@ fn run_headless(args: ViewArgs) -> anyhow::Result<()> {
             })
         };
         let duration = args.duration;
+        let scripted = player.is_some();
         let shutdown = async move {
-            match duration {
-                Some(secs) => tokio::time::sleep(Duration::from_secs(secs)).await,
-                None => {
-                    let _ = tokio::signal::ctrl_c().await;
+            let timer = async {
+                match duration {
+                    Some(secs) => tokio::time::sleep(Duration::from_secs(secs)).await,
+                    None => {
+                        let _ = tokio::signal::ctrl_c().await;
+                    }
                 }
+            };
+            tokio::select! {
+                _ = timer => {}
+                Ok(()) = script_done_rx, if scripted => {}
             }
         };
-        let result =
-            subscribe::run(config, recorder.clone(), board.clone(), on_frame, shutdown).await;
+        let result = subscribe::run(
+            config,
+            recorder.clone(),
+            board.clone(),
+            link,
+            on_frame,
+            shutdown,
+        )
+        .await;
         reporter.abort();
         result
     })?;
@@ -415,7 +463,15 @@ fn run_headless(args: ViewArgs) -> anyhow::Result<()> {
     let recorder = recorder.lock().unwrap();
     let board = board.lock().unwrap();
     let size = *frame_size.lock().unwrap();
-    write_results(&args, &recorder, &board, started.elapsed(), size)
+    write_results(&args, &recorder, &board, started.elapsed(), size)?;
+    if let Some(player) = player {
+        player
+            .join()
+            .map_err(|_| anyhow::anyhow!("control script panicked"))?
+            .context("control script failed")?;
+        tracing::info!("control script finished");
+    }
+    Ok(())
 }
 
 /// Room on a monitor for the window's content, leaving space for the title bar and dock.

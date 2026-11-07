@@ -11,6 +11,7 @@ use livekit::webrtc::video_frame::{I420Buffer, VideoBuffer};
 use livekit::webrtc::video_stream::native::NativeVideoStream;
 
 use crate::latency::Recorder;
+use crate::link::{self, ControlLink};
 use crate::netstats::{Board, Poller, Side};
 use crate::pattern::{self, fast_scrolling};
 use crate::ping;
@@ -48,11 +49,13 @@ pub enum ViewError {
     Room(#[from] RoomError),
 }
 
-/// Connects and delivers decoded frames to `on_frame` until `shutdown` resolves.
+/// Connects and delivers decoded frames to `on_frame` until `shutdown` resolves. With a
+/// `control` link, remote-control messages go to and from the sharer through it.
 pub async fn run(
     config: ViewConfig,
     recorder: Arc<Mutex<Recorder>>,
     board: Arc<Mutex<Board>>,
+    control: Option<ControlLink>,
     on_frame: impl Fn(DecodedFrame) + Send + Sync + 'static,
     shutdown: impl std::future::Future<Output = ()>,
 ) -> Result<(), ViewError> {
@@ -63,6 +66,7 @@ pub async fn run(
         Room::connect(&config.url, &config.token, RoomOptions::default()).await?;
     tracing::info!(room = %room.name(), "connected as viewer");
 
+    let link_tasks = control.map(|c| link::start(&room, c));
     let on_frame = Arc::new(on_frame);
     let ticker = tokio::spawn(send_ticks(
         room.local_participant(),
@@ -131,6 +135,7 @@ pub async fn run(
 
     ticker.abort();
     pingers.iter().for_each(|task| task.abort());
+    link_tasks.iter().flatten().for_each(|t| t.abort());
     room.close().await?;
     Ok(())
 }
