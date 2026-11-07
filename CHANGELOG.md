@@ -25,6 +25,9 @@ Notable changes to TwinCursor. The format follows
   sharer can take control back at any time with ⌃⌥⌘R.
 - Real input injection on macOS. It pauses while the sharer's screen is locked, so a guest can't
   type into the lock screen.
+- The sharer sees who is controlling: a label at the top of the screen with the way to take
+  control back, and a name tag on the guest's pointer. The sharer's own windows are left out of
+  the shared screen.
 
 ### Security
 

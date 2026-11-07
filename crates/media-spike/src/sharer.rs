@@ -16,6 +16,8 @@ use control::{
 use media::link::{ControlLink, LinkEvent, Outgoing};
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::overlay::{OverlayHandle, OverlayState};
+
 const TICK: Duration = Duration::from_millis(20);
 
 /// Where accepted input goes.
@@ -56,7 +58,11 @@ pub struct Sharer {
 impl Sharer {
     /// Starts the control thread. Returns the link to hand to `publish::run`. Tripping `revoke`
     /// stops injection at once and ends control.
-    pub fn start(inject: &Inject, revoke: RevokeSwitch) -> anyhow::Result<(Self, ControlLink)> {
+    pub fn start(
+        inject: &Inject,
+        revoke: RevokeSwitch,
+        overlay: OverlayHandle,
+    ) -> anyhow::Result<(Self, ControlLink)> {
         let injector: Box<dyn Injector + Send> = match inject {
             Inject::Log => Box::new(LogInjector),
             Inject::Record(path) => Box::new(RecordInjector::new(std::fs::File::create(path)?)),
@@ -92,6 +98,7 @@ impl Sharer {
                     &rx,
                     &outgoing,
                     &revoke,
+                    &overlay,
                 )
             })?;
         println!(
@@ -114,6 +121,7 @@ fn run<I: Injector>(
     rx: &mpsc::Receiver<In>,
     outgoing: &UnboundedSender<Outgoing>,
     revoke: &RevokeSwitch,
+    overlay: &OverlayHandle,
 ) {
     let mut bad_messages = 0u64;
     loop {
@@ -144,7 +152,13 @@ fn run<I: Injector>(
         };
         apply(effects, outgoing);
         controller.tick(Instant::now());
+        overlay.show(OverlayState {
+            asking: controller.requester().map(|g| g.name.clone()),
+            controller: controller.controller().map(|g| g.name.clone()),
+            pointer: controller.guest_pointer(),
+        });
     }
+    overlay.show(OverlayState::default());
     let counters = controller.counters();
     let blocked = controller.injector().blocked();
     tracing::info!(?counters, bad_messages, blocked, "control stopped");

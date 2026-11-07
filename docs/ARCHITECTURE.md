@@ -107,8 +107,15 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
   records what it would inject, and `tc-spike replay` checks it against what the guest sent:
   every key, click, scroll and character once and in order, and pointer moves never invented
   or reordered.
-- The sharer gets a transparent, click-through, always-on-top overlay window that draws the
-  guest's cursor and name.
+- The sharer always sees who is controlling (hard rule 4). A label at the top of the screen says
+  "<name> is controlling this computer" and how to take it back, for as long as control lasts,
+  and says who is asking while a request is open. A name tag follows the guest's pointer, so
+  the sharer can tell the two pointers apart. Both are small opaque windows: status-level,
+  on every Space and over full-screen apps, click-through, never focused, drawn with the HUD's
+  8x8 font. They're not "stationary": macOS keeps a stationary window in the on-screen list
+  after it's ordered out. Screen capture leaves the sharer's own app out, so the guest doesn't
+  see them in the stream. `bench/control-e2e.sh` checks that the label is on screen during
+  control and gone after.
 - macOS needs Screen Recording and Accessibility permissions. Onboarding must guide the user
   through both.
 - Keyboard layouts: the viewer sends the physical key and the text it produced, and the sharer

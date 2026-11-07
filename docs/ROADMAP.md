@@ -24,10 +24,11 @@ done when a guest can comfortably edit a file in the sharer's editor.
 - [x] Measure the path input takes, and choose its transport (ADR 0003)
 - [x] Input event messages (`crates/protocol`) and the control session (`crates/control`), with
   the keyboard model (ADR 0004)
-- [ ] Viewer captures mouse, keyboard and scroll
-- [ ] Grant and revoke control, with a global revoke hotkey
-- [ ] Real input injection, with an Accessibility permission check
-- [ ] Guest cursor overlay on the sharer's screen
+- [x] Viewer captures mouse, keyboard and scroll
+- [x] Grant and revoke control, with a global revoke hotkey
+- [x] Real input injection, with an Accessibility permission check
+- [x] Guest cursor overlay on the sharer's screen
+- [ ] Hands-on: edit a real file on the sharer's Mac from the Windows laptop
 
 ## Next
 
