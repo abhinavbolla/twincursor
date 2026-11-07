@@ -202,6 +202,12 @@ Measuring this is easy to get wrong, so these are worth knowing before you compa
   Compare numbers only within one session.
 - **A sleeping display looks like a broken build.** ScreenCaptureKit lists no displays while the
   screen is asleep or locked, so unattended runs need `--capture pattern`.
+- **The latency marker hides the app menus.** While a viewer sends ticks, the sharer paints a
+  384x64 px grid of black and white blocks into the top-left corner of every frame
+  (`crates/media/src/marker.rs`). On a Mac that covers the front app's name and first menus, so a
+  real-screen snapshot looks like it lost part of the menu bar. That is the marker, not capture
+  or the codec: the sharer's own snapshot already has it, and ScreenCaptureKit delivers the menu
+  bar intact. `share --no-markers` turns it off, along with RTT and snapshots.
 - **The lab has its own traps.** netem's `rate` combined with jitter drops far more than configured,
   so rates go through tbf. A `docker compose exec` also takes long enough to blur a sub-second
   stall, so timing runs inside the containers.

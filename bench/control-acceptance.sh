@@ -64,7 +64,8 @@ else
   status=1
 fi
 echo "Your screen during control: $OUT/overlay-on-screen.png (the label and name tag should show)"
-echo "What the guest received: the newest PGM in $OUT/stream/ (neither should show)"
+echo "What the guest received: the newest PGM in $OUT/stream/ (neither should show; the"
+echo "  black and white blocks over the top-left menus are the latency marker)"
 fi
 
 if want 4; then
