@@ -18,6 +18,9 @@ Notable changes to TwinCursor. The format follows
   pings, and a Docker network lab with pass/fail targets.
 - Remote-control messages and the sharer's control session: consent, input checks, release of
   held keys after a stall, and the keyboard model. Nothing injects real input yet.
+- Remote control over the network: `tc-spike share --allow-control` asks in the terminal before
+  anyone gets control, and an end-to-end check proves every key and click arrives once and in
+  order.
 
 ### Security
 

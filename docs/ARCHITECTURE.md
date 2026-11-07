@@ -76,6 +76,16 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
   rejects malformed or out-of-range messages, and `crates/control` decides what gets through:
   the consent state, held keys and the deadman, stale moves, and the sharer winning the pointer.
   It has no network or platform code, so its tests are scripted traces on a fake clock.
+- Media doesn't know what the bytes mean. `media::link` carries the `tc.control` topic both ways
+  on tasks of its own, with its own copy of the room's events, so input never waits behind stats
+  polls or republishing. The guest's side, `control::guest`, asks for control, sends moves at
+  most 120 times a second (the newest position always goes out), heartbeats every 250 ms, and
+  repeats an unanswered request every second, because packets sent just after joining can be
+  lost.
+- `bench/control-e2e.sh` runs a sharer and a scripted headless guest on one machine. The sharer
+  records what it would inject, and `tc-spike replay` checks it against what the guest sent:
+  every key, click, scroll and character once and in order, and pointer moves never invented
+  or reordered.
 - The sharer gets a transparent, click-through, always-on-top overlay window that draws the
   guest's cursor and name.
 - macOS needs Screen Recording and Accessibility permissions. Onboarding must guide the user
