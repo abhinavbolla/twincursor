@@ -128,6 +128,12 @@ guest sent.
   the release), 5 runs out of 5. The first try lost about 1,600 of them, and it wasn't the
   network. A burst like that queues up on the guest's side, and the viewer left the room before
   the queue was sent. The guest now waits for everything to go out before it leaves.
+- **Through the network lab, too.** The same scripts, with the sharer in a container
+  (`bench/netlab/control.sh`), pass on `lan`, `wifi-bad`, `4g` and `hotel`: the smoke script
+  and 2,000 characters, every key and click exactly once and in order. The first lab run found
+  two bugs, fixed since ([ADR 0003](adr/0003-input-transport.md#update-2026-11-07)): a move
+  that overtook a resent button release, which dragged with the button down, and the end of
+  fast typing cut off when the guest left.
 - **A revoke stops typing at once.** Taking control back 1.5 s into typing 368 characters, with
   Shift and the mouse button held: 5 runs out of 5 stopped mid-text, released both, and let
   nothing but releases through afterwards. In one run, 3 keys the guest sent before it heard of
