@@ -38,9 +38,22 @@ as a real platform.
   layouts.
 - Low CPU: pairing for hours must not make the laptop fans spin up.
 
+## After v1: your own devices
+
+The same engine can connect you to your own computers when nobody is at them: your desk Mac from
+a laptop, or from your phone on the couch. Free remote-desktop tools do this, but they're often
+laggy, blurry, and awkward on a phone. TwinCursor should feel like
+sitting at the computer, with a mobile app that's built for touch, not a desktop squeezed onto a
+small screen.
+
+Consent works differently here, because nobody is at the computer to accept a request. The owner
+enrolls each device and client in advance, and the device always shows when it's being accessed.
+See [ADR 0005](adr/0005-unattended-access.md).
+
 ## Not in v1
 
-Recording, chat, whiteboard, mobile apps, calls with more than 4 people, and an AI pair (maybe later).
+Recording, chat, whiteboard, calls with more than 4 people, and an AI pair (maybe later). Mobile
+apps and access to your own devices come after v1 (above).
 
 ## Open questions
 

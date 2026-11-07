@@ -49,6 +49,20 @@ run it all with one `docker compose up`.
 - [ ] Exclude our own windows from capture
 - [ ] Landing page
 
+## Then: your own devices
+
+Connect to your own computers when nobody is at them, from a laptop or a phone, with the same
+latency and sharpness as pairing. The consent model is in
+[ADR 0005](adr/0005-unattended-access.md) (proposed).
+
+- [ ] Enroll devices and clients to your account, with a second factor
+- [ ] A background agent that accepts your enrolled clients while you're signed in to the computer
+- [ ] An on-screen label, a start sound and a local log for every unattended session
+- [ ] Direct peer-to-peer connections, with the server as a relay only when needed
+- [ ] Multiple monitors, clipboard sync, file drop and sound from the remote computer
+- [ ] Mobile viewer for iOS and Android: native decoding, a trackpad mode alongside direct touch,
+      pinch to zoom that follows the cursor, and a keyboard with a modifier bar
+
 ## Later
 
 Linux (Wayland and X11), a Windows sharer, camera, multiple cursors with three or more people,
