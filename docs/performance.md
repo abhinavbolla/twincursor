@@ -15,6 +15,7 @@ Wi-Fi 6 AX201. LiveKit runs on the Mac. TwinCursor is pre-release, so expect the
 | Text quality, H.264 | SSIM 0.9996 at about 0.8 Mbps, even while scrolling fast |
 | Sharer CPU, H.264 at 1080p | 14% of one core |
 | Delay the input path adds | Under 1 ms on top of the network |
+| Voice on one Mac, sound sent → played | 45–54 ms typical, screen latency unchanged |
 
 **Round trip** is the remote-control loop: the viewer sends a tick, the sharer stamps it into the
 next frame, and that frame comes back and is decoded. It runs on the viewer's clock, so it's valid
@@ -150,6 +151,36 @@ guest sent.
 The viewer window's new letterboxed drawing costs nothing either: capture → presented p50 19.7–19.8
 ms against 19.8–20.0 ms before (two interleaved 25 s runs each, 1080p, windowed).
 
+## Voice
+
+Voice is measured with synthetic audio: marker tones that spell each tick's id, timed as they
+play out on the viewer ([how](ARCHITECTURE.md#measuring-latency)). That covers the codec, the
+network and the receiver's jitter buffer, but not a mic, speakers or echo cancellation. Numbers
+are from 2026-11-08 on the same Mac, headless, with 1080p H.264 video running alongside:
+
+| | Voice off | Voice on |
+|---|---|---|
+| Screen round trip p50 | 9.8–10.0 ms | 8.9–9.2 ms |
+| Screen round trip p95 | 25.4–25.5 ms | 24.4–25.2 ms |
+| Voice one way p50 | | 45–54 ms |
+| Voice one way p95 | | 72–85 ms |
+| Audio behind the screen, p50 | | 43–50 ms |
+| Audio the receiver made up (concealment) | | 0.04–0.18% |
+| Viewer CPU (% of one core) | 4–5% | 7–8% |
+
+All 243 bursts were heard in each run. On a quiet machine, one way holds at about 48 ms p50 and
+49 ms p95.
+
+- **Voice doesn't slow the screen.** WebRTC can hold video back to line it up with audio, which
+  would add the voice's 45–50 ms lag to every frame. It doesn't here: the screen's round trip is
+  the same with voice on. Audio trailing the screen by 50 ms is fine for pairing, since nobody
+  lip-reads a code editor.
+- **The jitter buffer is most of the delay.** It holds about 30 ms even on one machine, about 60%
+  of the one-way time, and grows for a while after any late packets. That's the first thing to
+  tune.
+- **Voice costs about 66 kbit/s on the wire,** twice the 32 kbit/s Opus bitrate: LiveKit's
+  redundant audio (RED) repeats each packet in the next one, so one lost packet costs nothing.
+
 ## Network lab
 
 Sharer, viewer and LiveKit run in Docker on one Mac, with conditions applied by `tc netem`. It uses
@@ -208,6 +239,11 @@ Measuring this is easy to get wrong, so these are worth knowing before you compa
   real-screen snapshot looks like it lost part of the menu bar. That is the marker, not capture
   or the codec: the sharer's own snapshot already has it, and ScreenCaptureKit delivers the menu
   bar intact. `share --no-markers` turns it off, along with RTT and snapshots.
+- **A test source needs a sound card's priority.** The synthetic voice first ran on an ordinary
+  thread, and macOS sometimes woke it up to 98 ms late under normal desktop load, even at the
+  user-interactive QoS class. The receiver took that for network jitter and grew its buffer to
+  130 ms. The thread now asks for the real-time policy Core Audio gives a sound card's thread,
+  and hasn't been late since.
 - **The lab has its own traps.** netem's `rate` combined with jitter drops far more than configured,
   so rates go through tbf. A `docker compose exec` also takes long enough to blur a sub-second
   stall, so timing runs inside the containers.
@@ -221,6 +257,7 @@ Screen Recording permission.
 ```bash
 cargo build --release -p twincursor-media-spike
 DURATION=30 bench/run-matrix.sh q-h264-1080 q-vp8-1080 q-h264-1440 q-vp8-1440 input-h264
+DURATION=60 bench/run-matrix.sh av-off av-on   # voice, and the screen with and without it
 ```
 
 Remote control end to end, with nothing injected for real:

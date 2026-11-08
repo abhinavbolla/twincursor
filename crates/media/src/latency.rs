@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use serde::Serialize;
 
+use crate::audio::measure::{AudioLog, AudioReport};
 use crate::ping::{PingLog, StreamReport};
 use crate::quality::{summarize_low, LowSummary, Scores};
 use crate::stats::{summarize, Summary};
@@ -31,6 +32,8 @@ pub struct Recorder {
     pub quality_fast: Vec<Scores>,
     /// Input-path measurements, when `--measure-input` is on.
     pub input: PingLog,
+    /// Audio markers, when the sharer sends synthetic audio.
+    pub audio: AudioLog,
 }
 
 /// Summaries for one reporting window or a whole run.
@@ -47,6 +50,8 @@ pub struct Report {
     pub ssim_fast_scroll: Option<LowSummary>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub input: Vec<StreamReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio: Option<AudioReport>,
 }
 
 impl Recorder {
@@ -55,6 +60,7 @@ impl Recorder {
             .retain(|_, t| at.duration_since(*t).as_secs_f64() < TICK_TTL_SECS);
         self.sent.insert(id, at);
         self.ticks_sent += 1;
+        self.audio.tick_sent(id, at);
     }
 
     /// Records a presented frame. `marker` is the id read from the frame, if any;
@@ -77,6 +83,7 @@ impl Recorder {
             return;
         }
         self.last_seen = Some(id);
+        self.audio.video_seen(id, presented_at);
         if let Some(sent) = self.sent.remove(&id) {
             let ms = |t: Instant| t.saturating_duration_since(sent).as_secs_f64() * 1000.0;
             self.rtt_decoded.push(ms(decoded_at));
@@ -98,6 +105,7 @@ impl Recorder {
                 &self.quality_fast.iter().map(|q| q.ssim).collect::<Vec<_>>(),
             ),
             input: self.input.report(),
+            audio: self.audio.report(),
         }
     }
 }

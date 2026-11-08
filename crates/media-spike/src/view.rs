@@ -63,6 +63,9 @@ pub struct ViewArgs {
     /// Measure the data-packet path remote-control input takes (reliable vs lossy).
     #[arg(long)]
     measure_input: bool,
+    /// Time the markers in the sharer's voice (needs `share --audio pattern`).
+    #[arg(long)]
+    measure_audio: bool,
     /// Save the frame carrying every Nth latency tick as a PGM (see `tc-spike compare`).
     #[arg(long, default_value_t = 0)]
     snapshot_every: u32,
@@ -106,6 +109,7 @@ fn view_config(args: &ViewArgs) -> anyhow::Result<ViewConfig> {
         net_stats: !args.no_stats,
         measure_quality: args.measure_quality,
         measure_input: args.measure_input,
+        measure_audio: args.measure_audio,
         snapshots: (args.snapshot_every > 0).then(|| Snapshots {
             every: args.snapshot_every,
             dir: args.snapshot_dir.clone(),
@@ -540,6 +544,16 @@ fn log_report(
             stream.out_of_order,
         );
     }
+    if let Some(audio) = &report.audio {
+        tracing::info!(
+            "  audio: RTT {} | one-way {} | A/V {} | heard {} rejected {}",
+            fmt(audio.rtt),
+            fmt(audio.one_way),
+            fmt(audio.av_offset),
+            audio.bursts_heard,
+            audio.bursts_rejected,
+        );
+    }
     for line in hud::lines(&board.lock().unwrap(), recent) {
         tracing::info!("  {}", line.text);
     }
@@ -682,7 +696,14 @@ fn write_results(
     elapsed: Duration,
     size: (u32, u32),
 ) -> anyhow::Result<()> {
-    let report = recorder.report();
+    let mut report = recorder.report();
+    if let Some(audio) = report.audio.as_mut() {
+        audio.concealed_pct = board
+            .local
+            .as_ref()
+            .and_then(|s| s.audio_recv.as_ref())
+            .map(|a| a.concealed_run_pct);
+    }
     let secs = elapsed.as_secs_f64();
     let results = json!({
         "label": args.label,

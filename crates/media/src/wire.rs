@@ -11,6 +11,9 @@ pub const STATS_TOPIC: &str = "tc.stats";
 /// Data-packet topics for input-path measurements (viewer → sharer, and the echo).
 pub const PING_TOPIC: &str = "tc.ping";
 pub const PONG_TOPIC: &str = "tc.pong";
+/// Data-packet topic for audio markers (sharer → viewer): when each burst started, on the
+/// sharer's wall clock, for the one-way measurement.
+pub const AUDIO_TOPIC: &str = "tc.audio";
 
 /// Pings are padded to about the size of a future input event.
 const PING_LEN: usize = 64;
@@ -34,6 +37,22 @@ pub fn encode_tick(id: u32) -> Vec<u8> {
 
 pub fn decode_tick(payload: &[u8]) -> Option<u32> {
     Some(u32::from_le_bytes(payload.try_into().ok()?))
+}
+
+pub fn encode_audio_mark(id: u32, at_us: u64) -> Vec<u8> {
+    let mut out = id.to_le_bytes().to_vec();
+    out.extend_from_slice(&at_us.to_le_bytes());
+    out
+}
+
+pub fn decode_audio_mark(payload: &[u8]) -> Option<(u32, u64)> {
+    if payload.len() != 12 {
+        return None;
+    }
+    Some((
+        u32::from_le_bytes(payload[..4].try_into().ok()?),
+        u64::from_le_bytes(payload[4..].try_into().ok()?),
+    ))
 }
 
 pub fn encode_ping(ping: Ping) -> Vec<u8> {
@@ -78,6 +97,16 @@ pub fn decode_stats(payload: &[u8]) -> Option<NetSnapshot> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_mark_round_trip() {
+        let payload = encode_audio_mark(0xabcde, 1_700_000_000_123_456);
+        assert_eq!(
+            decode_audio_mark(&payload),
+            Some((0xabcde, 1_700_000_000_123_456))
+        );
+        assert_eq!(decode_audio_mark(&payload[..11]), None);
+    }
 
     #[test]
     fn tick_round_trip() {

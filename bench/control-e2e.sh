@@ -14,6 +14,7 @@
 # REVOKE=hotkey to press the global hotkey (⌃⌥⌘R) for real. Typing must stop at once and nothing
 # may stay held (default script: bench/control/revoke/*.json). The hotkey needs an unlocked
 # screen and Accessibility permission for this terminal, to post the key press.
+# SHARE_FLAGS and VIEW_FLAGS add flags to either side, e.g. SHARE_FLAGS="--audio pattern".
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -41,14 +42,16 @@ for script in "${scripts[@]}"; do
 
   # The sharer reads the answer from a pipe, as if typed into its terminal.
   mkfifo "$dir/answer"
+  # shellcheck disable=SC2086  # the extra flags are meant to split
   "$BIN" share --room "$room" --capture pattern --resolution 720 --no-stats \
-    --allow-control --inject "record:$dir/actions.jsonl" <"$dir/answer" >"$dir/share.log" 2>&1 &
+    --allow-control --inject "record:$dir/actions.jsonl" ${SHARE_FLAGS:-} <"$dir/answer" >"$dir/share.log" 2>&1 &
   sharer=$!
   exec 3>"$dir/answer"
 
+  # shellcheck disable=SC2086
   "$BIN" view --room "$room" --headless --no-stats --duration 120 --label "e2e-$name" \
     --out "$dir" --name "e2e guest" --control-script "$script" --sent-log "$dir/sent.jsonl" \
-    >"$dir/view.log" 2>&1 &
+    ${VIEW_FLAGS:-} >"$dir/view.log" 2>&1 &
   viewer=$!
 
   # Answer only once the sharer has asked: consent comes after the request, never before.

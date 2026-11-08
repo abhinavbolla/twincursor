@@ -34,6 +34,10 @@ CONFIGS=(
   # The data-packet path remote-control input takes, during normal video.
   "input-h264|--capture pattern --codec h264 --resolution 1080|--headless --measure-input"
   "input-sck-h264|--capture sck --codec h264 --resolution 1080|--headless --measure-input"
+  # Voice: the same headless video with and without the synthetic voice track, to show the
+  # screen's latency doesn't change, and the voice's own latency.
+  "av-off|--capture pattern --codec h264 --resolution 1080|--headless"
+  "av-on|--capture pattern --codec h264 --resolution 1080 --audio pattern|--headless --measure-audio"
   "sck-vp8-nostats|--capture sck --codec vp8 --no-stats|--no-stats"
   "sck-h264-nostats|--capture sck --codec h264 --no-stats|--no-stats"
 )
@@ -90,3 +94,16 @@ echo "=== summary (ms)"
             "\(.report.ticks_seen)/\(.report.ticks_sent)"] | @tsv' "$f"
   done | sort
 } | column -t -s $'\t'
+
+audio=$(jq -r 'select(.report.audio) | [.label,
+  (.report.audio.one_way.p50 // 0 | floor), (.report.audio.one_way.p95 // 0 | floor),
+  (.report.audio.rtt.p50 // 0 | floor), (.report.audio.av_offset.p50 // 0 | floor),
+  (.report.audio.concealed_pct // 0 | . * 100 | floor / 100),
+  "\(.report.audio.bursts_heard)/\(.report.ticks_sent)"] | @tsv' bench/results/*.json 2>/dev/null || true)
+if [[ -n $audio ]]; then
+  echo "=== voice (ms)"
+  {
+    printf 'label\toneway_p50\toneway_p95\trtt_p50\tav_p50\tconcealed_%%\theard\n'
+    echo "$audio" | sort
+  } | column -t -s $'\t'
+fi

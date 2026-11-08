@@ -11,6 +11,7 @@ use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 
 use crate::adapt::{Adapter, BitrateCap};
+use crate::audio::{self, AudioMode, TickSlot};
 use crate::capture::{self, wall_clock_us, Backend, CaptureConfig, Frame, FrameBuffer, Tier};
 use crate::link::{self, ControlLink};
 use crate::netstats::{NetSnapshot, Poller, Side};
@@ -40,6 +41,8 @@ pub struct ShareConfig {
     /// Auto-throttle: step the resolution down from the captured tier when the call can't
     /// sustain it. `None` keeps the captured size.
     pub adapt: Option<AdaptConfig>,
+    /// What to send as the sharer's voice.
+    pub audio: AudioMode,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -167,6 +170,13 @@ pub async fn run(
         .await?;
     tracing::info!(codec = ?config.codec, "screen track published");
 
+    // The voice is published once and never republished with the video.
+    let audio_ticks = Arc::new(TickSlot::default());
+    let _voice = match config.audio {
+        AudioMode::Off => None,
+        AudioMode::Pattern => Some(audio::publish_pattern(&room, audio_ticks.clone()).await?),
+    };
+
     let mailbox = Arc::new(Mailbox::default());
     let latest_tick = Arc::new(AtomicU32::new(NO_TICK));
     // Size and frame-rate cap frames are sent at; the adapter lowers them, the send loop
@@ -282,6 +292,7 @@ pub async fn run(
                     } else if topic.as_deref() == Some(wire::TICK_TOPIC) {
                         if let Some(id) = wire::decode_tick(&payload) {
                             latest_tick.store(id, Ordering::Relaxed);
+                            audio_ticks.offer(id);
                             stats.ticks.fetch_add(1, Ordering::Relaxed);
                             mailbox.tick();
                         }

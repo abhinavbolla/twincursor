@@ -160,6 +160,20 @@ return leg shares the viewer's downlink with the video.
 
 **Input SLO:** one-way p50 ≤ network delay + 15 ms and p95 ≤ network delay + 40 ms on clean links.
 
+Voice gets the same treatment, with the marker in the sound instead of the picture
+(`crates/media/src/audio/marker.rs`). With `share --audio pattern`, the sharer sends a quiet tone
+and, for each tick, a 110 ms burst: a sync tone, then six tones that spell the tick id and a
+check. `view --measure-audio` finds the bursts with Goertzel filters as the audio plays out, and
+reports:
+- **round trip:** tick sent → burst heard, on the viewer's clock;
+- **one way:** burst started → heard. The sharer sends each burst's start time on `tc.audio`, so
+  this needs a shared clock, like the video's one way;
+- **A/V offset:** a tick's burst heard minus its video frame shown;
+- **concealment:** the share of audio the receiver had to make up, from WebRTC's stats.
+
+The synthetic voice needs no mic or permission, so it runs headless and in the network lab. It
+skips echo cancellation and the device buffers, which only real devices have.
+
 ## Measuring quality
 
 Latency alone doesn't tell us whether text is readable, so we measure picture quality too:

@@ -48,7 +48,7 @@ run it all with one `docker compose up`.
 - [ ] Encoder tuning, sharpening and a faster Metal or wgpu viewer
 - [ ] Real-world checks: Mac to Mac, Mac on Ethernet, Network Link Conditioner profiles
 - [ ] True glass-to-glass latency with an on-screen marker (`--marker screen`)
-- [ ] Exclude our own windows from capture
+- [x] Exclude our own windows from capture
 - [ ] Landing page
 
 ## Then: your own devices

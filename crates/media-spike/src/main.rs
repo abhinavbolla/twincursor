@@ -126,6 +126,12 @@ impl From<Codec> for VideoCodec {
     }
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum AudioArg {
+    Off,
+    Pattern,
+}
+
 #[derive(Args)]
 struct ShareArgs {
     #[command(flatten)]
@@ -170,6 +176,10 @@ struct ShareArgs {
     /// Include the mouse cursor in the capture.
     #[arg(long)]
     cursor: bool,
+    /// What to send as your voice: nothing yet by default, or `pattern`: marker tones that
+    /// `view --measure-audio` times (no mic or permission needed).
+    #[arg(long, value_enum, default_value = "off")]
+    audio: AudioArg,
     /// Let viewers ask for remote control. You're asked in this terminal before anyone gets it.
     #[arg(long)]
     allow_control: bool,
@@ -263,6 +273,10 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
             max: tier,
             display: screen,
         }),
+        audio: match args.audio {
+            AudioArg::Off => media::audio::AudioMode::Off,
+            AudioArg::Pattern => media::audio::AudioMode::Pattern,
+        },
         snapshots: (args.snapshot_every > 0).then(|| media::quality::Snapshots {
             every: args.snapshot_every,
             dir: args.snapshot_dir.clone(),
