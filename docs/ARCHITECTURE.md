@@ -206,11 +206,16 @@ with a fixed IP on a private bridge. Each profile's conditions are applied with 
 - the viewer's downlink is shaped on the SFU's interface, filtered to the viewer's IP.
 
 Run it with `bench/netlab/run.sh [--build] [profile ...]` (`CODEC`, `RES`, `DURATION`,
-`ADAPT=off`, `SHARE_FLAGS`, `VIEW_FLAGS`, `TAG`), and summarise with `bench/netlab/report.sh`.
+`ADAPT=off`, `AUDIO=off`, `SHARE_FLAGS`, `VIEW_FLAGS`, `TAG`), and summarise with
+`bench/netlab/report.sh`. The synthetic voice runs alongside the screen unless `AUDIO=off`, and
+the report has a table for each.
 
 Lab notes:
 - Rate limits use a token bucket (tbf) under netem. netem's own `rate` combined with jitter
   tail-drops far more than configured.
+- The synthetic voice thread runs at a real-time FIFO priority (the containers have
+  `SYS_NICE`), as it does on macOS. At normal priority, the lab's CPU load delayed its frames by
+  up to 70 ms, and the receiver read that as network jitter.
 - Building tc-spike for Linux needs clang 21+ (libwebrtc's hermetic libc++) and an explicit
   link to GLib/GIO (see the lab's Dockerfile). Linux in Docker has no hardware
 encoder, so the lab uses VP8 (H.264 there is OpenH264 at ~35 fps). Mac hardware H.264 is
@@ -238,6 +243,16 @@ checked on real machines instead.
 - outage-5s: video back within 3 s of the network returning (longest stall ≤ 8 s).
 - stall-*: video back within 3 s of the network returning (longest stall ≤ 6 s).
 - udp-blocked: the call connects and measures latency.
+
+**Voice SLOs** ("network delay" is what the profile adds from sharer to viewer, one way):
+- lan, wifi-good: one way p50 ≤ network delay + 60 ms and p95 ≤ network delay + 100 ms; at most
+  1% of the audio concealed.
+- wifi-bad, 4g, hotel, intercontinental, sharer-uplink-3mbit: one way p95 ≤ network delay +
+  150 ms; at most 2% concealed.
+
+These are product targets, set from the Mac (48 ms one way on one machine) and ITU G.114's
+150 ms comfort limit for mouth to ear. The lab's own CPU stalls push its voice delay past them
+(see docs/performance.md, Network lab).
 
 ## Auto-throttle (adaptive frame rate and resolution)
 

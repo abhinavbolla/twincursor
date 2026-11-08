@@ -221,6 +221,63 @@ because its loss is over 2%.
 auto-throttle kept the longest stall at 0 s through a bandwidth drop, where it took 7 s in an
 earlier run with it turned off.
 
+### Voice in the lab
+
+The synthetic voice runs alongside the screen in every profile (32 kbit/s Opus with RED). One run
+each, 60 s, 243 bursts sent:
+
+| Profile | One way p50 | p95 | Behind the screen, p50 | Concealed | Jitter buffer | Heard | Target |
+|---|---|---|---|---|---|---|---|
+| lan | 186 ms | 621 ms | 170 ms | 1.34% | 228 ms | 237 | ❌ |
+| wifi-good | 111 ms | 131 ms | 88 ms | 0.11% | 84 ms | 239 | ❌ |
+| wifi-bad | 164 ms | 289 ms | 113 ms | 0.46% | 128 ms | 240 | ❌ |
+| 4g | 114 ms | 116 ms | 69 ms | 0% | 68 ms | 241 | ✅ |
+| hotel | 212 ms | 329 ms | 145 ms | 0.69% | 155 ms | 227 | ❌ |
+| intercontinental | 190 ms | 209 ms | 100 ms | 0.13% | 85 ms | 238 | ✅ |
+| sharer-uplink-3mbit | 150 ms | 165 ms | 77 ms | 0.19% | 106 ms | 242 | ❌ |
+| bandwidth-drop | 135 ms | 223 ms | 75 ms | 0.2% | 102 ms | 243 | |
+| udp-blocked | 75 ms | 173 ms | 69 ms | 0.32% | 66 ms | 241 | |
+| outage-5s | 93 ms | 134 ms | 76 ms | 9.45% | 78 ms | 217 | |
+| stall-0.6s | 77 ms | 149 ms | 68 ms | 3.29% | 65 ms | 234 | |
+| stall-1.2s | 76 ms | 96 ms | 59 ms | 6.09% | 52 ms | 228 | |
+| stall-2.5s | 66 ms | 81 ms | 49 ms | 12.53% | 44 ms | 207 | |
+
+The jitter buffer is the average over the run. Targets are in
+[ARCHITECTURE.md](ARCHITECTURE.md#network-lab-and-slos), and the dynamic profiles have none.
+
+On the two lossy profiles, with each encoding:
+
+| | Opus | On the wire | wifi-bad one way p50 | Concealed | hotel one way p50 | Concealed | Heard |
+|---|---|---|---|---|---|---|---|
+| RED (default) | 32 kbit/s | 67 kbit/s | 164 ms | 0.46% | 212 ms | 0.69% | 227 |
+| RED | 24 kbit/s | 51 kbit/s | 87 ms | 0.06% | 207 ms | 0.33% | 235 |
+| no RED | 32 kbit/s | 32 kbit/s | 80 ms | 0.12% | 174 ms | 3.81% | 190 |
+| no RED | 24 kbit/s | 24 kbit/s | 104 ms | 0.05% | 209 ms | 2.69% | 205 |
+
+"Heard" is on hotel, out of 243.
+
+- **RED stays on.** At hotel's 2% loss it keeps concealment under 1%, against 2.7–3.8% without,
+  and loses far fewer bursts. It costs 35 kbit/s, which is little next to the screen's 2–5 Mbit/s in the lab.
+  At wifi-bad's 1% loss nothing needed it.
+- **The bitrate stays at 32 kbit/s.** 24 kbit/s saved 16 kbit/s on the wire and made no difference
+  we could measure to delay or concealment. Tones can't judge how speech sounds, though, so we
+  keep the margin until real voices are tested.
+- **The jitter buffer holds on to a delay spike.** When the lab stalls, late packets arrive in a
+  burst and the receiver raises its buffer to cover them. On `lan` it reached 667 ms, took about
+  10 s to come back to 160 ms, and was still at 90 ms 40 s later. When packets are lost instead of late, as
+  in the stall and outage profiles, it stays at 44–78 ms. On real Wi-Fi, where delay spikes are
+  common, this would leave voice lagging long after the spike. It's the first thing to tune.
+- **Concealment counts outages exactly.** The 2.5 s stalls cut 7.5 s out of 60 s, or 12.5%, which
+  is what was concealed.
+- **The lab misses the voice latency targets on clean links**, and the lab is the cause. The
+  Docker VM stalls for a second now and then. The screen drops to 10–17 fps in those same
+  seconds, and dips like that with voice off too. Quieter runs of `lan` got 78–125 ms one way. On
+  the Mac, without Docker, it's 45–54 ms. Use the lab for concealment and for comparing settings,
+  and the Mac for absolute delay.
+- **The screen is the same with voice off,** within the lab's run-to-run noise. `lan` ran at 56 fps
+  and 20 ms p50 without voice, and 53 fps and 21 ms with it. The A/B on the Mac (Voice, above) is
+  the cleaner answer.
+
 ## Things that fooled us
 
 Measuring this is easy to get wrong, so these are worth knowing before you compare numbers.
@@ -243,7 +300,8 @@ Measuring this is easy to get wrong, so these are worth knowing before you compa
   thread, and macOS sometimes woke it up to 98 ms late under normal desktop load, even at the
   user-interactive QoS class. The receiver took that for network jitter and grew its buffer to
   130 ms. The thread now asks for the real-time policy Core Audio gives a sound card's thread,
-  and hasn't been late since.
+  and hasn't been late since. The lab's Linux containers needed the same: at normal priority,
+  their frames left up to 70 ms late.
 - **The lab has its own traps.** netem's `rate` combined with jitter drops far more than configured,
   so rates go through tbf. A `docker compose exec` also takes long enough to blur a sub-second
   stall, so timing runs inside the containers.
@@ -274,6 +332,13 @@ The network lab needs Docker, and runs its own LiveKit server:
 ```bash
 VIEW_FLAGS=--measure-input bench/netlab/run.sh --build
 bench/netlab/report.sh
+```
+
+The voice runs in every profile. To compare its encodings, or the screen without it:
+
+```bash
+TAG=24k-nored SHARE_FLAGS="--voice-kbps 24 --no-red" bench/netlab/run.sh wifi-bad hotel
+AUDIO=off bench/netlab/run.sh lan wifi-bad hotel
 ```
 
 Results land in `bench/results/`. Two machines take a few more steps: see [Try it](../README.md#try-it),

@@ -10,7 +10,8 @@ networks:
 
 x-node: &node
   image: tc-netlab:latest
-  cap_add: [NET_ADMIN]
+  # NET_ADMIN for tc netem; SYS_NICE so the synthetic voice thread can run real-time.
+  cap_add: [NET_ADMIN, SYS_NICE]
   init: true
 
 services:
