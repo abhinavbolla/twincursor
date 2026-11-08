@@ -10,6 +10,7 @@ use livekit::prelude::*;
 use livekit::webrtc::video_frame::{I420Buffer, VideoBuffer};
 use livekit::webrtc::video_stream::native::NativeVideoStream;
 
+use crate::audio;
 use crate::latency::Recorder;
 use crate::link::{self, ControlLink};
 use crate::netstats::{Board, Poller, Side};
@@ -31,6 +32,8 @@ pub struct ViewConfig {
     pub measure_quality: bool,
     /// Measure the data-packet path input takes (the sharer echoes pings).
     pub measure_input: bool,
+    /// Listen for the markers in the sharer's synthetic voice (`share --audio pattern`).
+    pub measure_audio: bool,
     pub snapshots: Option<Snapshots>,
 }
 
@@ -116,11 +119,24 @@ pub async fn run(
                         config.snapshots.clone(),
                     ));
                 }
+                Some(RoomEvent::TrackSubscribed { track: RemoteTrack::Audio(track), participant, .. }) => {
+                    tracing::info!(from = %participant.identity(), "audio track subscribed");
+                    if config.measure_audio {
+                        tokio::spawn(audio::measure(track, recorder.clone()));
+                    }
+                }
                 Some(RoomEvent::DataReceived { payload, topic, .. })
                     if topic.as_deref() == Some(wire::STATS_TOPIC) =>
                 {
                     if let Some(snap) = wire::decode_stats(&payload) {
                         board.lock().unwrap().remote = Some(snap);
+                    }
+                }
+                Some(RoomEvent::DataReceived { payload, topic, .. })
+                    if topic.as_deref() == Some(wire::AUDIO_TOPIC) =>
+                {
+                    if let Some((id, at_us)) = wire::decode_audio_mark(&payload) {
+                        recorder.lock().unwrap().audio.emitted(id, at_us);
                     }
                 }
                 Some(RoomEvent::Disconnected { reason }) => {

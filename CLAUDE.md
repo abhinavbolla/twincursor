@@ -54,6 +54,9 @@ Fill these in as code lands; keep them accurate.
 - Quality without windows or screen capture: `tc-spike share --capture pattern` +
   `tc-spike view --headless --measure-quality` (SSIM/PSNR vs the synthetic pattern)
 - Input path: `tc-spike view --headless --measure-input` (reliable vs lossy data channels)
+- Voice latency without a mic: `tc-spike share --audio pattern` + `tc-spike view --headless
+  --measure-audio` (marker tones; `bench/run-matrix.sh av-off av-on` compares the video with and
+  without voice)
 - Remote control end to end: `bench/control-e2e.sh` (headless scripted guest, sharer records what
   it would inject, `tc-spike replay` checks it, and the "is controlling" label must be on screen
   during control and gone after); `ANSWER=n` checks a refusal; `REVOKE=r` takes

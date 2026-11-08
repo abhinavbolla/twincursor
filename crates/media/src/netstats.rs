@@ -17,6 +17,24 @@ pub struct Counters {
     pub inbound: Option<Inbound>,
     pub outbound: Option<Outbound>,
     pub path: Option<Path>,
+    pub audio_in: Option<AudioInbound>,
+    /// Bytes sent on the voice track.
+    pub audio_bytes_sent: Option<u64>,
+}
+
+/// Receiving side of the voice stream.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AudioInbound {
+    pub packets_received: u64,
+    pub packets_lost: i64,
+    pub bytes_received: u64,
+    pub jitter_s: f64,
+    pub total_samples: u64,
+    /// Samples the jitter buffer made up because packets were late or lost.
+    pub concealed_samples: u64,
+    /// Sum over emitted samples of the time each spent in the jitter buffer, in seconds.
+    pub jitter_buffer_delay_s: f64,
+    pub jitter_buffer_emitted: u64,
 }
 
 /// Receiving side of the video stream.
@@ -99,6 +117,23 @@ pub struct NetSnapshot {
     /// Sharer only: the auto-throttle's current tier and why.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_send_kbps: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_recv: Option<AudioRecvStats>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AudioRecvStats {
+    pub kbps: f64,
+    pub loss_pct: f64,
+    pub jitter_ms: f64,
+    /// Share of this interval's audio that was made up rather than received.
+    pub concealed_pct: f64,
+    /// The same since the track started.
+    pub concealed_run_pct: f64,
+    /// Average time audio waited in the jitter buffer this interval.
+    pub jitter_buffer_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -151,7 +186,34 @@ pub fn collect(stats: &[RtcStats]) -> Counters {
         })
         .max_by_key(|s| s.sent.bytes_sent);
 
+    let audio_in = stats
+        .iter()
+        .filter_map(|s| match s {
+            RtcStats::InboundRtp(s) if s.stream.kind == "audio" => Some(s),
+            _ => None,
+        })
+        .max_by_key(|s| s.inbound.bytes_received)
+        .map(|s| AudioInbound {
+            packets_received: s.received.packets_received,
+            packets_lost: s.received.packets_lost,
+            bytes_received: s.inbound.bytes_received,
+            jitter_s: s.received.jitter,
+            total_samples: s.inbound.total_samples_received,
+            concealed_samples: s.inbound.concealed_samples,
+            jitter_buffer_delay_s: s.inbound.jitter_buffer_delay,
+            jitter_buffer_emitted: s.inbound.jitter_buffer_emitted_count,
+        });
+    let audio_bytes_sent = stats
+        .iter()
+        .filter_map(|s| match s {
+            RtcStats::OutboundRtp(s) if s.stream.kind == "audio" => Some(s.sent.bytes_sent),
+            _ => None,
+        })
+        .max();
+
     Counters {
+        audio_in,
+        audio_bytes_sent,
         inbound: inbound.map(|s| Inbound {
             packets_received: s.received.packets_received,
             packets_lost: s.received.packets_lost,
@@ -297,6 +359,35 @@ pub fn snapshot(prev: &Counters, cur: &Counters, secs: f64) -> NetSnapshot {
         send,
         recv,
         adapt: None,
+        audio_send_kbps: cur
+            .audio_bytes_sent
+            .map(|b| kbps(b.saturating_sub(prev.audio_bytes_sent.unwrap_or(0)))),
+        audio_recv: cur
+            .audio_in
+            .as_ref()
+            .map(|c| audio_recv(prev.audio_in.as_ref(), c, secs)),
+    }
+}
+
+fn audio_recv(prev: Option<&AudioInbound>, c: &AudioInbound, secs: f64) -> AudioRecvStats {
+    let p = prev.cloned().unwrap_or_default();
+    let received = c.packets_received.saturating_sub(p.packets_received);
+    let lost = (c.packets_lost - p.packets_lost).max(0) as u64;
+    let emitted = c
+        .jitter_buffer_emitted
+        .saturating_sub(p.jitter_buffer_emitted);
+    AudioRecvStats {
+        kbps: c.bytes_received.saturating_sub(p.bytes_received) as f64 * 8.0 / secs / 1000.0,
+        loss_pct: percent(lost, received + lost),
+        jitter_ms: c.jitter_s * 1000.0,
+        concealed_pct: percent(
+            c.concealed_samples.saturating_sub(p.concealed_samples),
+            c.total_samples.saturating_sub(p.total_samples),
+        ),
+        concealed_run_pct: percent(c.concealed_samples, c.total_samples),
+        jitter_buffer_ms: (emitted > 0).then(|| {
+            (c.jitter_buffer_delay_s - p.jitter_buffer_delay_s).max(0.0) * 1000.0 / emitted as f64
+        }),
     }
 }
 
@@ -450,6 +541,46 @@ mod tests {
             fps: 58.0,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn audio_rates_and_concealment() {
+        let prev = Counters {
+            audio_in: Some(AudioInbound {
+                packets_received: 100,
+                total_samples: 48_000,
+                concealed_samples: 480,
+                jitter_buffer_delay_s: 1_000.0,
+                jitter_buffer_emitted: 48_000,
+                bytes_received: 4_000,
+                ..Default::default()
+            }),
+            audio_bytes_sent: Some(1_000),
+            ..Default::default()
+        };
+        let cur = Counters {
+            audio_in: Some(AudioInbound {
+                packets_received: 148,
+                packets_lost: 2,
+                total_samples: 96_000,
+                concealed_samples: 1_440,
+                jitter_buffer_delay_s: 2_920.0,
+                jitter_buffer_emitted: 96_000,
+                bytes_received: 8_000,
+                jitter_s: 0.003,
+            }),
+            audio_bytes_sent: Some(5_000),
+            ..Default::default()
+        };
+        let snap = snapshot(&prev, &cur, 1.0);
+        assert_eq!(snap.audio_send_kbps, Some(32.0));
+        let a = snap.audio_recv.unwrap();
+        assert_eq!(a.kbps, 32.0);
+        assert_eq!(a.loss_pct, 4.0);
+        assert_eq!(a.concealed_pct, 2.0);
+        assert_eq!(a.concealed_run_pct, 1.5);
+        assert!((a.jitter_buffer_ms.unwrap() - 40.0).abs() < 1e-9);
+        assert_eq!(a.jitter_ms, 3.0);
     }
 
     #[test]
