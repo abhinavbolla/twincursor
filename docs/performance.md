@@ -181,6 +181,23 @@ All 243 bursts were heard in each run. On a quiet machine, one way holds at abou
 - **Voice costs about 66 kbit/s on the wire,** twice the 32 kbit/s Opus bitrate: LiveKit's
   redundant audio (RED) repeats each packet in the next one, so one lost packet costs nothing.
 
+### The real mic
+
+The sharer sends its real mic through WebRTC's device layer, with echo cancellation, noise
+suppression and gain control on. In this run the viewer plays nothing, so the two ends on one
+Mac can't feed back. 1080p H.264, headless, 60 s, two quiet rounds on 2026-11-08:
+
+| | Voice off | Synthetic voice | Real mic |
+|---|---|---|---|
+| fps | 59 | 59 | 59 |
+| Screen round trip p50 | 14.8–16.2 ms | 15.3–15.9 ms | 15.4–17.2 ms |
+| Screen round trip p95 | 29.6–30.4 ms | 30.8–31.0 ms | 30.9–32.6 ms |
+| Voice on the wire | | 66 kbit/s | 50–51 kbit/s |
+
+The mic doesn't slow the screen. It sends less than the synthetic voice because Opus sends
+almost nothing while the room is quiet (1–2 kbit/s), and the tones never stop. A first round,
+run while the Mac was busy, is left out: its voice-off run fell to 50 fps.
+
 ## Network lab
 
 Sharer, viewer and LiveKit run in Docker on one Mac, with conditions applied by `tc netem`. It uses

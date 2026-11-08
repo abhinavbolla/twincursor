@@ -57,6 +57,10 @@ Fill these in as code lands; keep them accurate.
 - Voice latency without a mic: `tc-spike share --audio pattern` + `tc-spike view --headless
   --measure-audio` (marker tones; `bench/run-matrix.sh av-off av-on` compares the video with and
   without voice)
+- Voice: `share` and `view` send the mic and play the other side by default (`--audio off` to
+  skip; bench scripts pass it). `tc-spike devices` lists devices for `--mic`/`--speaker`
+- Voice through real speakers and mic, one Mac: `bench/audio-loopback.sh` (plays tones out loud
+  for ~30 s: volume up, quiet room; mic access for the terminal)
 - Remote control end to end: `bench/control-e2e.sh` (headless scripted guest, sharer records what
   it would inject, `tc-spike replay` checks it, and the "is controlling" label must be on screen
   during control and gone after); `ANSWER=n` checks a refusal; `REVOKE=r` takes

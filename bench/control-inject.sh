@@ -27,12 +27,12 @@ probe=$!
 sleep 2
 
 mkfifo "$OUT/answer"
-"$BIN" share --room "$room" --capture pattern --resolution 720 --no-stats \
+"$BIN" share --audio off --room "$room" --capture pattern --resolution 720 --no-stats \
   --allow-control --inject real <"$OUT/answer" >"$OUT/share.log" 2>&1 &
 sharer=$!
 exec 3>"$OUT/answer"
 
-"$BIN" view --room "$room" --headless --no-stats --duration 60 --label inject --out "$OUT" \
+"$BIN" view --audio off --room "$room" --headless --no-stats --duration 60 --label inject --out "$OUT" \
   --name "inject check" --control-script "$SCRIPT" --sent-log "$OUT/sent.jsonl" \
   >"$OUT/view.log" 2>&1 &
 viewer=$!

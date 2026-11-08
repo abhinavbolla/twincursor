@@ -66,6 +66,8 @@ pub struct ViewArgs {
     /// Time the markers in the sharer's voice (needs `share --audio pattern`).
     #[arg(long)]
     measure_audio: bool,
+    #[command(flatten)]
+    voice: crate::voice::VoiceArgs,
     /// Save the frame carrying every Nth latency tick as a PGM (see `tc-spike compare`).
     #[arg(long, default_value_t = 0)]
     snapshot_every: u32,
@@ -110,6 +112,8 @@ fn view_config(args: &ViewArgs) -> anyhow::Result<ViewConfig> {
         measure_quality: args.measure_quality,
         measure_input: args.measure_input,
         measure_audio: args.measure_audio,
+        audio: args.voice.mode(false)?,
+        voice: args.voice.options(),
         snapshots: (args.snapshot_every > 0).then(|| Snapshots {
             every: args.snapshot_every,
             dir: args.snapshot_dir.clone(),

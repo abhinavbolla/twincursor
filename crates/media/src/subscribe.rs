@@ -35,6 +35,10 @@ pub struct ViewConfig {
     /// Listen for the markers in the sharer's synthetic voice (`share --audio pattern`).
     pub measure_audio: bool,
     pub snapshots: Option<Snapshots>,
+    /// What to send as the viewer's voice: nothing, or the mic (which also plays the sharer's
+    /// voice on the speakers).
+    pub audio: audio::AudioMode,
+    pub voice: audio::VoiceOptions,
 }
 
 /// A decoded frame ready to render.
@@ -50,6 +54,8 @@ pub struct DecodedFrame {
 pub enum ViewError {
     #[error(transparent)]
     Room(#[from] RoomError),
+    #[error("voice: {0}")]
+    Voice(audio::VoiceError),
 }
 
 /// Connects and delivers decoded frames to `on_frame` until `shutdown` resolves. With a
@@ -68,6 +74,15 @@ pub async fn run(
     let (room, mut events) =
         Room::connect(&config.url, &config.token, RoomOptions::default()).await?;
     tracing::info!(room = %room.name(), "connected as viewer");
+    // Only the sharer's voice carries markers, so the viewer's has no ticks to follow.
+    let _voice = audio::start(
+        &room,
+        &config.audio,
+        config.voice,
+        Arc::new(audio::TickSlot::default()),
+    )
+    .await
+    .map_err(ViewError::Voice)?;
 
     let link_tasks = control.map(|c| link::start(&room, c));
     let on_frame = Arc::new(on_frame);

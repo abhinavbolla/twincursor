@@ -30,7 +30,7 @@ behind your hands. TwinCursor is built around three ideas:
 | Call health stats and on-screen HUD | ✅ Works |
 | Auto-throttle on poor networks | ✅ Works |
 | Remote control | 🚧 Works from the command line (macOS sharer), in hands-on testing |
-| Voice | Planned |
+| Voice | 🚧 Works from the command line, with echo cancellation; no mute yet |
 | Desktop app | Planned |
 | Self-hosting with one command | Planned |
 | Linux | Planned |
@@ -80,6 +80,12 @@ target/release/tc-spike view
 
 macOS will ask you to allow Screen Recording for your terminal. Press `S` in the viewer to show or
 hide the stats HUD. Run `tc-spike --help` to see the options, such as `--resolution 1440`.
+
+Both sides talk through their mic and speakers, so macOS will also ask to allow the microphone.
+Echo cancellation is always on, so speakers work without headphones once the two ends are in
+different rooms. On one Mac, use headphones or `--audio off` on one side: each end cancels only its
+own speaker, so the two can feed back. `tc-spike devices` lists the mics and speakers, and `--mic` and `--speaker` pick one
+by number or part of its name.
 
 ### Remote control
 

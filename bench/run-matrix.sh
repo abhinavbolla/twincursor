@@ -38,6 +38,8 @@ CONFIGS=(
   # screen's latency doesn't change, and the voice's own latency.
   "av-off|--capture pattern --codec h264 --resolution 1080|--headless"
   "av-on|--capture pattern --codec h264 --resolution 1080 --audio pattern|--headless --measure-audio"
+  # The real mic on the sharer (it records the room; the viewer plays nothing, so no feedback).
+  "av-mic|--capture pattern --codec h264 --resolution 1080 --audio mic|--headless"
   "sck-vp8-nostats|--capture sck --codec vp8 --no-stats|--no-stats"
   "sck-h264-nostats|--capture sck --codec h264 --no-stats|--no-stats"
 )
@@ -56,7 +58,7 @@ for entry in "${CONFIGS[@]}"; do
   echo "=== $name ($flags)"
   log=$(mktemp)
   # shellcheck disable=SC2086
-  "$BIN" share $flags >"$log" 2>&1 &
+  "$BIN" share --audio off $flags >"$log" 2>&1 &
   sharer=$!
   # Wait until the track is published (ICE can take a few seconds).
   for _ in $(seq 60); do
@@ -66,7 +68,7 @@ for entry in "${CONFIGS[@]}"; do
   done
   sleep "$WARMUP"
   # shellcheck disable=SC2086
-  "$BIN" view --duration "$DURATION" --label "$name" ${view_flags:-} >/dev/null 2>&1 &
+  "$BIN" view --audio off --duration "$DURATION" --label "$name" ${view_flags:-} >/dev/null 2>&1 &
   viewer=$!
   # Sample CPU (% of one core) of both processes every 2 s while the viewer runs.
   cpu_log=$(mktemp)
