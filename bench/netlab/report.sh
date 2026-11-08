@@ -62,3 +62,45 @@ if [[ -n $rows ]]; then
   echo "|---|---|---|---|---|---|---|---|---|"
   echo "$rows"
 fi
+
+# Delay the profile adds from sharer to viewer (ms), which is what voice crosses: the viewer's
+# downlink, or the sharer's uplink for the profiles that shape only that.
+net_one_way() {
+  case $1 in
+    sharer-uplink-3mbit) echo 10 ;; bandwidth-drop) echo 5 ;;
+    *) echo $(($(net_rtt "$1") / 2)) ;;
+  esac
+}
+
+# Voice, for runs with the synthetic voice on (run.sh's default, AUDIO=pattern).
+rows=$(for label in $(ls -1 *.json 2>/dev/null | sed -E 's/-[0-9]+\.json$//' | sort -u); do
+  f=$(ls -1t | grep -E "^${label}-[0-9]+\.json$" | head -1)
+  profile=$(echo "$label" | sed -E 's/-(vp8|h264|vp9|av1)-.*$//')
+  net=$(net_one_way "$profile")
+  jq -r --arg profile "$profile" --arg label "$label" --argjson net "$net" '
+    def r(x): if x == null then "-" else (x * 10 | round / 10 | tostring) end;
+    def r2(x): if x == null then "-" else (x * 100 | round / 100 | tostring) end;
+    def mean(xs): [xs | select(. != null)] | if length > 0 then add / length else null end;
+    select(.report.audio != null)
+    | .report.audio as $a
+    | mean(.net[] | .local.audio_recv.jitter_buffer_ms) as $jb
+    | mean(.net[] | .remote.audio_send_kbps) as $wire
+    | ($a.concealed_pct) as $conc
+    # SLOs (docs/ARCHITECTURE.md), over the delay the profile adds.
+    | (if ($profile == "lan" or $profile == "wifi-good") then
+         ($a.one_way != null and $a.one_way.p50 <= $net + 60
+          and $a.one_way.p95 <= $net + 100 and $conc != null and $conc <= 1)
+       elif ($profile == "wifi-bad" or $profile == "4g" or $profile == "hotel"
+             or $profile == "intercontinental" or $profile == "sharer-uplink-3mbit") then
+         ($a.one_way != null and $a.one_way.p95 <= $net + 150
+          and $conc != null and $conc <= 2)
+       else true end) as $ok
+    | "| \($label) | \(r($a.one_way.p50)) | \(r($a.one_way.p95)) | \(r($a.av_offset.p50)) | \(r2($conc))% | \(r($jb)) | \(r($wire)) | \($a.bursts_heard)/\($a.bursts_rejected) | \(if $ok then "pass" else "**FAIL**" end) |"
+  ' "$f"
+done)
+if [[ -n $rows ]]; then
+  echo
+  echo "| run | voice one-way p50 | p95 | A/V p50 | concealed | jitter buffer | wire kbit/s | heard/rejected | SLO |"
+  echo "|---|---|---|---|---|---|---|---|---|"
+  echo "$rows"
+fi

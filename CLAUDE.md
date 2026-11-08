@@ -74,7 +74,8 @@ Fill these in as code lands; keep them accurate.
   sharer runs `share --allow-control --headless --inject record:…`)
 - Latency matrix: `bench/run-matrix.sh [config ...]` → `bench/results/*.json` (git-ignored)
 - Network lab (Docker): `bench/netlab/run.sh [--build] [profile ...]`, then
-  `bench/netlab/report.sh` (profiles and SLOs in ARCHITECTURE.md)
+  `bench/netlab/report.sh` (profiles and SLOs in ARCHITECTURE.md). Synthetic voice runs
+  alongside unless `AUDIO=off`; `SHARE_FLAGS="--voice-kbps 24 --no-red"` changes its encoding
 - Releases: `docs/RELEASING.md`; a `v*` tag builds archives and a draft release
 - Desktop dev: _TBD_
 - CI: `.github/workflows/ci.yml` runs fmt, clippy and tests on `macos-26` for every PR and

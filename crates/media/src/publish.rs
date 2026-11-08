@@ -11,7 +11,7 @@ use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 
 use crate::adapt::{Adapter, BitrateCap};
-use crate::audio::{self, AudioMode, TickSlot};
+use crate::audio::{self, AudioMode, TickSlot, VoiceOptions};
 use crate::capture::{self, wall_clock_us, Backend, CaptureConfig, Frame, FrameBuffer, Tier};
 use crate::link::{self, ControlLink};
 use crate::netstats::{NetSnapshot, Poller, Side};
@@ -43,6 +43,7 @@ pub struct ShareConfig {
     pub adapt: Option<AdaptConfig>,
     /// What to send as the sharer's voice.
     pub audio: AudioMode,
+    pub voice: VoiceOptions,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -174,7 +175,9 @@ pub async fn run(
     let audio_ticks = Arc::new(TickSlot::default());
     let _voice = match config.audio {
         AudioMode::Off => None,
-        AudioMode::Pattern => Some(audio::publish_pattern(&room, audio_ticks.clone()).await?),
+        AudioMode::Pattern => {
+            Some(audio::publish_pattern(&room, audio_ticks.clone(), config.voice).await?)
+        }
     };
 
     let mailbox = Arc::new(Mailbox::default());

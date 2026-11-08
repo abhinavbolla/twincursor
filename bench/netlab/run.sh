@@ -5,7 +5,7 @@
 #
 # Needs Docker running. Usage:
 #   bench/netlab/run.sh [--build] [profile ...]    (no profiles = all)
-#   CODEC=vp8 RES=1080 DURATION=60 ADAPT=off bench/netlab/run.sh hotel
+#   CODEC=vp8 RES=1080 DURATION=60 ADAPT=off AUDIO=off bench/netlab/run.sh hotel
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -19,6 +19,10 @@ VIEW_FLAGS=${VIEW_FLAGS:-}
 TAG=${TAG:-}
 # Auto-throttle on (default) or off, to compare.
 ADAPT=${ADAPT:-on}
+# Synthetic voice alongside the screen (default), timed by the viewer; AUDIO=off for video only.
+AUDIO=${AUDIO:-pattern}
+audio_view=
+[[ $AUDIO != off ]] && audio_view=--measure-audio
 SFU=172.30.0.10
 VIEWER=172.30.0.30
 URL=ws://$SFU:7880
@@ -93,6 +97,7 @@ for entry in "${PROFILES[@]}"; do
     label="$label-noadapt"
     adapt_flag=--no-adapt
   fi
+  [[ $AUDIO == off ]] && label="$label-noaudio"
   echo "=== $label"
 
   for svc in sfu-net viewer sharer; do dc exec -T "$svc" shape clear; done
@@ -105,7 +110,7 @@ for entry in "${PROFILES[@]}"; do
   [[ $name == udp-blocked ]] && dc exec -T viewer shape block-udp
 
   dc exec -T sharer sh -c 'pkill -INT tc-spike; sleep 1' || true
-  dc exec -d sharer sh -c "tc-spike share --url $URL --capture pattern --codec $CODEC --resolution $RES $adapt_flag $SHARE_FLAGS >/tmp/share.log 2>&1"
+  dc exec -d sharer sh -c "tc-spike share --url $URL --capture pattern --codec $CODEC --resolution $RES --audio $AUDIO $adapt_flag $SHARE_FLAGS >/tmp/share.log 2>&1"
   for _ in $(seq 60); do
     dc exec -T sharer grep -q "screen track published" /tmp/share.log 2>/dev/null && break
     sleep 1
@@ -114,7 +119,7 @@ for entry in "${PROFILES[@]}"; do
   steps "$name" &
   stepper=$!
   # shellcheck disable=SC2086
-  dc exec -T viewer tc-spike view --headless --measure-quality $VIEW_FLAGS --url "$URL" \
+  dc exec -T viewer tc-spike view --headless --measure-quality $audio_view $VIEW_FLAGS --url "$URL" \
     --duration "$DURATION" --label "$label" --out /results >/dev/null 2>&1 \
     || echo "viewer failed for $label"
   wait "$stepper" 2>/dev/null || true

@@ -148,5 +148,21 @@ fn raise_priority() {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// The same on Linux, where the network lab runs: a low real-time FIFO priority. Needs
+/// CAP_SYS_NICE, which the lab's containers have; without it the thread stays as it was.
+#[cfg(target_os = "linux")]
+fn raise_priority() {
+    let param = libc::sched_param { sched_priority: 10 };
+    // SAFETY: changes only the calling thread's scheduling; `param` outlives the call.
+    let result =
+        unsafe { libc::pthread_setschedparam(libc::pthread_self(), libc::SCHED_FIFO, &param) };
+    if result != 0 {
+        tracing::warn!(
+            result,
+            "audio thread not made real-time; expect jitter under load"
+        );
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn raise_priority() {}

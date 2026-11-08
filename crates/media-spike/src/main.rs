@@ -180,6 +180,12 @@ struct ShareArgs {
     /// `view --measure-audio` times (no mic or permission needed).
     #[arg(long, value_enum, default_value = "off")]
     audio: AudioArg,
+    /// Opus bitrate for the voice, in kbit/s.
+    #[arg(long, default_value_t = media::audio::VoiceOptions::default().bitrate / 1000)]
+    voice_kbps: u64,
+    /// Send each voice frame once, without the previous one as backup (RED).
+    #[arg(long)]
+    no_red: bool,
     /// Let viewers ask for remote control. You're asked in this terminal before anyone gets it.
     #[arg(long)]
     allow_control: bool,
@@ -276,6 +282,10 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
         audio: match args.audio {
             AudioArg::Off => media::audio::AudioMode::Off,
             AudioArg::Pattern => media::audio::AudioMode::Pattern,
+        },
+        voice: media::audio::VoiceOptions {
+            bitrate: args.voice_kbps * 1000,
+            red: !args.no_red,
         },
         snapshots: (args.snapshot_every > 0).then(|| media::quality::Snapshots {
             every: args.snapshot_every,

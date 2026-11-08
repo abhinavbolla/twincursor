@@ -23,3 +23,7 @@ font8x8.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 screencapturekit.workspace = true
 libc = "0.2"
+
+# Real-time priority for the synthetic voice thread in the network lab.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

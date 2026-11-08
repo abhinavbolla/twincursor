@@ -33,15 +33,32 @@ pub enum AudioMode {
     Pattern,
 }
 
-/// Opus bitrate for the voice track. LiveKit's "speech" preset is 24 kbit/s; the network lab
-/// decides whether that's enough (see docs/performance.md, Voice).
-pub const VOICE_BITRATE: u64 = 32_000;
+/// How the voice track is encoded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoiceOptions {
+    /// Opus bitrate in bit/s.
+    pub bitrate: u64,
+    /// RED: each packet also carries the previous frame, so a single lost packet costs nothing,
+    /// at about twice the bitrate on the wire.
+    pub red: bool,
+}
+
+impl Default for VoiceOptions {
+    /// The network lab chose these (see docs/performance.md, Voice).
+    fn default() -> Self {
+        Self {
+            bitrate: 32_000,
+            red: true,
+        }
+    }
+}
 
 /// Publishes the synthetic voice track and starts its tones. Each burst's start time goes to
 /// the viewers on [`wire::AUDIO_TOPIC`], for the one-way measurement.
 pub async fn publish_pattern(
     room: &Room,
     ticks: Arc<TickSlot>,
+    voice: VoiceOptions,
 ) -> Result<(LocalTrackPublication, ToneSource), RoomError> {
     // No queue: each 10 ms frame goes straight to the encoder, as from a mic callback.
     let source = NativeAudioSource::new(AudioSourceOptions::default(), marker::RATE, 1, 0);
@@ -50,15 +67,16 @@ pub async fn publish_pattern(
     let options = TrackPublishOptions {
         source: TrackSource::Microphone,
         audio_encoding: Some(AudioEncoding {
-            max_bitrate: VOICE_BITRATE,
+            max_bitrate: voice.bitrate,
         }),
+        red: voice.red,
         ..Default::default()
     };
     let publication = room
         .local_participant()
         .publish_track(LocalTrack::Audio(track), options)
         .await?;
-    tracing::info!("voice track published (synthetic tones)");
+    tracing::info!(?voice, "voice track published (synthetic tones)");
 
     let (marks, mut rx) = tokio::sync::mpsc::unbounded_channel::<(u32, u64)>();
     let participant = room.local_participant();
