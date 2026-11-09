@@ -51,7 +51,7 @@ listener=$!
 sleep 1
 
 echo "playing tones for ${DURATION}s; keep the room quiet"
-"$BIN" view --room "$ROOM" --headless --audio mic "${device_flags[@]}" --measure-audio \
+"$BIN" view --room "$ROOM" --headless --audio mic ${device_flags[@]+"${device_flags[@]}"} --measure-audio \
   --duration "$DURATION" --label "$LABEL-viewer" --out "$RESULTS" >"$OUT/view.log" 2>&1
 wait "$listener" || true
 
