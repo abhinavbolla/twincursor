@@ -1,6 +1,7 @@
 //! `tc-spike`: the media development tool. `share` publishes this Mac's screen, `view` shows it in a
 //! native window and measures latency. Start `livekit-server --dev` first.
 
+mod echo;
 mod guest;
 mod hotkey;
 mod hud;
@@ -46,6 +47,7 @@ enum Command {
     Devices,
     /// Hear the sharer's synthetic voice through a real mic (stdin, from
     /// bench/audio/record-mic.swift) and time it against when the sharer started each burst.
+    /// With --echo, check the viewer's echo cancellation instead (bench/audio-echo.sh).
     Listen(listen::ListenArgs),
     /// A full-screen window that records the input it receives, to check real injection.
     Probe(probe::ProbeArgs),

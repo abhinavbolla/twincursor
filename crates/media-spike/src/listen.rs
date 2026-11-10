@@ -6,6 +6,10 @@
 //! ([`wire::AUDIO_TOPIC`]), so `heard − started` is the whole path: codec, network, the viewer's
 //! jitter buffer and speakers, the air, and a mic's input buffer. On one machine both ends share a
 //! clock.
+//!
+//! With `--echo` (`bench/audio-echo.sh`) it also receives the sharer's voice and the viewer's:
+//! what the speakers play, and the same mic after WebRTC's echo cancellation, as the sharer hears
+//! it back. [`crate::echo`] compares the three.
 
 use std::collections::VecDeque;
 use std::io::Read;
@@ -15,12 +19,15 @@ use std::time::{Duration, Instant};
 use anyhow::Context;
 use clap::Args;
 use livekit::prelude::*;
+use livekit::webrtc::audio_stream::native::NativeAudioStream;
 use media::audio::marker::{Detector, RATE};
 use media::audio::measure::AudioLog;
+use media::audio::wav;
 use media::capture::wall_clock_us;
 use media::wire;
 use serde_json::json;
 
+use crate::echo::{self, Levels, Stream};
 use crate::Connection;
 
 #[derive(Args)]
@@ -36,6 +43,40 @@ pub struct ListenArgs {
     /// Directory for the JSON results file.
     #[arg(long, default_value = "bench/results")]
     out: PathBuf,
+    /// Check echo cancellation: also receive the sharer's voice (what the viewer's speakers
+    /// play) and the viewer's (its mic, as the sharer hears it), and compare them with the raw
+    /// mic.
+    #[arg(long)]
+    echo: bool,
+    /// With --echo: when a local voice plays out loud, as FROM:TO in seconds after the sharer's
+    /// first word. It has to come through. Give it again for each time it plays.
+    #[arg(long, value_parser = echo::parse_window, requires = "echo")]
+    local_voice: Vec<(f64, f64)>,
+    /// Save what the mic heard (`mic.wav`) in this directory and, with --echo, what the sharer
+    /// sent (`far.wav`) and heard back (`returned.wav`), to listen to.
+    #[arg(long)]
+    wav: Option<PathBuf>,
+}
+
+/// What a participant's voice is to the echo check.
+fn stream_of(identity: &ParticipantIdentity) -> Option<Stream> {
+    match identity.as_str() {
+        "sharer" => Some(Stream::Far),
+        "viewer" => Some(Stream::Returned),
+        _ => None,
+    }
+}
+
+/// Up to ten minutes of one sound, for `--wav`.
+#[derive(Default)]
+struct Recording(Vec<i16>);
+
+impl Recording {
+    fn push(&mut self, samples: &[i16]) {
+        let room = (600 * RATE as usize).saturating_sub(self.0.len());
+        self.0
+            .extend_from_slice(&samples[..room.min(samples.len())]);
+    }
 }
 
 /// One chunk from `record-mic`: its first sample's wall-clock time, and 48 kHz mono samples.
@@ -135,11 +176,23 @@ pub fn run(args: ListenArgs) -> anyhow::Result<()> {
 
 async fn listen(args: ListenArgs) -> anyhow::Result<()> {
     let token = args.connection.token("listener")?;
-    // Only the data packets matter; don't receive the screen or the voice.
+    // Only the data packets matter and, with --echo, the two voices; never the screen.
     let mut options = RoomOptions::default();
     options.auto_subscribe = false;
     let (room, mut events) = Room::connect(&args.connection.url, &token, options).await?;
     tracing::info!(room = %room.name(), "listening (mic on stdin)");
+    let wanted = |publication: &RemoteTrackPublication, participant: &RemoteParticipant| {
+        args.echo
+            && publication.kind() == TrackKind::Audio
+            && stream_of(&participant.identity()).is_some()
+    };
+    for participant in room.remote_participants().values() {
+        for publication in participant.track_publications().values() {
+            if wanted(publication, participant) {
+                publication.set_subscribed(true);
+            }
+        }
+    }
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     std::thread::spawn(move || {
@@ -160,7 +213,16 @@ async fn listen(args: ListenArgs) -> anyhow::Result<()> {
         }
     });
 
+    let (voice_tx, mut voice_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(Stream, u64, Vec<i16>)>();
+
     let started = Instant::now();
+    let mut levels = Levels::new(wall_clock_us());
+    let (mut mic_audio, mut far_audio, mut returned_audio) = (
+        Recording::default(),
+        Recording::default(),
+        Recording::default(),
+    );
     let deadline = tokio::time::sleep(Duration::from_secs(args.duration.unwrap_or(u64::MAX / 4)));
     tokio::pin!(deadline);
     let ctrl_c = tokio::signal::ctrl_c();
@@ -171,9 +233,24 @@ async fn listen(args: ListenArgs) -> anyhow::Result<()> {
             _ = &mut deadline => break,
             _ = &mut ctrl_c => break,
             chunk = rx.recv() => match chunk {
-                Some(chunk) => listener.push(&chunk),
+                Some(chunk) => {
+                    listener.push(&chunk);
+                    levels.push(Stream::Mic, chunk.wall_us, &chunk.samples);
+                    if args.wav.is_some() {
+                        mic_audio.push(&chunk.samples);
+                    }
+                }
                 None => break,
             },
+            Some((stream, wall_us, samples)) = voice_rx.recv() => {
+                levels.push(stream, wall_us, &samples);
+                if args.wav.is_some() {
+                    match stream {
+                        Stream::Far => far_audio.push(&samples),
+                        _ => returned_audio.push(&samples),
+                    }
+                }
+            }
             event = events.recv() => match event {
                 Some(RoomEvent::DataReceived { payload, topic, .. })
                     if topic.as_deref() == Some(wire::AUDIO_TOPIC) =>
@@ -182,12 +259,49 @@ async fn listen(args: ListenArgs) -> anyhow::Result<()> {
                         listener.started(id, at_us);
                     }
                 }
+                Some(RoomEvent::TrackPublished { publication, participant }) => {
+                    if wanted(&publication, &participant) {
+                        publication.set_subscribed(true);
+                    }
+                }
+                Some(RoomEvent::TrackSubscribed {
+                    track: RemoteTrack::Audio(track),
+                    participant,
+                    ..
+                }) => {
+                    let Some(stream) = stream_of(&participant.identity()) else {
+                        continue;
+                    };
+                    tracing::info!(?stream, "receiving a voice");
+                    let tx = voice_tx.clone();
+                    let mut frames = NativeAudioStream::new(track.rtc_track(), RATE as i32, 1);
+                    tokio::spawn(async move {
+                        use futures::StreamExt;
+                        while let Some(frame) = frames.next().await {
+                            // Stamped here, as it arrives, not when the loop gets to it.
+                            if tx.send((stream, wall_clock_us(), frame.data.to_vec())).is_err() {
+                                break;
+                            }
+                        }
+                    });
+                }
                 Some(_) => {}
                 None => break,
             },
         }
     }
     room.close().await.ok();
+    if let Some(dir) = &args.wav {
+        std::fs::create_dir_all(dir)?;
+        let mut sounds = vec![("mic.wav", &mic_audio)];
+        if args.echo {
+            sounds.extend([("far.wav", &far_audio), ("returned.wav", &returned_audio)]);
+        }
+        for (name, sound) in sounds {
+            let path = dir.join(name);
+            wav::write(&path, &sound.0).with_context(|| format!("writing {}", path.display()))?;
+        }
+    }
 
     let report = listener.log.report();
     if listener.loudest_db < -70.0 {
@@ -202,6 +316,7 @@ async fn listen(args: ListenArgs) -> anyhow::Result<()> {
         "duration_s": started.elapsed().as_secs_f64(),
         "loudest_dbfs": listener.loudest_db.is_finite().then_some(listener.loudest_db),
         "audio": report,
+        "echo": args.echo.then(|| echo::analyse(&levels, &args.local_voice).json()),
     });
     std::fs::create_dir_all(&args.out)?;
     let path = args.out.join(format!(

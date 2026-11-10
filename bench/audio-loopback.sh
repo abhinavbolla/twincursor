@@ -15,6 +15,7 @@
 #   SPEAKER=1 MIC=0 bench/audio-loopback.sh    pick devices (see `tc-spike devices`)
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source bench/audio/mic-free.sh
 
 DURATION=${DURATION:-30}
 LABEL=${LABEL:-loopback}
