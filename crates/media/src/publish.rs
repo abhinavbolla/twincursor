@@ -11,7 +11,7 @@ use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 
 use crate::adapt::{Adapter, BitrateCap};
-use crate::audio::{self, AudioMode, TickSlot, VoiceOptions};
+use crate::audio::{self, AudioMode, TickSlot, VoiceError, VoiceOptions};
 use crate::capture::{self, wall_clock_us, Backend, CaptureConfig, Frame, FrameBuffer, Tier};
 use crate::link::{self, ControlLink};
 use crate::netstats::{NetSnapshot, Poller, Side};
@@ -60,6 +60,8 @@ pub enum ShareError {
     Room(#[from] RoomError),
     #[error(transparent)]
     Capture(#[from] capture::CaptureError),
+    #[error("voice: {0}")]
+    Voice(VoiceError),
 }
 
 /// Counters the sharer reports periodically.
@@ -173,12 +175,9 @@ pub async fn run(
 
     // The voice is published once and never republished with the video.
     let audio_ticks = Arc::new(TickSlot::default());
-    let _voice = match config.audio {
-        AudioMode::Off => None,
-        AudioMode::Pattern => {
-            Some(audio::publish_pattern(&room, audio_ticks.clone(), config.voice).await?)
-        }
-    };
+    let _voice = audio::start(&room, &config.audio, config.voice, audio_ticks.clone())
+        .await
+        .map_err(ShareError::Voice)?;
 
     let mailbox = Arc::new(Mailbox::default());
     let latest_tick = Arc::new(AtomicU32::new(NO_TICK));

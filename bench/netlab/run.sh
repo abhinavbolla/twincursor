@@ -119,7 +119,7 @@ for entry in "${PROFILES[@]}"; do
   steps "$name" &
   stepper=$!
   # shellcheck disable=SC2086
-  dc exec -T viewer tc-spike view --headless --measure-quality $audio_view $VIEW_FLAGS --url "$URL" \
+  dc exec -T viewer tc-spike view --audio off --headless --measure-quality $audio_view $VIEW_FLAGS --url "$URL" \
     --duration "$DURATION" --label "$label" --out /results >/dev/null 2>&1 \
     || echo "viewer failed for $label"
   wait "$stepper" 2>/dev/null || true

@@ -1,9 +1,11 @@
 //! Voice: the mic track each side publishes, and how the other side's audio is received and
 //! measured.
 //!
-//! Only synthetic audio so far ([`AudioMode::Pattern`]): marker tones that need no device or
-//! permission, so latency can be measured headless and in the network lab.
+//! A real call uses the mic and speakers ([`device`]). For measuring there's a synthetic voice
+//! ([`AudioMode::Pattern`]): marker tones that need no device or permission, so latency can be
+//! measured headless and in the network lab.
 
+pub mod device;
 pub mod marker;
 pub mod measure;
 mod tone;
@@ -22,15 +24,38 @@ use livekit::webrtc::audio_stream::native::NativeAudioStream;
 use crate::capture::wall_clock_us;
 use crate::latency::Recorder;
 use crate::wire;
+pub use device::{DeviceChoice, DeviceRef, Devices};
 pub use tone::{TickSlot, ToneSource};
 
-/// What the sharer sends as its voice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// What a side sends as its voice.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum AudioMode {
     #[default]
     Off,
-    /// Marker tones driven by the viewer's ticks (see [`marker`]).
+    /// The mic, and remote voices on the speakers.
+    Mic(DeviceChoice),
+    /// Marker tones driven by the viewer's ticks (see [`marker`]); sharer only.
     Pattern,
+}
+
+/// The voice a side is sending; stops when dropped.
+pub enum Voice {
+    Mic {
+        devices: Devices,
+        publication: LocalTrackPublication,
+    },
+    Pattern {
+        publication: LocalTrackPublication,
+        tones: ToneSource,
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum VoiceError {
+    #[error(transparent)]
+    Device(#[from] device::DeviceError),
+    #[error(transparent)]
+    Room(#[from] RoomError),
 }
 
 /// How the voice track is encoded.
@@ -53,17 +78,42 @@ impl Default for VoiceOptions {
     }
 }
 
-/// Publishes the synthetic voice track and starts its tones. Each burst's start time goes to
-/// the viewers on [`wire::AUDIO_TOPIC`], for the one-way measurement.
-pub async fn publish_pattern(
+/// Starts sending `mode`'s voice. `ticks` drives the synthetic voice's markers.
+pub async fn start(
     room: &Room,
+    mode: &AudioMode,
+    options: VoiceOptions,
     ticks: Arc<TickSlot>,
+) -> Result<Option<Voice>, VoiceError> {
+    Ok(match mode {
+        AudioMode::Off => None,
+        AudioMode::Mic(choice) => {
+            let devices = Devices::open(choice)?;
+            let track = LocalAudioTrack::create_audio_track("voice", devices.source());
+            let publication = publish(room, track, options).await?;
+            tracing::info!(
+                mic = devices.mic.as_deref().unwrap_or("system default"),
+                speaker = devices.speaker.as_deref().unwrap_or("system default"),
+                ?options,
+                "voice track published (mic)"
+            );
+            Some(Voice::Mic {
+                devices,
+                publication,
+            })
+        }
+        AudioMode::Pattern => {
+            let (publication, tones) = publish_pattern(room, ticks, options).await?;
+            Some(Voice::Pattern { publication, tones })
+        }
+    })
+}
+
+async fn publish(
+    room: &Room,
+    track: LocalAudioTrack,
     voice: VoiceOptions,
-) -> Result<(LocalTrackPublication, ToneSource), RoomError> {
-    // No queue: each 10 ms frame goes straight to the encoder, as from a mic callback.
-    let source = NativeAudioSource::new(AudioSourceOptions::default(), marker::RATE, 1, 0);
-    let track =
-        LocalAudioTrack::create_audio_track("voice", RtcAudioSource::Native(source.clone()));
+) -> Result<LocalTrackPublication, RoomError> {
     let options = TrackPublishOptions {
         source: TrackSource::Microphone,
         audio_encoding: Some(AudioEncoding {
@@ -72,10 +122,23 @@ pub async fn publish_pattern(
         red: voice.red,
         ..Default::default()
     };
-    let publication = room
-        .local_participant()
+    room.local_participant()
         .publish_track(LocalTrack::Audio(track), options)
-        .await?;
+        .await
+}
+
+/// Publishes the synthetic voice track and starts its tones. Each burst's start time goes to
+/// the viewers on [`wire::AUDIO_TOPIC`], for the one-way measurement.
+async fn publish_pattern(
+    room: &Room,
+    ticks: Arc<TickSlot>,
+    voice: VoiceOptions,
+) -> Result<(LocalTrackPublication, ToneSource), RoomError> {
+    // No queue: each 10 ms frame goes straight to the encoder, as from a mic callback.
+    let source = NativeAudioSource::new(AudioSourceOptions::default(), marker::RATE, 1, 0);
+    let track =
+        LocalAudioTrack::create_audio_track("voice", RtcAudioSource::Native(source.clone()));
+    let publication = publish(room, track, voice).await?;
     tracing::info!(?voice, "voice track published (synthetic tones)");
 
     let (marks, mut rx) = tokio::sync::mpsc::unbounded_channel::<(u32, u64)>();

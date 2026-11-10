@@ -35,7 +35,7 @@ if want 3; then
 note "3. Overlay on screen, not in the stream"
 room="accept-overlay-$$"
 mkfifo "$OUT/answer"
-"$BIN" share --room "$room" --capture sck --resolution 1080 --no-stats --allow-control \
+"$BIN" share --audio off --room "$room" --capture sck --resolution 1080 --no-stats --allow-control \
   --inject log <"$OUT/answer" >"$OUT/share.log" 2>&1 &
 sharer=$!
 exec 3>"$OUT/answer"
@@ -43,7 +43,7 @@ cat >"$OUT/script.json" <<'JSON'
 [{"do": "request"}, {"do": "input", "event": {"kind": "move", "x": 0.5, "y": 0.5}},
  {"do": "wait", "ms": 4000}, {"do": "release"}]
 JSON
-"$BIN" view --room "$room" --headless --no-stats --duration 30 --out "$OUT" --name "Acceptance" \
+"$BIN" view --audio off --room "$room" --headless --no-stats --duration 30 --out "$OUT" --name "Acceptance" \
   --control-script "$OUT/script.json" --snapshot-every 1 --snapshot-dir "$OUT/stream" \
   >"$OUT/view.log" 2>&1 &
 viewer=$!
@@ -75,11 +75,11 @@ for mode in plain control; do
   [[ $mode == control ]] && flags="--allow-control --inject log"
   room="accept-lat-$mode-$$"
   # shellcheck disable=SC2086
-  "$BIN" share --room "$room" --capture sck --resolution 1080 $flags </dev/null >"$OUT/lat-$mode.log" 2>&1 &
+  "$BIN" share --audio off --room "$room" --capture sck --resolution 1080 $flags </dev/null >"$OUT/lat-$mode.log" 2>&1 &
   sharer=$!
   for _ in $(seq 60); do grep -q "screen track published" "$OUT/lat-$mode.log" && break; sleep 0.5; done
   sleep 3
-  "$BIN" view --room "$room" --headless --duration 25 --label "lat-$mode" --out "$OUT" >/dev/null 2>&1
+  "$BIN" view --audio off --room "$room" --headless --duration 25 --label "lat-$mode" --out "$OUT" >/dev/null 2>&1
   kill -INT "$sharer" 2>/dev/null
   wait "$sharer" 2>/dev/null
 done

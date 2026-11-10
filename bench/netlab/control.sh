@@ -61,7 +61,7 @@ for entry in "${PROFILES[@]}"; do
   room="control-$name-$$"
   dc exec -T sharer sh -c 'pkill -INT tc-spike; sleep 1; rm -f /tmp/answer /tmp/actions.jsonl; touch /tmp/answer' || true
   # The sharer reads its answer from a file that grows, as if typed into its terminal.
-  dc exec -d sharer sh -c "tail -f /tmp/answer | tc-spike share --url $URL --room $room \
+  dc exec -d sharer sh -c "tail -f /tmp/answer | tc-spike share --audio off --url $URL --room $room \
     --capture pattern --codec vp8 --resolution 720 --no-stats --allow-control --headless \
     --inject record:/tmp/actions.jsonl >/tmp/share.log 2>&1"
   for _ in $(seq 60); do
@@ -69,7 +69,7 @@ for entry in "${PROFILES[@]}"; do
     sleep 1
   done
 
-  dc exec -d viewer sh -c "tc-spike view --url $URL --room $room --headless --no-stats \
+  dc exec -d viewer sh -c "tc-spike view --audio off --url $URL --room $room --headless --no-stats \
     --duration 180 --out /tmp --name 'lab guest' --control-script /tmp/script.json \
     --sent-log /tmp/sent.jsonl >/tmp/view.log 2>&1; echo \$? >/tmp/view.exit"
   dc exec -T viewer rm -f /tmp/view.exit

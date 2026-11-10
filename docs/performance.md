@@ -16,6 +16,7 @@ Wi-Fi 6 AX201. LiveKit runs on the Mac. TwinCursor is pre-release, so expect the
 | Sharer CPU, H.264 at 1080p | 14% of one core |
 | Delay the input path adds | Under 1 ms on top of the network |
 | Voice on one Mac, sound sent → played | 45–54 ms typical, screen latency unchanged |
+| Voice on one Mac, out of real speakers into a mic | 155–159 ms typical, 178–204 ms at p95 |
 
 **Round trip** is the remote-control loop: the viewer sends a tick, the sharer stamps it into the
 next frame, and that frame comes back and is decoded. It runs on the viewer's clock, so it's valid
@@ -181,6 +182,50 @@ All 243 bursts were heard in each run. On a quiet machine, one way holds at abou
 - **Voice costs about 66 kbit/s on the wire,** twice the 32 kbit/s Opus bitrate: LiveKit's
   redundant audio (RED) repeats each packet in the next one, so one lost packet costs nothing.
 
+### The real mic
+
+The sharer sends its real mic through WebRTC's device layer, with echo cancellation, noise
+suppression and gain control on. In this run the viewer plays nothing, so the two ends on one
+Mac can't feed back. 1080p H.264, headless, 60 s, two quiet rounds on 2026-11-08:
+
+| | Voice off | Synthetic voice | Real mic |
+|---|---|---|---|
+| fps | 59 | 59 | 59 |
+| Screen round trip p50 | 14.8–16.2 ms | 15.3–15.9 ms | 15.4–17.2 ms |
+| Screen round trip p95 | 29.6–30.4 ms | 30.8–31.0 ms | 30.9–32.6 ms |
+| Voice on the wire | | 66 kbit/s | 50–51 kbit/s |
+
+The mic doesn't slow the screen. It sends less than the synthetic voice because Opus sends
+almost nothing while the room is quiet (1–2 kbit/s), and the tones never stop. A first round,
+run while the Mac was busy, is left out: its voice-off run fell to 50 fps.
+
+### Through real speakers
+
+`bench/audio-loopback.sh` plays the sharer's tones on the viewer's speakers and times them with a
+raw mic recording, on one MacBook Pro with its built-in speakers and mic. Two 30 s runs on
+2026-11-09:
+
+| | p50 | p95 |
+|---|---|---|
+| Sharer started → heard in the room | 155–159 ms | 178–204 ms |
+| Sharer started → left the viewer's jitter buffer | 53–54 ms | 76–103 ms |
+| The rest: WebRTC's playout, the speakers, the air and the mic | 101–106 ms | |
+
+106 and 121 of 121 bursts were heard; the first run was louder (peak −7 dBFS against −24).
+
+- **Most of the delay is after the network.** Played and recorded by macOS directly
+  (AVAudioEngine, a beep scheduled for a known time), the built-in speakers to the built-in mic
+  take 48 ms, steady to 1 ms. The speakers and mic do their own signal processing, which is
+  where that goes. That leaves about 55 ms between WebRTC taking a frame from the jitter buffer
+  and the sound reaching macOS's output. That's most likely WebRTC's own macOS playout buffer,
+  which the SDK doesn't let us size.
+- **It's already past the 150 ms comfort limit**, with no network at all. On top of this, the
+  talker's mic adds WebRTC's recording buffer, which the loopback leaves out (it records with its
+  own mic path, standing in for the talker's). The jitter buffer, the playout buffer and the
+  built-in speakers are the three places left to look; headphones skip the last.
+- **The recorder's clock is checked.** Its timestamps are when each buffer's first sample was
+  captured, not when it arrived: they are 100–112 ms old when the 100 ms buffer is delivered.
+
 ## Network lab
 
 Sharer, viewer and LiveKit run in Docker on one Mac, with conditions applied by `tc netem`. It uses
@@ -315,7 +360,14 @@ Screen Recording permission.
 ```bash
 cargo build --release -p twincursor-media-spike
 DURATION=30 bench/run-matrix.sh q-h264-1080 q-vp8-1080 q-h264-1440 q-vp8-1440 input-h264
-DURATION=60 bench/run-matrix.sh av-off av-on   # voice, and the screen with and without it
+DURATION=60 bench/run-matrix.sh av-off av-on av-mic   # the screen without voice, with it, with the mic
+```
+
+Voice through the speakers into a mic plays tones out loud for 30 s, so turn the volume up and
+keep the room quiet:
+
+```bash
+bench/audio-loopback.sh
 ```
 
 Remote control end to end, with nothing injected for real:
@@ -350,6 +402,7 @@ then run the viewer with `--headless --measure-input`.
 - Mac to Mac, and either end on Ethernet
 - With AWDL off, or the router on channel 44 or 149
 - Text quality on real anti-aliased screens over a real network
+- Voice mouth to ear between two machines, and through headphones
 - Linux
 
 If you can run any of these, we'd love your numbers. See

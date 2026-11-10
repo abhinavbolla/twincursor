@@ -1,7 +1,7 @@
 # TwinCursor: Architecture
 
-Status: living document. The app shell, audio, remote control and server below are planned; the
-media path and measurement tools exist today. Validate each decision with a spike before
+Status: living document. The app shell and server below are planned; the media path, voice,
+remote control and measurement tools exist today. Validate each decision with a spike before
 building on it.
 
 ## Overview
@@ -126,7 +126,24 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
 - Keyboard layouts: the viewer sends the physical key and the text it produced, and the sharer
   types the text unless it's a shortcut. ADR 0004 has the rules.
 
-### 5. Server
+### 5. Voice
+- Both sides send their mic and play the other's, through WebRTC's own device layer
+  (`PlatformAudio` in the LiveKit SDK: CoreAudio on macOS, WASAPI on Windows), wrapped in
+  `crates/media/src/audio/device.rs`. We write no device or echo cancellation code.
+- WebRTC's echo cancellation, noise suppression and gain control run on the mic, with the
+  speaker output as the echo reference. This SDK version always turns all three on for a device
+  track, so there's no switch to turn them off.
+- Opus at 32 kbit/s mono with RED: each packet repeats the previous frame, which keeps hotel-grade
+  loss inaudible for 35 kbit/s more (see docs/performance.md, Voice in the lab).
+- The voice is its own track and doesn't hold the screen back to stay in sync with it: a shared
+  screen should never wait for a voice. Measured with voice off and on, the screen's latency is
+  the same.
+- Without `PlatformAudio`, WebRTC uses a silent built-in device. That's what the synthetic voice
+  and the network lab use.
+- macOS asks for microphone access the first time. Without it CoreAudio records silence rather
+  than failing, so `tc-spike` checks the permission first and says where to turn it on.
+
+### 6. Server
 - Rust + axum + Postgres. Handles accounts, teams, rooms, and issuing LiveKit access tokens.
   It never touches media.
 - `deploy/` ships a docker compose file: server, LiveKit, Postgres, and Caddy for TLS.
@@ -173,6 +190,13 @@ reports:
 
 The synthetic voice needs no mic or permission, so it runs headless and in the network lab. It
 skips echo cancellation and the device buffers, which only real devices have.
+
+`bench/audio-loopback.sh` adds those, on one Mac. The viewer plays the sharer's marker tones on
+the real speakers, and a raw mic recording (`bench/audio/record-mic.swift`, AVAudioEngine, no
+processing) goes to `tc-spike listen`, which times each burst from when the sharer started it.
+The recorder stamps samples with their capture time, so its own buffering doesn't count. Its
+input path stands in for the talker's mic, so the result is close to mouth to ear. Taking away
+the viewer's own "left the jitter buffer" time leaves the speakers, the air and the mic.
 
 ## Measuring quality
 

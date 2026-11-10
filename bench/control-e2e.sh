@@ -43,13 +43,13 @@ for script in "${scripts[@]}"; do
   # The sharer reads the answer from a pipe, as if typed into its terminal.
   mkfifo "$dir/answer"
   # shellcheck disable=SC2086  # the extra flags are meant to split
-  "$BIN" share --room "$room" --capture pattern --resolution 720 --no-stats \
+  "$BIN" share --audio off --room "$room" --capture pattern --resolution 720 --no-stats \
     --allow-control --inject "record:$dir/actions.jsonl" ${SHARE_FLAGS:-} <"$dir/answer" >"$dir/share.log" 2>&1 &
   sharer=$!
   exec 3>"$dir/answer"
 
   # shellcheck disable=SC2086
-  "$BIN" view --room "$room" --headless --no-stats --duration 120 --label "e2e-$name" \
+  "$BIN" view --audio off --room "$room" --headless --no-stats --duration 120 --label "e2e-$name" \
     --out "$dir" --name "e2e guest" --control-script "$script" --sent-log "$dir/sent.jsonl" \
     ${VIEW_FLAGS:-} >"$dir/view.log" 2>&1 &
   viewer=$!

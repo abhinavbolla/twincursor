@@ -5,11 +5,13 @@ mod guest;
 mod hotkey;
 mod hud;
 mod input;
+mod listen;
 mod overlay;
 mod probe;
 mod replay;
 mod sharer;
 mod view;
+mod voice;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -40,6 +42,11 @@ enum Command {
         sharer: std::path::PathBuf,
         viewer: std::path::PathBuf,
     },
+    /// List the microphones and speakers `--mic` and `--speaker` can pick.
+    Devices,
+    /// Hear the sharer's synthetic voice through a real mic (stdin, from
+    /// bench/audio/record-mic.swift) and time it against when the sharer started each burst.
+    Listen(listen::ListenArgs),
     /// A full-screen window that records the input it receives, to check real injection.
     Probe(probe::ProbeArgs),
     /// Check that the actions a sharer recorded match the messages a viewer sent.
@@ -126,12 +133,6 @@ impl From<Codec> for VideoCodec {
     }
 }
 
-#[derive(Clone, Copy, ValueEnum)]
-enum AudioArg {
-    Off,
-    Pattern,
-}
-
 #[derive(Args)]
 struct ShareArgs {
     #[command(flatten)]
@@ -176,16 +177,8 @@ struct ShareArgs {
     /// Include the mouse cursor in the capture.
     #[arg(long)]
     cursor: bool,
-    /// What to send as your voice: nothing yet by default, or `pattern`: marker tones that
-    /// `view --measure-audio` times (no mic or permission needed).
-    #[arg(long, value_enum, default_value = "off")]
-    audio: AudioArg,
-    /// Opus bitrate for the voice, in kbit/s.
-    #[arg(long, default_value_t = media::audio::VoiceOptions::default().bitrate / 1000)]
-    voice_kbps: u64,
-    /// Send each voice frame once, without the previous one as backup (RED).
-    #[arg(long)]
-    no_red: bool,
+    #[command(flatten)]
+    voice: voice::VoiceArgs,
     /// Let viewers ask for remote control. You're asked in this terminal before anyone gets it.
     #[arg(long)]
     allow_control: bool,
@@ -211,6 +204,8 @@ fn main() -> anyhow::Result<()> {
         Command::Share(args) => share(args),
         Command::View(args) => view::run(args),
         Command::Compare { sharer, viewer } => compare(&sharer, &viewer),
+        Command::Devices => voice::list_devices(),
+        Command::Listen(args) => listen::run(args),
         Command::Probe(args) => probe::run(args),
         Command::Replay {
             sent,
@@ -279,14 +274,8 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
             max: tier,
             display: screen,
         }),
-        audio: match args.audio {
-            AudioArg::Off => media::audio::AudioMode::Off,
-            AudioArg::Pattern => media::audio::AudioMode::Pattern,
-        },
-        voice: media::audio::VoiceOptions {
-            bitrate: args.voice_kbps * 1000,
-            red: !args.no_red,
-        },
+        audio: args.voice.mode(true)?,
+        voice: args.voice.options(),
         snapshots: (args.snapshot_every > 0).then(|| media::quality::Snapshots {
             every: args.snapshot_every,
             dir: args.snapshot_dir.clone(),
