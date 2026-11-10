@@ -226,6 +226,73 @@ raw mic recording, on one MacBook Pro with its built-in speakers and mic. Two 30
 - **The recorder's clock is checked.** Its timestamps are when each buffer's first sample was
   captured, not when it arrived: they are 100–112 ms old when the 100 ms buffer is delivered.
 
+### Echo and noise
+
+A mic track runs WebRTC's echo canceller (AEC3) and noise suppressor. `crates/media/tests/voice_processing.rs`
+drives the same modules offline, in CI, with synthetic speech: harmonic syllables with pauses,
+played through a simulated room (direct sound plus four reflections) into the mic, with a second
+talker on top.
+
+| Case | Result |
+|---|---|
+| Echo removed, first 2 s | 31–39 dB |
+| Echo removed, after that | 37–47 dB |
+| The local voice, alone | within 0.2 dB |
+| The local voice, while both talk | 0.5–4.6 dB quieter |
+| Echo delay jumps mid-call (60 → 120, 250 or 400 ms) | 1–16 dB for the first 1–1.5 s, 40–49 dB from 2 s on |
+| Steady noise removed (−40 and −30 dBFS under speech at −18) | 15 dB, speech within 0.5 dB |
+| Everything on, as on a mic track | echo 25 dB down, voice 0.4 dB off |
+
+The echo paths are 40, 80 and 120 ms, with the echo a third as loud as the local voice or as
+loud. The tests fail at 20 dB (first 2 s), 30 dB (after) and 10 dB (noise), well under these
+numbers. With the modules off they measure 0.3 dB and 3.1 dB.
+
+- **The canceller finds the delay by itself, but it takes a moment.** Switching to speakers with
+  a different delay mid-call lets the other side hear itself for a second or two. Overdriven
+  laptop speakers (soft clipping) cost it 2–4 dB, nothing more.
+
+`bench/audio-echo.sh` checks the same on a MacBook's own speakers and mic: it compares the raw
+mic with the track the other side hears back, with speech as the far-end voice. Two runs at half
+volume in a quiet room (−51 and −53 dBFS in the pauses):
+
+| | Run 1 | Run 2 |
+|---|---|---|
+| The far end's speech, at the mic | −14.4 dBFS | −15.0 dBFS |
+| What it heard back, after the first 5 s | −66.9 dBFS | −60.7 dBFS |
+| Echo removed | 52.5 dB | 45.7 dB |
+| Echo removed, first 5 s | 20.0 dB | 18.9 dB |
+| A local voice alone, as sent on | 4.4 dB louder | 4.2 dB louder |
+| The same voice while both talk, loudest parts | 2.9 dB quieter | 1.7 dB quieter |
+| The same voice while both talk, median 10 ms | −42 dBFS (alone: −17) | −29 dBFS (alone: −17) |
+
+Levels are the 95th percentile of 10 ms slices unless they say otherwise. The check fails under
+30 dB of echo removed, or when the local voice alone comes back more than 10 dB quieter.
+
+- **The first words of a call come back.** For the first 2–3 s that the far end talks it hears
+  itself at about −30 to −35 dBFS, while the canceller learns the room. After that the echo is
+  under −80 dBFS most of the time.
+- **Talking over each other clips words.** The loud parts of the local voice get through 2–3 dB
+  down, but 35–49% of its 10 ms slices came back under −40 dBFS, against 9–11% when it spoke
+  alone (the gaps between words). The local voice here came from the same speakers and reached
+  the mic as loud as the echo; a person at the keyboard may fare differently.
+- **Speech cancels far better than test tones.** At full volume, with speech as the far-end
+  voice, nothing above −45 dBFS came back in 20 s while the raw mic heard it at −18 dBFS:
+  42–60 dB removed. Marker bursts (110 ms of tones once a second) never came back whole, but in
+  a quiet room their first 30–60 ms sometimes did, 6–36 dB down, and in the best run every burst
+  was at least 37 dB down after the first 5 s. A canceller adapts while the far end makes sound,
+  and sparse tones give it little to adapt on, so the check uses speech.
+- **A voice in the room changes the result.** While someone talks near the Mac the canceller
+  holds back so it doesn't cut their voice, and the bursts came back only 0–15 dB down. Mixing
+  that room recording into a quiet run reproduces it offline (4–18 dB instead of 22–37 dB), so it
+  is the canceller's double-talk behaviour, not the device path: the same recordings replayed
+  through the offline module match what the device track did. The check listens to the raw mic
+  in the far end's pauses, and calls a failed run in a room that wasn't quiet inconclusive.
+- **Gain control hides part of the cancellation.** It starts about 14 dB up and applies to
+  whatever is left, so leftover echo and room noise both come back louder than the canceller left
+  them. Compare levels with it in mind.
+- **The echo reaches the mic about 100 ms after the canceller sees the sound** (device buffers,
+  air, mic), well inside what it handles.
+
 ## Network lab
 
 Sharer, viewer and LiveKit run in Docker on one Mac, with conditions applied by `tc netem`. It uses

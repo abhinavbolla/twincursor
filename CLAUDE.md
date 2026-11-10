@@ -61,6 +61,10 @@ Fill these in as code lands; keep them accurate.
   skip; bench scripts pass it). `tc-spike devices` lists devices for `--mic`/`--speaker`
 - Voice through real speakers and mic, one Mac: `bench/audio-loopback.sh` (plays tones out loud
   for ~30 s: volume up, quiet room; mic access for the terminal)
+- Echo cancellation through real speakers and mic, one Mac: `bench/audio-echo.sh` (talks out
+  loud for about a minute, same needs; exit 2 means the room wasn't quiet enough to judge).
+  `share --audio file --audio-file speech.wav` sends a WAV as the sharer's voice. Both out-loud
+  scripts refuse to run while another app is using the mic (a call); `FORCE=1` overrides
 - Remote control end to end: `bench/control-e2e.sh` (headless scripted guest, sharer records what
   it would inject, `tc-spike replay` checks it, and the "is controlling" label must be on screen
   during control and gone after); `ANSWER=n` checks a refusal; `REVOKE=r` takes

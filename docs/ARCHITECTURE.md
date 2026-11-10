@@ -198,6 +198,21 @@ The recorder stamps samples with their capture time, so its own buffering doesn'
 input path stands in for the talker's mic, so the result is close to mouth to ear. Taking away
 the viewer's own "left the jitter buffer" time leaves the speakers, the air and the mic.
 
+`bench/audio-echo.sh` checks echo cancellation the same way. The sharer sends recorded speech
+(`--audio file`), the viewer plays it and sends its mic back, and `tc-spike listen --echo`
+compares three sounds on one clock: what the sharer said, the raw mic, and the mic as the sharer
+hears it back.
+- **Echo:** while only the sharer talks, the returned track must be at least 30 dB quieter than
+  the raw mic, once the canceller has had 5 s.
+- **The local voice:** a second voice played out loud while the sharer is silent must come
+  through. Played again over the sharer (double talk), it's reported, not judged.
+- **The room:** the speech has 2 s pauses, and the raw mic in them shows whether the room was
+  quiet. Someone talking nearby is passed on, as it should be, and holds the canceller back, so
+  a failed run in such a room counts as inconclusive.
+
+Both scripts stop if another app is recording from the mic, most likely a call: the people on
+it would hear everything played.
+
 ## Measuring quality
 
 Latency alone doesn't tell us whether text is readable, so we measure picture quality too:
