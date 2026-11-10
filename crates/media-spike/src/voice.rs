@@ -1,6 +1,8 @@
 //! Voice flags shared by `share` and `view`, the `devices` command, and the macOS microphone
 //! permission check.
 
+use std::path::PathBuf;
+
 use clap::{Args, ValueEnum};
 use media::audio::{device, AudioMode, DeviceChoice, DeviceRef, VoiceOptions};
 
@@ -12,6 +14,9 @@ pub enum AudioArg {
     Mic,
     /// Marker tones that `view --measure-audio` times (sharer only; no mic or permission).
     Pattern,
+    /// The WAV given with --audio-file, over and over (sharer only): a far-end voice for
+    /// bench/audio-echo.sh.
+    File,
 }
 
 #[derive(Args, Clone)]
@@ -20,6 +25,9 @@ pub struct VoiceArgs {
     /// `off` and still take an override.
     #[arg(long, value_enum, default_value = "mic", overrides_with = "audio")]
     audio: AudioArg,
+    /// The WAV for `--audio file`: 48 kHz, mono, 16-bit.
+    #[arg(long)]
+    audio_file: Option<PathBuf>,
     /// Microphone to use: its number or part of its name (see `tc-spike devices`). Default:
     /// the system's.
     #[arg(long)]
@@ -36,16 +44,25 @@ pub struct VoiceArgs {
 }
 
 impl VoiceArgs {
-    /// The voice to send, after checking the mic can be used. `pattern` is only allowed where
-    /// it has ticks to follow (the sharer).
-    pub fn mode(&self, allow_pattern: bool) -> anyhow::Result<AudioMode> {
+    /// The voice to send, after checking the mic can be used. The synthetic voices (`pattern`
+    /// and `file`) are for the sharer only: the pattern follows the viewer's ticks.
+    pub fn mode(&self, allow_synthetic: bool) -> anyhow::Result<AudioMode> {
         if self.audio != AudioArg::Mic && (self.mic.is_some() || self.speaker.is_some()) {
             anyhow::bail!("--mic and --speaker need --audio mic");
         }
+        if self.audio != AudioArg::File && self.audio_file.is_some() {
+            anyhow::bail!("--audio-file needs --audio file");
+        }
         Ok(match self.audio {
             AudioArg::Off => AudioMode::Off,
-            AudioArg::Pattern if allow_pattern => AudioMode::Pattern,
-            AudioArg::Pattern => anyhow::bail!("--audio pattern is for the sharer only"),
+            AudioArg::Pattern | AudioArg::File if !allow_synthetic => {
+                anyhow::bail!("--audio pattern and --audio file are for the sharer only")
+            }
+            AudioArg::Pattern => AudioMode::Pattern,
+            AudioArg::File => match &self.audio_file {
+                Some(path) => AudioMode::File(path.clone()),
+                None => anyhow::bail!("--audio file needs --audio-file <wav>"),
+            },
             AudioArg::Mic => {
                 check_mic_permission()?;
                 AudioMode::Mic(DeviceChoice {
