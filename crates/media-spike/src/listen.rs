@@ -64,8 +64,10 @@ fn read_chunk(input: &mut impl Read) -> std::io::Result<Option<Chunk>> {
     let mut bytes = vec![0u8; n * 2];
     input.read_exact(&mut bytes)?;
     let samples = bytes
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&b| i16::from_le_bytes(b))
         .collect();
     Ok(Some(Chunk { wall_us, samples }))
 }
