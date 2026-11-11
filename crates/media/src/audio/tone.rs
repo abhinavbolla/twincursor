@@ -1,4 +1,5 @@
-//! The sharer's synthetic voice: marker tones fed to the track every 10 ms, like a mic.
+//! The sharer's synthetic voice: marker tones or a recording, fed to the track every 10 ms like
+//! a mic.
 
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -46,12 +47,27 @@ impl Drop for ToneSource {
     }
 }
 
-/// Starts feeding `source`. `on_burst(id, wall_us)` runs as each burst starts.
-pub(super) fn start(
-    source: NativeAudioSource,
-    ticks: Arc<TickSlot>,
-    on_burst: impl Fn(u32, u64) + Send + 'static,
-) -> ToneSource {
+/// What the synthetic voice says.
+pub(super) enum Sound {
+    /// A marker burst for each tick; `on_burst(id, wall_us)` runs as each one starts.
+    Markers {
+        ticks: Arc<TickSlot>,
+        on_burst: Box<dyn Fn(u32, u64) + Send>,
+    },
+    /// A recording (never empty), over and over.
+    Recording(Vec<i16>),
+}
+
+/// Fills `out` from `recording`, starting at `*at` and wrapping around at its end.
+fn fill_looped(recording: &[i16], at: &mut usize, out: &mut [i16]) {
+    for sample in out {
+        *sample = recording[*at];
+        *at = (*at + 1) % recording.len();
+    }
+}
+
+/// Starts feeding `source` with `sound`.
+pub(super) fn start(source: NativeAudioSource, sound: Sound) -> ToneSource {
     let running = Arc::new(AtomicBool::new(true));
     let thread = {
         let running = running.clone();
@@ -59,6 +75,7 @@ pub(super) fn start(
             raise_priority();
             let mut generator = Generator::default();
             let mut samples = vec![0i16; FRAME];
+            let mut at = 0;
             let mut due = Instant::now();
             // How late frames left, over the last 10 s: a source that misses its slot looks
             // like network jitter to the receiver.
@@ -73,14 +90,19 @@ pub(super) fn start(
                     }
                     (worst, late, since) = (Duration::ZERO, 0, Instant::now());
                 }
-                if !generator.busy() {
-                    if let Some((id, arrived)) = ticks.take() {
-                        if arrived.elapsed() <= MAX_WAIT && generator.start(id) {
-                            on_burst(id, wall_clock_us());
+                match &sound {
+                    Sound::Markers { ticks, on_burst } => {
+                        if !generator.busy() {
+                            if let Some((id, arrived)) = ticks.take() {
+                                if arrived.elapsed() <= MAX_WAIT && generator.start(id) {
+                                    on_burst(id, wall_clock_us());
+                                }
+                            }
                         }
+                        generator.fill(&mut samples);
                     }
+                    Sound::Recording(recording) => fill_looped(recording, &mut at, &mut samples),
                 }
-                generator.fill(&mut samples);
                 let frame = AudioFrame {
                     data: Cow::Borrowed(&samples),
                     sample_rate: RATE,
@@ -166,3 +188,22 @@ fn raise_priority() {
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn raise_priority() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_recording_starts_over_at_its_end() {
+        let recording = [1, 2, 3, 4, 5];
+        let (mut at, mut out) = (0, [0i16; 4]);
+        fill_looped(&recording, &mut at, &mut out);
+        assert_eq!(out, [1, 2, 3, 4]);
+        fill_looped(&recording, &mut at, &mut out);
+        assert_eq!(out, [5, 1, 2, 3]);
+        // Shorter than one frame: it repeats inside the frame.
+        let mut at = 0;
+        fill_looped(&[7, 8], &mut at, &mut out);
+        assert_eq!(out, [7, 8, 7, 8]);
+    }
+}
