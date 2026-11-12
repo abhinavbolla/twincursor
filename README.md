@@ -30,7 +30,7 @@ behind your hands. TwinCursor is built around three ideas:
 | Call health stats and on-screen HUD | ✅ Works |
 | Auto-throttle on poor networks | ✅ Works |
 | Remote control | 🚧 Works from the command line (macOS sharer), in hands-on testing |
-| Voice | 🚧 Works from the command line, with echo cancellation; no mute yet |
+| Voice | 🚧 Works from the command line, with echo cancellation and mute |
 | Desktop app | Planned |
 | Self-hosting with one command | Planned |
 | Linux | Planned |
@@ -85,7 +85,11 @@ Both sides talk through their mic and speakers, so macOS will also ask to allow 
 Echo cancellation is always on, so speakers work without headphones once the two ends are in
 different rooms. On one Mac, use headphones or `--audio off` on one side: each end cancels only its
 own speaker, so the two can feed back. `tc-spike devices` lists the mics and speakers, and `--mic` and `--speaker` pick one
-by number or part of its name.
+by number or part of its name. If that device is unplugged mid-call, the call moves to the system
+default.
+
+To mute your mic, press `M` in the viewer (F8 while you're in control), or ⌃⌥⌘M on the sharing
+side, from any app. The other side sees that you're muted.
 
 ### Remote control
 

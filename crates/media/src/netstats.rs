@@ -20,6 +20,29 @@ pub struct Counters {
     pub audio_in: Option<AudioInbound>,
     /// Bytes sent on the voice track.
     pub audio_bytes_sent: Option<u64>,
+    /// What the voice track's source (the mic) has picked up.
+    pub audio_source: Option<Loudness>,
+}
+
+/// WebRTC's running loudness sums: the level over an interval comes from two of them.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Loudness {
+    /// Sum over time of the squared level (0..1), in seconds.
+    pub energy: f64,
+    /// How much audio the sum covers, in seconds.
+    pub duration_s: f64,
+}
+
+impl Loudness {
+    /// The RMS level since `prev`, in dB relative to full scale; `None` if no audio came.
+    pub fn level_db(self, prev: Option<Loudness>) -> Option<f64> {
+        let prev = prev.unwrap_or_default();
+        let secs = self.duration_s - prev.duration_s;
+        (secs > 0.0).then(|| {
+            let power = ((self.energy - prev.energy) / secs).max(0.0);
+            (10.0 * power.max(1e-10).log10()).max(-100.0)
+        })
+    }
 }
 
 /// Receiving side of the voice stream.
@@ -35,6 +58,7 @@ pub struct AudioInbound {
     /// Sum over emitted samples of the time each spent in the jitter buffer, in seconds.
     pub jitter_buffer_delay_s: f64,
     pub jitter_buffer_emitted: u64,
+    pub loudness: Loudness,
 }
 
 /// Receiving side of the video stream.
@@ -119,6 +143,9 @@ pub struct NetSnapshot {
     pub adapt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_send_kbps: Option<f64>,
+    /// How loud the mic was over this interval, in dBFS (RMS), after processing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_send_db: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_recv: Option<AudioRecvStats>,
 }
@@ -134,6 +161,9 @@ pub struct AudioRecvStats {
     pub concealed_run_pct: f64,
     /// Average time audio waited in the jitter buffer this interval.
     pub jitter_buffer_ms: Option<f64>,
+    /// How loud the other side's voice was over this interval, in dBFS (RMS).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level_db: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -202,7 +232,18 @@ pub fn collect(stats: &[RtcStats]) -> Counters {
             concealed_samples: s.inbound.concealed_samples,
             jitter_buffer_delay_s: s.inbound.jitter_buffer_delay,
             jitter_buffer_emitted: s.inbound.jitter_buffer_emitted_count,
+            loudness: Loudness {
+                energy: s.inbound.total_audio_energy,
+                duration_s: s.inbound.total_samples_duration,
+            },
         });
+    let audio_source = stats.iter().find_map(|s| match s {
+        RtcStats::MediaSource(s) if s.source.kind == "audio" => Some(Loudness {
+            energy: s.audio.total_audio_energy,
+            duration_s: s.audio.total_samples_duration,
+        }),
+        _ => None,
+    });
     let audio_bytes_sent = stats
         .iter()
         .filter_map(|s| match s {
@@ -214,6 +255,7 @@ pub fn collect(stats: &[RtcStats]) -> Counters {
     Counters {
         audio_in,
         audio_bytes_sent,
+        audio_source,
         inbound: inbound.map(|s| Inbound {
             packets_received: s.received.packets_received,
             packets_lost: s.received.packets_lost,
@@ -362,6 +404,7 @@ pub fn snapshot(prev: &Counters, cur: &Counters, secs: f64) -> NetSnapshot {
         audio_send_kbps: cur
             .audio_bytes_sent
             .map(|b| kbps(b.saturating_sub(prev.audio_bytes_sent.unwrap_or(0)))),
+        audio_send_db: cur.audio_source.and_then(|c| c.level_db(prev.audio_source)),
         audio_recv: cur
             .audio_in
             .as_ref()
@@ -388,6 +431,7 @@ fn audio_recv(prev: Option<&AudioInbound>, c: &AudioInbound, secs: f64) -> Audio
         jitter_buffer_ms: (emitted > 0).then(|| {
             (c.jitter_buffer_delay_s - p.jitter_buffer_delay_s).max(0.0) * 1000.0 / emitted as f64
         }),
+        level_db: c.loudness.level_db(prev.map(|p| p.loudness)),
     }
 }
 
@@ -478,11 +522,47 @@ impl Board {
     }
 }
 
+/// Leaves out the time the other side's voice was muted when counting made-up audio.
+///
+/// A muted track sends nothing, and the jitter buffer fills all of that time in. WebRTC counts
+/// it as concealed, which would read as a broken link: 5 s of mute in a 20 s call as 25%.
+#[derive(Debug, Default)]
+pub struct MutedTime {
+    muted: bool,
+    /// The other side was muted at some point since the last report.
+    in_interval: bool,
+    /// Cumulative (concealed, total) samples as last reported, and how many of each fell in
+    /// muted intervals.
+    seen: (u64, u64),
+    skipped: (u64, u64),
+}
+
+impl MutedTime {
+    pub fn set(&mut self, muted: bool) {
+        self.muted = muted;
+        self.in_interval |= muted;
+    }
+
+    /// Takes the samples of an interval with mute in it out of the cumulative counters.
+    pub fn apply(&mut self, audio: &mut AudioInbound) {
+        let now = (audio.concealed_samples, audio.total_samples);
+        if self.in_interval {
+            self.skipped.0 += now.0.saturating_sub(self.seen.0);
+            self.skipped.1 += now.1.saturating_sub(self.seen.1);
+        }
+        self.seen = now;
+        self.in_interval = self.muted;
+        audio.concealed_samples = now.0.saturating_sub(self.skipped.0);
+        audio.total_samples = now.1.saturating_sub(self.skipped.1);
+    }
+}
+
 /// Polls one side's peer connection and turns successive reports into snapshots.
 #[derive(Debug)]
 pub struct Poller {
     side: Side,
     prev: Option<(Instant, Counters)>,
+    muted: MutedTime,
 }
 
 /// Which direction we care about. LiveKit may use separate publish and subscribe connections,
@@ -495,7 +575,16 @@ pub enum Side {
 
 impl Poller {
     pub fn new(side: Side) -> Self {
-        Self { side, prev: None }
+        Self {
+            side,
+            prev: None,
+            muted: MutedTime::default(),
+        }
+    }
+
+    /// The other side muted or unmuted its voice.
+    pub fn remote_muted(&mut self, muted: bool) {
+        self.muted.set(muted);
     }
 
     /// Returns `None` on the first call (no interval yet) or if stats aren't available.
@@ -514,7 +603,10 @@ impl Poller {
             _ => &stats.publisher_stats,
         };
         let now = Instant::now();
-        let cur = collect(report);
+        let mut cur = collect(report);
+        if let Some(audio) = cur.audio_in.as_mut() {
+            self.muted.apply(audio);
+        }
         let snap = self
             .prev
             .as_ref()
@@ -553,9 +645,17 @@ mod tests {
                 jitter_buffer_delay_s: 1_000.0,
                 jitter_buffer_emitted: 48_000,
                 bytes_received: 4_000,
+                loudness: Loudness {
+                    energy: 0.5,
+                    duration_s: 10.0,
+                },
                 ..Default::default()
             }),
             audio_bytes_sent: Some(1_000),
+            audio_source: Some(Loudness {
+                energy: 2.0,
+                duration_s: 30.0,
+            }),
             ..Default::default()
         };
         let cur = Counters {
@@ -568,8 +668,18 @@ mod tests {
                 jitter_buffer_emitted: 96_000,
                 bytes_received: 8_000,
                 jitter_s: 0.003,
+                // A second at a level of 0.1: −20 dBFS.
+                loudness: Loudness {
+                    energy: 0.51,
+                    duration_s: 11.0,
+                },
             }),
             audio_bytes_sent: Some(5_000),
+            // A second of silence from the mic.
+            audio_source: Some(Loudness {
+                energy: 2.0,
+                duration_s: 31.0,
+            }),
             ..Default::default()
         };
         let snap = snapshot(&prev, &cur, 1.0);
@@ -581,6 +691,45 @@ mod tests {
         assert_eq!(a.concealed_run_pct, 1.5);
         assert!((a.jitter_buffer_ms.unwrap() - 40.0).abs() < 1e-9);
         assert_eq!(a.jitter_ms, 3.0);
+        assert!((a.level_db.unwrap() + 20.0).abs() < 1e-6);
+        assert_eq!(snap.audio_send_db, Some(-100.0));
+    }
+
+    #[test]
+    fn muted_time_is_not_counted_as_made_up_audio() {
+        let report = |concealed, total| AudioInbound {
+            concealed_samples: concealed,
+            total_samples: total,
+            ..Default::default()
+        };
+        let mut muted = MutedTime::default();
+        let step = |muted: &mut MutedTime, concealed, total| {
+            let mut audio = report(concealed, total);
+            muted.apply(&mut audio);
+            (audio.concealed_samples, audio.total_samples)
+        };
+        // A second of voice with 1% made up.
+        assert_eq!(step(&mut muted, 480, 48_000), (480, 48_000));
+        // The sharer mutes partway through the next second: all of it is left out...
+        muted.set(true);
+        assert_eq!(step(&mut muted, 30_000, 96_000), (480, 48_000));
+        // ...and so is a fully muted second, and the one in which it unmutes.
+        assert_eq!(step(&mut muted, 78_000, 144_000), (480, 48_000));
+        muted.set(false);
+        assert_eq!(step(&mut muted, 100_000, 192_000), (480, 48_000));
+        // Voice again, with nothing made up: 480 of 96 000 over the call, not 100 000 of 240 000.
+        assert_eq!(step(&mut muted, 100_000, 240_000), (480, 96_000));
+    }
+
+    #[test]
+    fn no_level_without_new_audio() {
+        let sums = Loudness {
+            energy: 1.0,
+            duration_s: 5.0,
+        };
+        assert_eq!(sums.level_db(Some(sums)), None);
+        // The first report covers everything so far: a level of 1/√5 for 5 s.
+        assert!((sums.level_db(None).unwrap() + 6.9897).abs() < 1e-3);
     }
 
     #[test]
@@ -726,6 +875,15 @@ mod tests {
         let mut audio = rtc::InboundRtpStats::default();
         audio.stream.kind = "audio".into();
         audio.inbound.bytes_received = 9999;
+        audio.inbound.concealed_samples = 1000;
+        audio.inbound.total_audio_energy = 0.25;
+        audio.inbound.total_samples_duration = 4.0;
+        let mut mic = rtc::MediaSourceStats::default();
+        mic.source.kind = "audio".into();
+        mic.audio.total_audio_energy = 0.5;
+        mic.audio.total_samples_duration = 2.0;
+        let mut screen = rtc::MediaSourceStats::default();
+        screen.source.kind = "video".into();
 
         let pair = |id: &str, rtt: f64, nominated: bool| {
             let mut p = rtc::CandidatePairStats::default();
@@ -753,6 +911,8 @@ mod tests {
         let c = collect(&[
             RtcStats::InboundRtp(audio),
             RtcStats::InboundRtp(video),
+            RtcStats::MediaSource(screen),
+            RtcStats::MediaSource(mic),
             pair("P1", 0.5, true),
             pair("P2", 0.03, false),
             RtcStats::Transport(transport),
@@ -764,6 +924,11 @@ mod tests {
         assert_eq!(path.rtt_s, Some(0.03), "selected pair wins over nominated");
         assert_eq!(path.kind, "relay tcp");
         assert!(c.outbound.is_none());
+        let voice = c.audio_in.unwrap();
+        assert_eq!(voice.concealed_samples, 1000);
+        assert_eq!(voice.loudness.duration_s, 4.0);
+        let mic = c.audio_source.unwrap();
+        assert_eq!((mic.energy, mic.duration_s), (0.5, 2.0));
     }
 
     #[test]

@@ -354,7 +354,7 @@ impl Report {
     }
 }
 
-/// `FROM:TO` in seconds, for `--local-voice`.
+/// `FROM:TO` in seconds, for `--local-voice` and `--mute-for`.
 pub fn parse_window(text: &str) -> Result<(f64, f64), String> {
     let parsed = text
         .split_once(':')

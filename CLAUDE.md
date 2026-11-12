@@ -59,6 +59,11 @@ Fill these in as code lands; keep them accurate.
   without voice)
 - Voice: `share` and `view` send the mic and play the other side by default (`--audio off` to
   skip; bench scripts pass it). `tc-spike devices` lists devices for `--mic`/`--speaker`
+- Mute: `M` in the viewer (F8 while in control), ⌃⌥⌘M on the sharer from any app.
+  `--mute-for FROM:TO` mutes on a schedule, for scripts
+- Voice checks in one go: `bench/audio-acceptance.sh` (`STEPS="3 4"` for the two that make no
+  sound and need nobody at the Mac: mute both ways, and the screen's latency with voice off and
+  on; 1 and 2 play sound out loud, 5 presses ⌃⌥⌘M for real on an unlocked screen)
 - Voice through real speakers and mic, one Mac: `bench/audio-loopback.sh` (plays tones out loud
   for ~30 s: volume up, quiet room; mic access for the terminal)
 - Echo cancellation through real speakers and mic, one Mac: `bench/audio-echo.sh` (talks out

@@ -64,6 +64,7 @@ pub async fn run(
     config: ViewConfig,
     recorder: Arc<Mutex<Recorder>>,
     board: Arc<Mutex<Board>>,
+    voice_state: Arc<audio::VoiceState>,
     control: Option<ControlLink>,
     on_frame: impl Fn(DecodedFrame) + Send + Sync + 'static,
     shutdown: impl std::future::Future<Output = ()>,
@@ -75,7 +76,7 @@ pub async fn run(
         Room::connect(&config.url, &config.token, RoomOptions::default()).await?;
     tracing::info!(room = %room.name(), "connected as viewer");
     // Only the sharer's voice carries markers, so the viewer's has no ticks to follow.
-    let _voice = audio::start(
+    let voice = audio::start(
         &room,
         &config.audio,
         config.voice,
@@ -83,6 +84,7 @@ pub async fn run(
     )
     .await
     .map_err(ViewError::Voice)?;
+    let mut voice = audio::Session::new(voice, voice_state.clone());
 
     let link_tasks = control.map(|c| link::start(&room, c));
     let on_frame = Arc::new(on_frame);
@@ -100,10 +102,13 @@ pub async fn run(
     let started = Instant::now();
     let mut poller = Poller::new(Side::Subscriber);
     let mut stats_timer = tokio::time::interval(STATS_EVERY);
+    let mut device_timer = tokio::time::interval(audio::DEVICE_CHECK_EVERY);
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
             _ = &mut shutdown => break,
+            _ = voice_state.changed() => voice.apply_mute(),
+            _ = device_timer.tick() => voice.check_devices(),
             _ = stats_timer.tick(), if config.net_stats => {
                 if let Some(snap) = poller.poll(&room).await {
                     // The sharer's auto-throttle needs to know how the video arrives here.
@@ -117,49 +122,56 @@ pub async fn run(
                     board.lock().unwrap().local_update(started.elapsed().as_secs_f64(), snap);
                 }
             }
-            event = events.recv() => match event {
-                Some(RoomEvent::TrackSubscribed { track: RemoteTrack::Video(track), participant, .. }) => {
-                    tracing::info!(from = %participant.identity(), "video track subscribed");
-                    // Creating the timing stream installs the packet-trailer handler, which
-                    // is what delivers the sharer's capture timestamp with each frame.
-                    let _timing = track.subscribe_timing_events();
-                    let stream = NativeVideoStream::new(track.rtc_track());
-                    let probe = config
-                        .measure_quality
-                        .then(|| QualityProbe::start(recorder.clone()));
-                    tokio::spawn(receive_frames(
-                        stream,
-                        on_frame.clone(),
-                        probe,
-                        config.snapshots.clone(),
-                    ));
+            event = events.recv() => {
+                if let Some(muted) = event.as_ref().and_then(|e| voice.on_event(e)) {
+                    tracing::info!(muted, "the sharer's voice");
+                    recorder.lock().unwrap().audio.remote_muted(muted, Instant::now());
+                    poller.remote_muted(muted);
                 }
-                Some(RoomEvent::TrackSubscribed { track: RemoteTrack::Audio(track), participant, .. }) => {
-                    tracing::info!(from = %participant.identity(), "audio track subscribed");
-                    if config.measure_audio {
-                        tokio::spawn(audio::measure(track, recorder.clone()));
+                match event {
+                    Some(RoomEvent::TrackSubscribed { track: RemoteTrack::Video(track), participant, .. }) => {
+                        tracing::info!(from = %participant.identity(), "video track subscribed");
+                        // Creating the timing stream installs the packet-trailer handler, which
+                        // is what delivers the sharer's capture timestamp with each frame.
+                        let _timing = track.subscribe_timing_events();
+                        let stream = NativeVideoStream::new(track.rtc_track());
+                        let probe = config
+                            .measure_quality
+                            .then(|| QualityProbe::start(recorder.clone()));
+                        tokio::spawn(receive_frames(
+                            stream,
+                            on_frame.clone(),
+                            probe,
+                            config.snapshots.clone(),
+                        ));
                     }
-                }
-                Some(RoomEvent::DataReceived { payload, topic, .. })
-                    if topic.as_deref() == Some(wire::STATS_TOPIC) =>
-                {
-                    if let Some(snap) = wire::decode_stats(&payload) {
-                        board.lock().unwrap().remote = Some(snap);
+                    Some(RoomEvent::TrackSubscribed { track: RemoteTrack::Audio(track), participant, .. }) => {
+                        tracing::info!(from = %participant.identity(), "audio track subscribed");
+                        if config.measure_audio {
+                            tokio::spawn(audio::measure(track, recorder.clone()));
+                        }
                     }
-                }
-                Some(RoomEvent::DataReceived { payload, topic, .. })
-                    if topic.as_deref() == Some(wire::AUDIO_TOPIC) =>
-                {
-                    if let Some((id, at_us)) = wire::decode_audio_mark(&payload) {
-                        recorder.lock().unwrap().audio.emitted(id, at_us);
+                    Some(RoomEvent::DataReceived { payload, topic, .. })
+                        if topic.as_deref() == Some(wire::STATS_TOPIC) =>
+                    {
+                        if let Some(snap) = wire::decode_stats(&payload) {
+                            board.lock().unwrap().remote = Some(snap);
+                        }
                     }
+                    Some(RoomEvent::DataReceived { payload, topic, .. })
+                        if topic.as_deref() == Some(wire::AUDIO_TOPIC) =>
+                    {
+                        if let Some((id, at_us)) = wire::decode_audio_mark(&payload) {
+                            recorder.lock().unwrap().audio.emitted(id, at_us);
+                        }
+                    }
+                    Some(RoomEvent::Disconnected { reason }) => {
+                        tracing::warn!(?reason, "disconnected");
+                        break;
+                    }
+                    Some(_) => {}
+                    None => break,
                 }
-                Some(RoomEvent::Disconnected { reason }) => {
-                    tracing::warn!(?reason, "disconnected");
-                    break;
-                }
-                Some(_) => {}
-                None => break,
             }
         }
     }

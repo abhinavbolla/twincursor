@@ -2,6 +2,7 @@
 //! top-right corner so it never covers the latency marker (top-left).
 
 use font8x8::legacy::BASIC_LEGACY;
+use media::audio::VoiceStatus;
 use media::netstats::{Board, Limit, NetSnapshot, Quality};
 use media::stats::Summary;
 
@@ -29,8 +30,57 @@ impl Line {
     }
 }
 
+/// The voices, as the HUD shows them.
+#[derive(Debug, Clone, Default)]
+pub struct Voice {
+    pub status: VoiceStatus,
+    /// The sharer's voice, from its mic to our speakers, when a run measures it.
+    pub one_way_ms: Option<f64>,
+}
+
+/// The voice line: our mic, the sharer's voice, and how it arrives. `None` without any voice.
+fn voice_line(board: &Board, voice: &Voice) -> Option<Line> {
+    let local = board.local.as_ref();
+    let recv = local.and_then(|s| s.audio_recv.as_ref());
+    let status = &voice.status;
+    if !status.sending && status.remote_muted.is_none() && recv.is_none() {
+        return None;
+    }
+    let level = |db: Option<f64>| db.map_or("on".to_owned(), |db| format!("{db:.0} dB"));
+    let mic = if !status.sending {
+        "off".to_owned()
+    } else if status.muted {
+        "MUTED".to_owned()
+    } else {
+        level(local.and_then(|s| s.audio_send_db))
+    };
+    let sharer = match status.remote_muted {
+        None => "no voice".to_owned(),
+        Some(true) => "muted".to_owned(),
+        Some(false) => level(recv.and_then(|r| r.level_db)),
+    };
+    let mut text = format!("voice mic {mic}  sharer {sharer}");
+    let mut color = if status.muted { AMBER } else { WHITE };
+    // Nothing arrives from a muted sharer, so there is nothing to say about how it arrives.
+    if let Some(r) = recv.filter(|_| status.remote_muted != Some(true)) {
+        if let Some(ms) = r.jitter_buffer_ms {
+            text += &format!("  buffer {ms:.0} ms");
+        }
+        text += &format!("  made up {:.1}%", r.concealed_pct);
+        if r.concealed_pct >= 5.0 {
+            color = RED;
+        } else if r.concealed_pct >= 1.0 {
+            color = AMBER;
+        }
+    }
+    if let Some(ms) = voice.one_way_ms {
+        text += &format!("  one-way {ms:.0} ms");
+    }
+    Some(Line::new(text, color))
+}
+
 /// Text for the HUD. `rtt` is the tick round trip over the last report window.
-pub fn lines(board: &Board, rtt: Option<Summary>) -> Vec<Line> {
+pub fn lines(board: &Board, rtt: Option<Summary>, voice: &Voice) -> Vec<Line> {
     let mut out = Vec::new();
     let (badge, color) = match board.quality() {
         Some(Quality::Good) => ("GOOD", GREEN),
@@ -131,6 +181,7 @@ pub fn lines(board: &Board, rtt: Option<Summary>) -> Vec<Line> {
         }
         None => out.push(Line::new("send: waiting for sharer stats".to_owned(), GREY)),
     }
+    out.extend(voice_line(board, voice));
     out
 }
 
@@ -201,7 +252,7 @@ fn fill(pixels: &mut [u32], width: usize, (x1, y1): (usize, usize), x: usize, y:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use media::netstats::{RecvStats, SendStats};
+    use media::netstats::{AudioRecvStats, RecvStats, SendStats};
 
     #[test]
     fn draws_in_top_right_and_leaves_rest_untouched() {
@@ -261,7 +312,7 @@ mod tests {
             }),
             history: Vec::new(),
         };
-        let l = lines(&board, None);
+        let l = lines(&board, None, &Voice::default());
         assert!(
             l[0].text.starts_with("FAIR"),
             "2% loss is fair: {}",
@@ -275,11 +326,95 @@ mod tests {
             .text
             .contains("limit bandwidth  bandwidth est 8.1 Mbps  libvpx"));
         assert!(l.iter().all(|l| l.text.is_ascii()));
+        assert!(l.iter().all(|l| !l.text.starts_with("voice")), "no voice");
+    }
+
+    fn voice_board(send_db: Option<f64>, recv: Option<AudioRecvStats>) -> Board {
+        Board {
+            local: Some(NetSnapshot {
+                audio_send_db: send_db,
+                audio_recv: recv,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn voice_line_shows_levels_and_how_the_voice_arrives() {
+        let board = voice_board(
+            Some(-31.6),
+            Some(AudioRecvStats {
+                concealed_pct: 0.26,
+                jitter_buffer_ms: Some(44.4),
+                level_db: Some(-27.8),
+                ..Default::default()
+            }),
+        );
+        let voice = Voice {
+            status: VoiceStatus {
+                sending: true,
+                remote_muted: Some(false),
+                ..Default::default()
+            },
+            one_way_ms: Some(48.2),
+        };
+        let line = lines(&board, None, &voice).pop().unwrap();
+        assert_eq!(
+            line.text,
+            "voice mic -32 dB  sharer -28 dB  buffer 44 ms  made up 0.3%  one-way 48 ms"
+        );
+        assert_eq!(line.color, WHITE);
+        assert!(line.text.is_ascii());
+    }
+
+    #[test]
+    fn voice_line_says_who_is_muted() {
+        let mut voice = Voice {
+            status: VoiceStatus {
+                sending: true,
+                muted: true,
+                remote_muted: Some(true),
+                ..Default::default()
+            },
+            one_way_ms: None,
+        };
+        let board = voice_board(Some(-100.0), None);
+        let line = voice_line(&board, &voice).unwrap();
+        assert_eq!(line.text, "voice mic MUTED  sharer muted");
+        assert_eq!(line.color, AMBER);
+
+        // Listening only: no mic of our own, and the sharer hasn't sent a level yet.
+        voice.status = VoiceStatus {
+            remote_muted: Some(false),
+            ..Default::default()
+        };
+        let line = voice_line(&voice_board(None, None), &voice).unwrap();
+        assert_eq!(line.text, "voice mic off  sharer on");
+    }
+
+    #[test]
+    fn voice_line_warns_when_sound_is_made_up() {
+        let recv = |pct| {
+            Some(AudioRecvStats {
+                concealed_pct: pct,
+                ..Default::default()
+            })
+        };
+        let voice = Voice::default();
+        let color = |pct| {
+            voice_line(&voice_board(None, recv(pct)), &voice)
+                .unwrap()
+                .color
+        };
+        assert_eq!(color(0.5), WHITE);
+        assert_eq!(color(2.0), AMBER);
+        assert_eq!(color(7.0), RED);
     }
 
     #[test]
     fn empty_board_says_waiting() {
-        let l = lines(&Board::default(), None);
+        let l = lines(&Board::default(), None, &Voice::default());
         assert!(l[0].text.starts_with("...."));
         assert!(l.iter().any(|l| l.text.contains("waiting for sharer")));
     }

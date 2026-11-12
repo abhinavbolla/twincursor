@@ -21,6 +21,7 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use livekit::options::VideoCodec;
+use media::audio::AudioMode;
 use media::capture::{self, Backend, CaptureConfig, Tier};
 use media::publish::{self, AdaptConfig, ShareConfig, ShareStats};
 use media::token;
@@ -284,6 +285,9 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
         }),
     };
 
+    // A real mic gets the mute hotkey, which needs the app's event loop on the main thread.
+    let voice = args.voice.state();
+    let mute = matches!(config.audio, AudioMode::Mic(_)).then(|| voice.clone());
     let network = move |link| -> anyhow::Result<()> {
         let runtime = tokio::runtime::Runtime::new()?;
         runtime.block_on(async {
@@ -292,13 +296,22 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
             let shutdown = async {
                 let _ = tokio::signal::ctrl_c().await;
             };
-            let result = publish::run(config, stats, link, shutdown).await;
+            let result = publish::run(config, stats, voice, link, shutdown).await;
             reporter.abort();
             result.context("sharing failed")
         })
     };
     if !args.allow_control {
-        return network(None);
+        if mute.is_none() {
+            return network(None);
+        }
+        return match hotkey::SharerUi::new() {
+            Ok(ui) => ui.run(None, mute, move || network(None))?,
+            Err(e) => {
+                tracing::warn!("no {} to mute with: {e}", hotkey::MUTE);
+                network(None)
+            }
+        };
     }
     let revoke = control::RevokeSwitch::default();
     if args.headless {
@@ -313,7 +326,7 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
     }
     let ui = hotkey::SharerUi::new()?;
     let (sharer, link) = sharer::Sharer::start(&args.inject, revoke.clone(), Some(ui.overlay()))?;
-    let result = ui.run(revoke, move || network(Some(link)));
+    let result = ui.run(Some(revoke), mute, move || network(Some(link)));
     // Release anything a guest still holds before exiting.
     sharer.stop();
     result?

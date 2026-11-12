@@ -11,7 +11,7 @@ use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 
 use crate::adapt::{Adapter, BitrateCap};
-use crate::audio::{self, AudioMode, TickSlot, VoiceError, VoiceOptions};
+use crate::audio::{self, AudioMode, TickSlot, VoiceError, VoiceOptions, VoiceState};
 use crate::capture::{self, wall_clock_us, Backend, CaptureConfig, Frame, FrameBuffer, Tier};
 use crate::link::{self, ControlLink};
 use crate::netstats::{NetSnapshot, Poller, Side};
@@ -142,6 +142,7 @@ impl Mailbox {
 pub async fn run(
     config: ShareConfig,
     stats: Arc<ShareStats>,
+    voice_state: Arc<VoiceState>,
     control: Option<ControlLink>,
     shutdown: impl std::future::Future<Output = ()>,
 ) -> Result<(), ShareError> {
@@ -175,9 +176,10 @@ pub async fn run(
 
     // The voice is published once and never republished with the video.
     let audio_ticks = Arc::new(TickSlot::default());
-    let _voice = audio::start(&room, &config.audio, config.voice, audio_ticks.clone())
+    let voice = audio::start(&room, &config.audio, config.voice, audio_ticks.clone())
         .await
         .map_err(ShareError::Voice)?;
+    let mut voice = audio::Session::new(voice, voice_state.clone());
 
     let mailbox = Arc::new(Mailbox::default());
     let latest_tick = Arc::new(AtomicU32::new(NO_TICK));
@@ -242,10 +244,13 @@ pub async fn run(
 
     let mut poller = Poller::new(Side::Publisher);
     let mut stats_timer = tokio::time::interval(STATS_EVERY);
+    let mut device_timer = tokio::time::interval(audio::DEVICE_CHECK_EVERY);
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
             _ = &mut shutdown => break,
+            _ = voice_state.changed() => voice.apply_mute(),
+            _ = device_timer.tick() => voice.check_devices(),
             _ = stats_timer.tick(), if config.net_stats => {
                 if let Some(mut snap) = poller.poll(&room).await {
                     if let Some((adapter, cfg)) = adapter.as_mut() {
@@ -288,6 +293,15 @@ pub async fn run(
                 }
             }
             event = events.recv() => match event {
+                Some(event @ (RoomEvent::TrackSubscribed { .. }
+                | RoomEvent::TrackUnsubscribed { .. }
+                | RoomEvent::TrackMuted { .. }
+                | RoomEvent::TrackUnmuted { .. })) => {
+                    if let Some(muted) = voice.on_event(&event) {
+                        tracing::info!(muted, "the viewer's voice");
+                        poller.remote_muted(muted);
+                    }
+                }
                 Some(RoomEvent::DataReceived { payload, topic, participant, .. }) => {
                     if topic.as_deref() == Some(wire::STATS_TOPIC) {
                         viewer_net = wire::decode_stats(&payload);
