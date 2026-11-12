@@ -2,9 +2,11 @@
 //! permission check.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use clap::{Args, ValueEnum};
-use media::audio::{device, AudioMode, DeviceChoice, DeviceRef, VoiceOptions};
+use media::audio::{device, AudioMode, DeviceChoice, DeviceRef, VoiceOptions, VoiceState};
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum AudioArg {
@@ -41,6 +43,10 @@ pub struct VoiceArgs {
     /// Send each voice frame once, without the previous one as backup (RED).
     #[arg(long)]
     no_red: bool,
+    /// Mute the voice from FROM to TO seconds after starting, as FROM:TO, for scripted checks
+    /// (bench/audio-acceptance.sh).
+    #[arg(long, value_name = "FROM:TO", value_parser = crate::echo::parse_window)]
+    mute_for: Option<(f64, f64)>,
 }
 
 impl VoiceArgs {
@@ -71,6 +77,21 @@ impl VoiceArgs {
                 })
             }
         })
+    }
+
+    /// The mute state for this run, with `--mute-for`'s mute and unmute already on their way.
+    pub fn state(&self) -> Arc<VoiceState> {
+        let state = Arc::new(VoiceState::default());
+        if let Some((from, to)) = self.mute_for {
+            let state = state.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs_f64(from));
+                state.set_muted(true);
+                std::thread::sleep(Duration::from_secs_f64(to - from));
+                state.set_muted(false);
+            });
+        }
+        state
     }
 
     pub fn options(&self) -> VoiceOptions {

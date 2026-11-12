@@ -2,7 +2,7 @@
 //! sharer's emit times, and the video frames carrying the same tick.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -10,6 +10,8 @@ use crate::stats::{summarize, Summary};
 
 /// How long an unmatched entry waits for its other half.
 const TTL_SECS: f64 = 5.0;
+/// Sound already on its way when the sharer muted may still be heard for this long.
+const MUTE_GRACE: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Default)]
 pub struct AudioLog {
@@ -26,6 +28,15 @@ pub struct AudioLog {
     /// Burst heard − the same tick's video shown, in ms: positive when audio is later.
     pub av_offset: Vec<f64>,
     pub rejected: u64,
+    /// Since when the sharer's voice has been muted.
+    muted_since: Option<Instant>,
+    /// How often the sharer muted, and for how long in all, in ms.
+    pub mutes: u32,
+    pub muted_ms: f64,
+    /// Bursts heard while the sharer was muted: there should be none.
+    pub heard_while_muted: u32,
+    /// Bursts heard after the sharer unmuted again.
+    pub heard_after_unmute: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -37,6 +48,12 @@ pub struct AudioReport {
     pub bursts_rejected: u64,
     /// Share of received audio the jitter buffer had to make up, over the whole run.
     pub concealed_pct: Option<f64>,
+    /// How often the sharer muted its voice, and for how long in all.
+    pub mutes: u32,
+    pub muted_s: f64,
+    /// Bursts heard while it was muted (none should be), and after it unmuted.
+    pub heard_while_muted: u32,
+    pub heard_after_unmute: u32,
 }
 
 impl AudioLog {
@@ -70,6 +87,14 @@ impl AudioLog {
         if self.heard.contains_key(&id) {
             return;
         }
+        match self.muted_since {
+            Some(since) if at.saturating_duration_since(since) > MUTE_GRACE => {
+                self.heard_while_muted += 1;
+            }
+            Some(_) => {}
+            None if self.mutes > 0 => self.heard_after_unmute += 1,
+            None => {}
+        }
         if let Some(sent) = self.sent.remove(&id) {
             self.rtt
                 .push(at.saturating_duration_since(sent).as_secs_f64() * 1000.0);
@@ -81,6 +106,21 @@ impl AudioLog {
             self.push_one_way(emitted_us, wall_us);
         }
         self.heard.insert(id, (at, wall_us));
+    }
+
+    /// The sharer muted or unmuted its voice.
+    pub fn remote_muted(&mut self, muted: bool, at: Instant) {
+        match (muted, self.muted_since.take()) {
+            (true, None) => {
+                self.mutes += 1;
+                self.muted_since = Some(at);
+            }
+            (true, since) => self.muted_since = since,
+            (false, Some(since)) => {
+                self.muted_ms += at.saturating_duration_since(since).as_secs_f64() * 1000.0;
+            }
+            (false, None) => {}
+        }
     }
 
     fn push_one_way(&mut self, emitted_us: u64, heard_us: u64) {
@@ -107,6 +147,14 @@ impl AudioLog {
             bursts_heard: heard,
             bursts_rejected: self.rejected,
             concealed_pct: None,
+            mutes: self.mutes,
+            muted_s: (self.muted_ms
+                + self
+                    .muted_since
+                    .map_or(0.0, |s| s.elapsed().as_secs_f64() * 1000.0))
+                / 1000.0,
+            heard_while_muted: self.heard_while_muted,
+            heard_after_unmute: self.heard_after_unmute,
         })
     }
 }
@@ -122,7 +170,6 @@ fn signed_ms(from: Instant, to: Instant) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)
@@ -164,6 +211,27 @@ mod tests {
         assert!(log.report().is_none());
         log.rejected = 1;
         assert_eq!(log.report().unwrap().bursts_heard, 0);
+    }
+
+    #[test]
+    fn bursts_are_sorted_by_whether_the_sharer_was_muted() {
+        let t0 = Instant::now();
+        let mut log = AudioLog::default();
+        log.heard(1, t0, 0);
+        log.remote_muted(true, t0 + ms(1000));
+        // Already on its way when the sharer muted.
+        log.heard(2, t0 + ms(1200), 0);
+        // Muted again while muted changes nothing.
+        log.remote_muted(true, t0 + ms(2000));
+        log.heard(3, t0 + ms(3000), 0);
+        log.remote_muted(false, t0 + ms(5000));
+        log.heard(4, t0 + ms(6000), 0);
+        log.heard(5, t0 + ms(7000), 0);
+        assert_eq!((log.mutes, log.muted_ms), (1, 4000.0));
+        assert_eq!((log.heard_while_muted, log.heard_after_unmute), (1, 2));
+        log.rejected = 1;
+        let report = log.report().unwrap();
+        assert_eq!((report.mutes, report.muted_s), (1, 4.0));
     }
 
     #[test]

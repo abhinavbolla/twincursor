@@ -15,6 +15,7 @@ use clap::Args;
 use control::guest::GuestState;
 use livekit::webrtc::native::yuv_helper;
 use livekit::webrtc::video_frame::VideoBuffer;
+use media::audio::VoiceState;
 use media::capture::wall_clock_us;
 use media::latency::Recorder;
 use media::netstats::Board;
@@ -142,11 +143,13 @@ pub fn run(args: ViewArgs) -> anyhow::Result<()> {
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
 
     let config = view_config(&args)?;
+    let voice = args.voice.state();
     let (guest, link, guest_thread) = Guest::start(args.name.clone(), args.sent_log.as_deref())?;
     let network = {
         let latest = latest.clone();
         let recorder = recorder.clone();
         let board = board.clone();
+        let voice = voice.clone();
         let proxy = proxy.clone();
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -164,6 +167,7 @@ pub fn run(args: ViewArgs) -> anyhow::Result<()> {
                 config,
                 recorder,
                 board,
+                voice,
                 Some(link),
                 on_frame,
                 shutdown,
@@ -191,6 +195,8 @@ pub fn run(args: ViewArgs) -> anyhow::Result<()> {
         hud: !args.no_stats,
         recent_rtt: None,
         rtt_mark: 0,
+        voice,
+        voice_one_way: None,
         window: None,
         surface: None,
         size: (0, 0),
@@ -198,7 +204,7 @@ pub fn run(args: ViewArgs) -> anyhow::Result<()> {
         last_report: Instant::now(),
         frames_since_report: 0,
         guest: guest.clone(),
-        shown_state: GuestState::Idle,
+        shown: (GuestState::Idle, false),
         rect: Rect {
             x: 0,
             y: 0,
@@ -208,7 +214,10 @@ pub fn run(args: ViewArgs) -> anyhow::Result<()> {
         cursor: None,
         surface_size: (0, 0),
     };
-    tracing::info!("press F9 to ask for control, and F9 again to give it back");
+    tracing::info!(
+        "press F9 to ask for control, and F9 again to give it back; M mutes your mic (F8 while \
+         in control)"
+    );
     event_loop.run_app(&mut app)?;
 
     guest.stop(Duration::from_secs(2));
@@ -230,6 +239,10 @@ struct App {
     recent_rtt: Option<Summary>,
     /// Index into the recorder's RTT samples where the current report window starts.
     rtt_mark: usize,
+    /// Mute, and what is known about both voices.
+    voice: Arc<VoiceState>,
+    /// The sharer's voice, mic to speakers, over the last report window, when it's measured.
+    voice_one_way: Option<f64>,
     window: Option<Arc<Window>>,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
     /// Size we draw at: the frame size, or smaller if the frame doesn't fit on the monitor.
@@ -239,8 +252,8 @@ struct App {
     last_report: Instant,
     frames_since_report: u64,
     guest: Guest,
-    /// The control state the title last showed.
-    shown_state: GuestState,
+    /// The control state and whether the mic was muted, as the title last showed them.
+    shown: (GuestState, bool),
     /// Where the frame is drawn in the window.
     rect: Rect,
     /// The pointer in window pixels, while it's over the window.
@@ -297,6 +310,11 @@ impl ApplicationHandler<UserEvent> for App {
                             self.hud = !self.hud;
                         }
                     }
+                    KeyCode::F8 => {
+                        if pressed && !event.repeat {
+                            self.toggle_mute();
+                        }
+                    }
                     _ if controlling => {
                         let text = if pressed {
                             input::key_text(event.text.as_deref())
@@ -310,9 +328,12 @@ impl ApplicationHandler<UserEvent> for App {
                         }));
                     }
                     _ => {
-                        let is_s = matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("s"));
-                        if pressed && is_s {
+                        let is = |key: &str| matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case(key));
+                        if pressed && is("s") {
                             self.hud = !self.hud;
+                        }
+                        if pressed && !event.repeat && is("m") {
+                            self.toggle_mute();
                         }
                     }
                 }
@@ -452,7 +473,11 @@ impl App {
             rect.h as i32,
         );
         if self.hud {
-            let lines = hud::lines(&self.board.lock().unwrap(), self.recent_rtt);
+            let voice = hud::Voice {
+                status: self.voice.status(),
+                one_way_ms: self.voice_one_way,
+            };
+            let lines = hud::lines(&self.board.lock().unwrap(), self.recent_rtt, &voice);
             hud::draw(&mut buffer, w as usize, h as usize, &lines);
         }
         buffer.present().expect("present");
@@ -475,18 +500,36 @@ impl App {
         self.size = (size.width, size.height);
     }
 
-    /// Shows in the title whether this guest has control, so they never type blind.
-    fn show_state(&mut self) {
-        let state = self.guest.status.get();
-        if state == self.shown_state {
+    /// Mutes or unmutes this side's mic.
+    fn toggle_mute(&mut self) {
+        if !self.voice.status().sending {
+            tracing::info!("your mic isn't on in this call (--audio), so there is nothing to mute");
             return;
         }
-        self.shown_state = state;
-        let title = match state {
+        if self.voice.toggle_mute() {
+            tracing::info!("your mic is muted (M, or F8 while in control, unmutes)");
+        } else {
+            tracing::info!("your mic is on");
+        }
+    }
+
+    /// Shows in the title whether this guest has control, so they never type blind, and
+    /// whether their mic is muted, so they never talk to no one.
+    fn show_state(&mut self) {
+        let state = self.guest.status.get();
+        let muted = self.voice.wants_muted() && self.voice.status().sending;
+        if (state, muted) == self.shown {
+            return;
+        }
+        self.shown = (state, muted);
+        let mut title = match state {
             GuestState::Idle => format!("{TITLE} (F9 asks for control)"),
             GuestState::Requested => format!("{TITLE}: asking for control…"),
             GuestState::InControl => format!("{TITLE}: you're in control (F9 gives it back)"),
         };
+        if muted {
+            title += " · mic muted";
+        }
         if let Some(window) = &self.window {
             window.set_title(&title);
         }
@@ -495,17 +538,29 @@ impl App {
 
     fn report(&mut self) {
         let fps = self.frames_since_report as f64 / self.last_report.elapsed().as_secs_f64();
-        self.recent_rtt = log_report(&self.recorder, &self.board, &mut self.rtt_mark, fps);
+        let mut voice = hud::Voice {
+            status: self.voice.status(),
+            one_way_ms: None,
+        };
+        self.recent_rtt = log_report(
+            &self.recorder,
+            &self.board,
+            &mut voice,
+            &mut self.rtt_mark,
+            fps,
+        );
+        self.voice_one_way = voice.one_way_ms;
         self.last_report = Instant::now();
         self.frames_since_report = 0;
     }
 }
 
 /// Logs the latency, quality and network summary for the last window. Returns the round trip
-/// over that window, which the HUD shows.
+/// over that window, which the HUD shows, and fills in the voice's measured one-way delay.
 fn log_report(
     recorder: &Mutex<Recorder>,
     board: &Mutex<Board>,
+    voice: &mut hud::Voice,
     rtt_mark: &mut usize,
     fps: f64,
 ) -> Option<Summary> {
@@ -548,6 +603,7 @@ fn log_report(
             stream.out_of_order,
         );
     }
+    voice.one_way_ms = report.audio.as_ref().and_then(|a| a.one_way).map(|s| s.p50);
     if let Some(audio) = &report.audio {
         tracing::info!(
             "  audio: RTT {} | one-way {} | A/V {} | heard {} rejected {}",
@@ -558,7 +614,7 @@ fn log_report(
             audio.bursts_rejected,
         );
     }
-    for line in hud::lines(&board.lock().unwrap(), recent) {
+    for line in hud::lines(&board.lock().unwrap(), recent, voice) {
         tracing::info!("  {}", line.text);
     }
     recent
@@ -570,6 +626,7 @@ fn run_headless(args: ViewArgs) -> anyhow::Result<()> {
     let board = Arc::new(Mutex::new(Board::default()));
     let frame_size = Arc::new(Mutex::new((0u32, 0u32)));
     let config = view_config(&args)?;
+    let voice = args.voice.state();
     let started = Instant::now();
 
     let on_frame = {
@@ -614,7 +671,7 @@ fn run_headless(args: ViewArgs) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
         let reporter = {
-            let (recorder, board) = (recorder.clone(), board.clone());
+            let (recorder, board, voice) = (recorder.clone(), board.clone(), voice.clone());
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(REPORT_EVERY);
                 interval.tick().await;
@@ -624,7 +681,11 @@ fn run_headless(args: ViewArgs) -> anyhow::Result<()> {
                     let total = recorder.lock().unwrap().frames;
                     let fps = (total - frames) as f64 / REPORT_EVERY.as_secs_f64();
                     frames = total;
-                    log_report(&recorder, &board, &mut rtt_mark, fps);
+                    let mut voice = hud::Voice {
+                        status: voice.status(),
+                        one_way_ms: None,
+                    };
+                    log_report(&recorder, &board, &mut voice, &mut rtt_mark, fps);
                 }
             })
         };
@@ -648,6 +709,7 @@ fn run_headless(args: ViewArgs) -> anyhow::Result<()> {
             config,
             recorder.clone(),
             board.clone(),
+            voice,
             link,
             on_frame,
             shutdown,

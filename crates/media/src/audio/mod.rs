@@ -5,7 +5,11 @@
 //! voices that need no device or permission: marker tones ([`AudioMode::Pattern`]), so latency can
 //! be measured headless and in the network lab, and a recording ([`AudioMode::File`]), so the
 //! other side's echo cancellation can be checked with speech.
+//!
+//! Either side can mute its voice ([`control`]); the other side is told. [`Session`] is the
+//! part of that both session loops share.
 
+pub mod control;
 pub mod device;
 pub mod marker;
 pub mod measure;
@@ -15,7 +19,7 @@ pub mod wav;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use livekit::options::{AudioEncoding, TrackPublishOptions};
@@ -27,6 +31,7 @@ use livekit::webrtc::audio_stream::native::NativeAudioStream;
 use crate::capture::wall_clock_us;
 use crate::latency::Recorder;
 use crate::wire;
+pub use control::{VoiceState, VoiceStatus};
 pub use device::{DeviceChoice, DeviceRef, Devices};
 pub use tone::{TickSlot, ToneSource};
 
@@ -57,6 +62,109 @@ pub enum Voice {
         publication: LocalTrackPublication,
         feeder: ToneSource,
     },
+}
+
+impl Voice {
+    fn publication(&self) -> &LocalTrackPublication {
+        match self {
+            Self::Mic { publication, .. }
+            | Self::Pattern { publication, .. }
+            | Self::Recording { publication, .. } => publication,
+        }
+    }
+}
+
+/// How often to look for devices that have gone or a system default that has moved.
+pub const DEVICE_CHECK_EVERY: Duration = Duration::from_secs(2);
+
+/// A side's voice during a call: applies mute, follows the other side's, and keeps the devices
+/// current. The session loop owns it and calls in; [`VoiceState`] is how the rest of the app
+/// asks for mute and reads what is true.
+pub struct Session {
+    voice: Option<Voice>,
+    state: Arc<VoiceState>,
+}
+
+impl Session {
+    pub fn new(voice: Option<Voice>, state: Arc<VoiceState>) -> Self {
+        let session = Self { voice, state };
+        session.state.update(|status| {
+            status.sending = session.voice.is_some();
+        });
+        session.note_devices();
+        // Mute asked for before the track existed counts from the first frame.
+        session.apply_mute();
+        session
+    }
+
+    /// Mutes or unmutes the track to match what was last asked for. Call when
+    /// [`VoiceState::changed`] resolves.
+    pub fn apply_mute(&self) {
+        let Some(voice) = &self.voice else { return };
+        let muted = self.state.wants_muted();
+        let publication = voice.publication();
+        if publication.is_muted() == muted {
+            return;
+        }
+        // Muting the publication stops the track's sound at the source and tells the server,
+        // which tells the other side.
+        if muted {
+            publication.mute();
+        } else {
+            publication.unmute();
+        }
+        self.state.update(|status| status.muted = muted);
+        tracing::info!(muted, "voice");
+    }
+
+    /// Follows the other side's voice track. Returns `Some(muted)` when its mute state changed.
+    pub fn on_event(&self, event: &RoomEvent) -> Option<bool> {
+        let remote_muted = match event {
+            RoomEvent::TrackSubscribed { publication, .. }
+                if publication.kind() == TrackKind::Audio =>
+            {
+                Some(publication.is_muted())
+            }
+            RoomEvent::TrackMuted {
+                participant: Participant::Remote(_),
+                publication,
+            } if publication.kind() == TrackKind::Audio => Some(true),
+            RoomEvent::TrackUnmuted {
+                participant: Participant::Remote(_),
+                publication,
+            } if publication.kind() == TrackKind::Audio => Some(false),
+            RoomEvent::TrackUnsubscribed { publication, .. }
+                if publication.kind() == TrackKind::Audio =>
+            {
+                None
+            }
+            _ => return None,
+        };
+        let before = self.state.status().remote_muted;
+        self.state
+            .update(|status| status.remote_muted = remote_muted);
+        (before != remote_muted).then_some(remote_muted).flatten()
+    }
+
+    /// Moves to the system default when the mic or speakers in use are gone. Call every
+    /// [`DEVICE_CHECK_EVERY`].
+    pub fn check_devices(&mut self) {
+        if let Some(Voice::Mic { devices, .. }) = &mut self.voice {
+            if devices.recheck() {
+                self.note_devices();
+            }
+        }
+    }
+
+    fn note_devices(&self) {
+        if let Some(Voice::Mic { devices, .. }) = &self.voice {
+            let (mic, speaker) = devices.in_use();
+            self.state.update(|status| {
+                status.mic = Some(mic.to_owned());
+                status.speaker = Some(speaker.to_owned());
+            });
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -105,12 +213,8 @@ pub async fn start(
             let devices = Devices::open(choice)?;
             let track = LocalAudioTrack::create_audio_track("voice", devices.source());
             let publication = publish(room, track, options).await?;
-            tracing::info!(
-                mic = devices.mic.as_deref().unwrap_or("system default"),
-                speaker = devices.speaker.as_deref().unwrap_or("system default"),
-                ?options,
-                "voice track published (mic)"
-            );
+            let (mic, speaker) = devices.in_use();
+            tracing::info!(mic, speaker, ?options, "voice track published (mic)");
             Some(Voice::Mic {
                 devices,
                 publication,
