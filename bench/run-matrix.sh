@@ -90,7 +90,8 @@ echo "=== summary (ms)"
 {
   printf 'label\tfps\trtt_p50\trtt_p95\toneway_p50\toneway_p95\tticks\n'
   for f in bench/results/*.json; do
-    jq -r '[.label, (.avg_fps|floor),
+    # Other tools' results (tc-spike listen) share the folder and have no video in them.
+    jq -r 'select(.avg_fps) | [.label, (.avg_fps|floor),
             (.report.rtt_presented.p50 // 0 | floor), (.report.rtt_presented.p95 // 0 | floor),
             (.report.one_way_presented.p50 // 0 | floor), (.report.one_way_presented.p95 // 0 | floor),
             "\(.report.ticks_seen)/\(.report.ticks_sent)"] | @tsv' "$f"
