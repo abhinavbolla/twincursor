@@ -293,6 +293,35 @@ Levels are the 95th percentile of 10 ms slices unless they say otherwise. The ch
 - **The echo reaches the mic about 100 ms after the canceller sees the sound** (device buffers,
   air, mic), well inside what it handles.
 
+### Mute and devices
+
+`bench/audio-acceptance.sh` checks mute both ways, headless. The sharer mutes its synthetic voice
+for 5 s of a 20 s call:
+
+| | Result |
+|---|---|
+| Time the viewer saw the sharer as muted | 5.0 s |
+| Markers heard while muted | 0 |
+| Markers heard before and after | 28 and 33 |
+| The screen, capture to decode p50, voice off | 11.9 ms |
+| The same with voice on | 12.5 ms |
+
+The other way round, the viewer mutes its real mic and the sharer is told of the mute and of the
+unmute.
+
+- **A muted voice would read as a broken link.** A muted track sends nothing, and WebRTC counts
+  the silence the jitter buffer fills in as concealed: 100% for each muted second, and 21% for
+  that 20 s call. Concealment therefore leaves out the seconds in which the other side was
+  muted. With that, the same call reports 0.0%.
+- **Watching for device changes costs about 5 ms every 2 s**, off the media path: listing the
+  mics or the speakers takes 1.5–3.8 ms each on a MacBook.
+- **Switching devices mid-call doesn't drop the voice.** With the named mic and speakers taken
+  out of the list the call sees, as if unplugged, it moved both to the system default and the mic
+  kept sending: 59 kbit/s in the second of the switch, 63–68 kbit/s in the others.
+- **Picking speakers by name used to fail when the other side was already talking**: playout had
+  started, and WebRTC refuses to set a device that is running. Selection now uses the SDK's live
+  switch, which stops, changes and restarts it.
+
 ## Network lab
 
 Sharer, viewer and LiveKit run in Docker on one Mac, with conditions applied by `tc netem`. It uses
@@ -460,6 +489,13 @@ TAG=24k-nored SHARE_FLAGS="--voice-kbps 24 --no-red" bench/netlab/run.sh wifi-ba
 AUDIO=off bench/netlab/run.sh lan wifi-bad hotel
 ```
 
+Mute both ways, and the screen's latency with voice off and on, with no sound and nobody at the
+Mac (the other steps play sound out loud or press the mute hotkey for real):
+
+```bash
+STEPS="3 4" bench/audio-acceptance.sh
+```
+
 Results land in `bench/results/`. Two machines take a few more steps: see [Try it](../README.md#try-it),
 then run the viewer with `--headless --measure-input`.
 
@@ -470,6 +506,7 @@ then run the viewer with `--headless --measure-input`.
 - With AWDL off, or the router on channel 44 or 149
 - Text quality on real anti-aliased screens over a real network
 - Voice mouth to ear between two machines, and through headphones
+- A device really unplugged mid-call (headphones, AirPods), on macOS and on Windows
 - Linux
 
 If you can run any of these, we'd love your numbers. See

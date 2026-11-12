@@ -142,6 +142,19 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
   and the network lab use.
 - macOS asks for microphone access the first time. Without it CoreAudio records silence rather
   than failing, so `tc-spike` checks the permission first and says where to turn it on.
+- **Mute** is LiveKit's track mute: the track goes silent at the source, and the server tells
+  the other side, so each end can show that the other is muted. The viewer mutes with `M`, or
+  F8 while in control (when `M` would be typed on the sharer's machine), and its window title
+  says so. The sharer has no window, so its key is a global hotkey, ⌃⌥⌘M, which works from any
+  app. A key press only records the wish (`VoiceState`); the session loop that owns the track
+  applies it.
+- **Devices come and go mid-call.** The SDK doesn't report changes, so each side looks at the
+  device list every 2 s (about 5 ms). If a mic or speakers picked by name are gone, it moves to
+  the system default; on the system default, it follows the system when that moves to another
+  device (headphones plugged in, AirPods back in their case). The decision is a pure function
+  (`device::fallback`), tested against fake device lists.
+- Devices are selected with the SDK's live switch, also when joining: if the other side is
+  already talking, playout has started, and a plain "set" is refused once a device is running.
 
 ### 6. Server
 - Rust + axum + Postgres. Handles accounts, teams, rooms, and issuing LiveKit access tokens.
@@ -186,7 +199,9 @@ reports:
 - **one way:** burst started → heard. The sharer sends each burst's start time on `tc.audio`, so
   this needs a shared clock, like the video's one way;
 - **A/V offset:** a tick's burst heard minus its video frame shown;
-- **concealment:** the share of audio the receiver had to make up, from WebRTC's stats.
+- **concealment:** the share of audio the receiver had to make up, from WebRTC's stats. Time
+  the other side spent muted is left out: a muted track sends nothing, and WebRTC counts all of
+  that silence as made up.
 
 The synthetic voice needs no mic or permission, so it runs headless and in the network lab. It
 skips echo cancellation and the device buffers, which only real devices have.
@@ -356,6 +371,19 @@ ends. `connection_quality` grades the call Good/Fair/Poor; the worst signal wins
 The viewer draws this as a HUD in the top-right corner (away from the latency marker) and
 writes the per-second history into the results JSON (`net`). `--no-stats` turns it all off,
 for A/B latency runs.
+
+With voice in the call the HUD ends with a voice line:
+
+```
+voice mic -32 dB  sharer -28 dB  buffer 44 ms  made up 0.3%
+```
+
+- `mic` and `sharer` are how loud each voice was over the last second (RMS, dBFS), from
+  WebRTC's own running sums, so a mic that picks up nothing shows as one. They read `MUTED`
+  and `muted` instead while either side is muted, and the line turns amber while you are.
+- `buffer` is how long the sharer's voice waits in the jitter buffer; `made up` is concealment,
+  amber from 1% and red from 5%.
+- When a run measures it (`--measure-audio`), the voice's one-way delay is added.
 
 SDK quirk: with current LiveKit servers the SDK uses one peer connection for both directions
 and reports it as `publisher_stats`; `subscriber_stats` is then empty. The poller handles both.
