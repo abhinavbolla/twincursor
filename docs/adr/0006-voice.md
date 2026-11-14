@@ -47,11 +47,16 @@ Three things shaped the design:
   The SDK doesn't report changes, so each side checks every 2 s.
 
 ## Consequences
-- **Mouth to ear is past the 150 ms comfort limit on built-in speakers, with no network at all:**
-  155–159 ms on one MacBook. About 100 ms of it comes after the jitter buffer: WebRTC's playout
-  buffer, which the SDK doesn't let us size, and the speakers' and mic's own processing. The
-  jitter buffer and the playout buffer are the places to tune; headphones skip the speakers'
-  share.
+- **Mouth to ear is past the 150 ms comfort limit on built-in speakers, with no network at all,**
+  and nothing this SDK version lets us set brings it under. It's about 180–190 ms on one
+  MacBook: the loopback's 155–159 ms, plus the talker's recording buffer and the 15 ms the echo
+  canceller and noise suppressor add, which the loopback skips. The
+  [budget](../performance.md#where-the-time-goes) puts it in places that aren't settings: the
+  hardware's own 48 ms; WebRTC's macOS device layer, with buffers fixed at compile time; the
+  processing; the jitter buffer, already at its 20 ms floor; and Opus's 20 ms frames, set during
+  negotiation. 10 ms frames save 11 ms (measured with a local SDK patch). The rest would have to
+  come from a device layer with smaller buffers. Both are changes below the SDK, and neither is
+  done yet.
 - **The first words of a call come back as echo** for 2–3 s, while the canceller learns the
   room. After that it removes 46–53 dB on a MacBook's own speakers and mic.
 - **Talking over each other clips words.** The canceller ducks the local voice while the far end

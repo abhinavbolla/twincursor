@@ -17,6 +17,7 @@ Wi-Fi 6 AX201. LiveKit runs on the Mac. TwinCursor is pre-release, so expect the
 | Delay the input path adds | Under 1 ms on top of the network |
 | Voice on one Mac, sound sent → played | 45–54 ms typical, screen latency unchanged |
 | Voice on one Mac, out of real speakers into a mic | 155–159 ms typical, 178–204 ms at p95 |
+| Voice mouth to ear, built-in mic and speakers | About 180–190 ms, [stage by stage](#where-the-time-goes) |
 | Echo removed, a MacBook's own speakers and mic | 46–53 dB once the canceller has settled |
 
 **Round trip** is the remote-control loop: the viewer sends a tick, the sharer stamps it into the
@@ -177,9 +178,11 @@ All 243 bursts were heard in each run. On a quiet machine, one way holds at abou
   would add the voice's 45–50 ms lag to every frame. It doesn't here: the screen's round trip is
   the same with voice on. Audio trailing the screen by 50 ms is fine for pairing, since nobody
   lip-reads a code editor.
-- **The jitter buffer is most of the delay.** It holds about 30 ms even on one machine, about 60%
-  of the one-way time, and grows for a while after any late packets. That's the first thing to
-  tune.
+- **The jitter buffer is most of the delay, and it's already at its floor.** It holds about
+  30 ms even on one machine, about 60% of the one-way time. On a steady link WebRTC aims for
+  20 ms, its minimum, and each packet waits a further 10 ms on average while the first half of it
+  plays. It grows for a while after any late packets (see
+  [Where the time goes](#where-the-time-goes)).
 - **Voice costs about 66 kbit/s on the wire,** twice the 32 kbit/s Opus bitrate: LiveKit's
   redundant audio (RED) repeats each packet in the next one, so one lost packet costs nothing.
 
@@ -216,16 +219,71 @@ raw mic recording, on one MacBook Pro with its built-in speakers and mic. Two 30
 
 - **Most of the delay is after the network.** Played and recorded by macOS directly
   (AVAudioEngine, a beep scheduled for a known time), the built-in speakers to the built-in mic
-  take 48 ms, steady to 1 ms. The speakers and mic do their own signal processing, which is
-  where that goes. That leaves about 55 ms between WebRTC taking a frame from the jitter buffer
-  and the sound reaching macOS's output. That's most likely WebRTC's own macOS playout buffer,
-  which the SDK doesn't let us size.
+  take 48 ms, steady to 1 ms, which is what the two devices report about themselves (31 ms for
+  the mic, 17 ms for the speakers, from `bench/audio/device-latency.swift`). That leaves about
+  55 ms between WebRTC taking a frame from the jitter buffer and the sound reaching macOS's
+  output: WebRTC's own macOS playout buffers (below).
 - **It's already past the 150 ms comfort limit**, with no network at all. On top of this, the
-  talker's mic adds WebRTC's recording buffer, which the loopback leaves out (it records with its
-  own mic path, standing in for the talker's). The jitter buffer, the playout buffer and the
-  built-in speakers are the three places left to look; headphones skip the last.
+  talker's mic adds WebRTC's recording buffer, which the loopback leaves out: the sharer's tones
+  go straight to the encoder.
 - **The recorder's clock is checked.** Its timestamps are when each buffer's first sample was
   captured, not when it arrived: they are 100–112 ms old when the 100 ms buffer is delivered.
+
+### Where the time goes
+
+Mouth to ear on one MacBook Pro, built-in mic and speakers, both ends on the same Mac. Each stage
+says where its number comes from:
+
+| Stage | Time | From |
+|---|---|---|
+| The talker's mic: hardware and driver | 31 ms | What the device reports (`bench/audio/device-latency.swift`) |
+| WebRTC's recording buffer | 10–20 ms | WebRTC's macOS device code: a 20 ms I/O buffer, read in 10 ms blocks |
+| Echo cancellation, noise suppression, gain control | 15 ms | Measured offline (`crates/media/tests/voice_processing.rs`) |
+| Opus's 20 ms frames, encoding, the server, decoding | 21 ms | Measured: synthetic one way minus the jitter buffer |
+| The jitter buffer | 30 ms | Measured: WebRTC's stats; it aims for 20 ms, its floor |
+| WebRTC's playout buffers | 55 ms | Measured: the loopback's rest minus the hardware |
+| The speakers: hardware and driver | 17 ms | What the device reports |
+| **Mouth to ear** | **about 180–190 ms** | The loopback's 155–159 ms plus the two stages it skips |
+
+The loopback leaves out the recording buffer and the processing, because the sharer's tones go
+straight to the encoder. Without those two, the stages add up to 155 ms, which is what the
+loopback measures.
+
+- **None of it is a setting in this SDK.** WebRTC's macOS device layer has a 20 ms I/O buffer and a
+  30 ms ring buffer on the way out, and a 20 ms I/O buffer on the way in. These are constants in
+  the prebuilt libwebrtc. The jitter buffer is at its floor. Opus's frame length comes from the
+  server's answer during negotiation, and the SDK doesn't let us change it.
+- **The processing delay comes from two modules.** On their own, noise suppression adds 7 ms and
+  echo cancellation 9 ms. The high-pass filter adds 1 ms and gain control none. Echo cancellation
+  has to stay for speakers. The SDK has no switch for noise suppression on a desktop mic track.
+- **10 ms Opus frames save 11 ms.** We checked this with a local SDK patch that adds `ptime=10` to
+  the Opus parameters in the server's answer, so the sender encodes 10 ms frames: 100 packets
+  per second instead of 50. Six interleaved pairs of 30 s synthetic runs on 2026-11-14 (load
+  average 1–3), 1080p H.264 alongside:
+
+  | | 20 ms frames | 10 ms frames |
+  |---|---|---|
+  | One way p50, median of runs | 52.3 ms | 40.9 ms |
+  | One way p50, range | 48.5–56.0 ms | 32.4–46.2 ms |
+  | Jitter buffer target | 20 ms | 20 ms (27.7 in two runs) |
+  | Bursts heard | 121 of 121 | 121 of 121 |
+
+  The jitter buffer doesn't go lower with shorter packets. The saving is in how long the encoder
+  waits for a full frame. The cost is twice the packets: about 24 kbit/s more of headers each
+  way (IP, UDP, RTP and SRTP, about 60 bytes a packet). This is estimated from the packet rate
+  and hasn't been measured on the wire. How it does under loss with RED hasn't been checked in the lab.
+- **What getting under 150 ms would take.** 10 ms frames bring the estimate to about
+  170–180 ms. The rest has to come from WebRTC's device buffers: up to about 35 ms on the way out
+  and 10 on the way in, read from WebRTC's code rather than measured. There are three ways to get
+  there. We can build libwebrtc ourselves with smaller buffers. The SDK can use the AVAudioEngine
+  device that the prebuilt libwebrtc already contains (`CreateAudioEngineDeviceModule`), but its
+  delay and echo cancellation are unmeasured. Or we can drive Core Audio and WebRTC's processing
+  ourselves, which reverses [ADR 0006](adr/0006-voice.md). Each one is a change below the SDK, and each
+  can only be confirmed out loud.
+- **One run isn't a result here either.** One-way p50 moves by up to 10 ms between runs of the
+  same code on a quiet Mac. The sharer's voice thread and the receiver's playout each tick every
+  10 ms, with an offset that changes from run to run, which is the likely cause. Compare medians
+  over several interleaved runs.
 
 ### Echo and noise
 
@@ -465,6 +523,14 @@ keep the room quiet:
 
 ```bash
 bench/audio-loopback.sh
+```
+
+The other stages of the voice budget need no sound. A `view --measure-audio` results file has the
+jitter buffer's held and target delay and the voice packet rate every 10 s (`net[].local.audio_recv`):
+
+```bash
+swiftc -O -o /tmp/device-latency bench/audio/device-latency.swift && /tmp/device-latency
+cargo test --release -p twincursor-media --test voice_processing what_the_processing -- --nocapture
 ```
 
 Remote control end to end, with nothing injected for real:
