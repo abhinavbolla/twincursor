@@ -3,7 +3,7 @@
 //! WebRTC's built-in audio processing), so these show what a call gets, without a mic.
 
 use livekit::webrtc::native::apm::AudioProcessingModule;
-use media::audio::marker::Generator;
+use media::audio::marker::{Detector, Generator};
 
 const RATE: usize = 48_000;
 const FRAME: usize = RATE / 100;
@@ -263,4 +263,85 @@ fn cancels_sudden_sounds_after_silence() {
         // than a real speaker and mic get, this drops to 1–2 dB.
         assert!(down >= 15.0, "burst at {second}.5 s only {down:.1} dB down");
     }
+}
+
+/// How far behind the talker's voice `apm` puts it, in ms, with the far end quiet: where the
+/// output lines up best with the input. Marker bursts make the alignment sharp, and each burst's
+/// start, timed by the detector, has to agree with it.
+fn processing_delay_ms(mut apm: AudioProcessingModule) -> f64 {
+    let mut near = vec![0i16; 12 * RATE];
+    let mut generator = Generator::default();
+    for (k, frame) in near.chunks_mut(FRAME).enumerate() {
+        if k % 50 == 25 {
+            generator.start(k as u32);
+        }
+        generator.fill(frame);
+    }
+    let out = process(&mut apm, &vec![0i16; near.len()], &near);
+    let lag = (0..=30 * RATE / 1000)
+        .max_by_key(|&lag| {
+            let dot: f64 = (0..6 * RATE)
+                .map(|i| f64::from(near[i]) * f64::from(out[i + lag]))
+                .sum();
+            dot as i64
+        })
+        .unwrap();
+    let delay_ms = lag as f64 * 1000.0 / RATE as f64;
+
+    let went_in = Detector::default().push(&near);
+    let came_out = Detector::default().push(&out);
+    let mut matched = 0;
+    for h in &came_out {
+        let Some(before) = went_in.iter().find(|b| b.id == h.id) else {
+            continue;
+        };
+        let burst_ms = (h.at as f64 - before.at as f64) * 1000.0 / RATE as f64;
+        // The detector steps 2.5 ms at a time.
+        assert!(
+            (burst_ms - delay_ms).abs() <= 2.5,
+            "burst {} {burst_ms:.1} ms late, against {delay_ms:.1} ms overall",
+            h.id
+        );
+        matched += 1;
+    }
+    assert!(
+        matched * 10 >= went_in.len() * 8,
+        "{matched} of {} bursts came through",
+        went_in.len()
+    );
+    delay_ms
+}
+
+#[test]
+fn what_the_processing_adds_to_mouth_to_ear() {
+    // The talker's voice passes through the processing on its way to the encoder, so this delay
+    // is part of mouth to ear. The loopback check (bench/audio-loopback.sh) leaves it out: the
+    // sharer's tones go straight to the encoder.
+    let everything = processing_delay_ms(apm(true, true, true));
+    let filter = processing_delay_ms(apm(false, false, false));
+    let noise = processing_delay_ms(apm(false, false, true));
+    let echo = processing_delay_ms(apm(true, false, false));
+    let gain = processing_delay_ms(apm(false, true, false));
+    eprintln!(
+        "processing delay: everything {everything:.1} ms; on their own: high-pass filter \
+         {filter:.1}, noise suppression {noise:.1}, echo cancellation {echo:.1}, gain {gain:.1}"
+    );
+    // Measured: 15 ms with everything on, as on a mic track: 7 for noise suppression, 9 for echo
+    // cancellation, 1 for the high-pass filter, which runs in every case, and 0 for gain.
+    assert!(
+        (14.0..=16.0).contains(&everything),
+        "everything on: {everything:.1} ms"
+    );
+    assert!(
+        (6.0..=8.0).contains(&noise),
+        "noise suppression: {noise:.1} ms"
+    );
+    assert!(
+        (8.0..=10.0).contains(&echo),
+        "echo cancellation: {echo:.1} ms"
+    );
+    assert!(
+        filter <= 2.0 && gain <= 2.0,
+        "filter {filter:.1} ms, gain {gain:.1} ms"
+    );
 }
