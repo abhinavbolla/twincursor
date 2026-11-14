@@ -30,8 +30,11 @@ Read before larger work:
 
 ```
 apps/desktop/     Tauri 2 shell (Rust + TypeScript/React UI)
-crates/media/     screen capture, encoding, LiveKit/WebRTC session, native viewer
-crates/control/   remote input: event protocol, injection (enigo), cursor overlay
+crates/media/     screen capture, encoding, LiveKit/WebRTC session, voice
+crates/control/   remote input: event protocol, injection (enigo)
+crates/engine/    what owns the main thread: native viewer, sharer hotkeys and overlay,
+                  the control threads on both sides
+crates/media-spike/  tc-spike, the development CLI over engine and media
 crates/protocol/  shared message types (serde), versioned
 server/           Rust (axum) API: auth, rooms, LiveKit token issuing
 deploy/           docker compose for self-hosting (server + LiveKit + Postgres)

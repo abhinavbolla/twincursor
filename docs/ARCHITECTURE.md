@@ -22,6 +22,17 @@ building on it.
                                      server/ (axum + Postgres)
 ```
 
+The Rust core is split into crates:
+- `crates/media`: capture, encoding, the LiveKit session, voice and the latency and quality
+  measurements.
+- `crates/control`: the rules of remote control (consent, input checks, the deadman, revoke) and
+  input injection, with no network or window code.
+- `crates/engine`: what has to own the main thread (the viewer window, the sharer's global
+  hotkeys and "is controlling" overlay), the viewer's input mapping, and the control threads on
+  both sides.
+- `crates/media-spike` builds `tc-spike`, a command line over the engine that every bench script
+  drives. The desktop app's engine process will be another front end on the same library.
+
 ## Key decisions
 
 ### 1. Tauri 2 for the app shell, Rust for all media
@@ -127,6 +138,7 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
   types the text unless it's a shortcut. ADR 0004 has the rules.
 
 ### 5. Voice
+The decisions and what they cost are in [ADR 0006](adr/0006-voice.md).
 - Both sides send their mic and play the other's, through WebRTC's own device layer
   (`PlatformAudio` in the LiveKit SDK: CoreAudio on macOS, WASAPI on Windows), wrapped in
   `crates/media/src/audio/device.rs`. We write no device or echo cancellation code.

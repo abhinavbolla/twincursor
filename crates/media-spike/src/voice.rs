@@ -1,5 +1,4 @@
-//! Voice flags shared by `share` and `view`, the `devices` command, and the macOS microphone
-//! permission check.
+//! Voice flags shared by `share` and `view`, and the `devices` command.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -70,7 +69,7 @@ impl VoiceArgs {
                 None => anyhow::bail!("--audio file needs --audio-file <wav>"),
             },
             AudioArg::Mic => {
-                check_mic_permission()?;
+                engine::permission::check_mic_permission()?;
                 AudioMode::Mic(DeviceChoice {
                     mic: self.mic.clone(),
                     speaker: self.speaker.clone(),
@@ -118,90 +117,4 @@ pub fn list_devices() -> anyhow::Result<()> {
         }
     }
     Ok(())
-}
-
-/// Microphone access, as macOS records it for this app (the terminal, when run from one).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-enum MicPermission {
-    NotAsked,
-    Restricted,
-    Denied,
-    Granted,
-}
-
-impl MicPermission {
-    /// From `AVAuthorizationStatus`.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    fn from_status(status: isize) -> Self {
-        match status {
-            0 => Self::NotAsked,
-            1 => Self::Restricted,
-            2 => Self::Denied,
-            _ => Self::Granted,
-        }
-    }
-}
-
-/// Stops with a clear message when macOS won't let us record; without access, CoreAudio quietly
-/// records silence instead of failing.
-fn check_mic_permission() -> anyhow::Result<()> {
-    match mic_permission() {
-        Some(MicPermission::Denied) => anyhow::bail!(
-            "microphone access is off for this app. Turn it on in System Settings > Privacy & \
-             Security > Microphone, or run with --audio off"
-        ),
-        Some(MicPermission::Restricted) => anyhow::bail!(
-            "microphone access is blocked on this Mac (device management). Run with --audio off"
-        ),
-        Some(MicPermission::NotAsked) => {
-            tracing::info!("macOS will ask whether this app may use the microphone")
-        }
-        Some(MicPermission::Granted) | None => {}
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn mic_permission() -> Option<MicPermission> {
-    use objc2::runtime::{AnyClass, AnyObject};
-    use objc2::{class, msg_send};
-
-    #[link(name = "AVFoundation", kind = "framework")]
-    extern "C" {
-        static AVMediaTypeAudio: &'static AnyObject;
-    }
-    // Make sure the class is loaded before asking for it by name.
-    let _: Option<&AnyClass> = AnyClass::get(c"AVCaptureDevice");
-    // SAFETY: `authorizationStatusForMediaType:` is a class method that takes an
-    // AVMediaType (an NSString constant AVFoundation exports) and returns an NSInteger.
-    let status: isize = unsafe {
-        msg_send![class!(AVCaptureDevice), authorizationStatusForMediaType: AVMediaTypeAudio]
-    };
-    Some(MicPermission::from_status(status))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn mic_permission() -> Option<MicPermission> {
-    None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn permission_status_values() {
-        assert_eq!(MicPermission::from_status(0), MicPermission::NotAsked);
-        assert_eq!(MicPermission::from_status(1), MicPermission::Restricted);
-        assert_eq!(MicPermission::from_status(2), MicPermission::Denied);
-        assert_eq!(MicPermission::from_status(3), MicPermission::Granted);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn permission_can_be_read() {
-        // Reading the status never prompts; it only has to come back as a known value.
-        assert!(mic_permission().is_some());
-    }
 }
