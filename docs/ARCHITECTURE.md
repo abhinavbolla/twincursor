@@ -127,6 +127,7 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
   types the text unless it's a shortcut. ADR 0004 has the rules.
 
 ### 5. Voice
+The decisions and what they cost are in [ADR 0006](adr/0006-voice.md).
 - Both sides send their mic and play the other's, through WebRTC's own device layer
   (`PlatformAudio` in the LiveKit SDK: CoreAudio on macOS, WASAPI on Windows), wrapped in
   `crates/media/src/audio/device.rs`. We write no device or echo cancellation code.
@@ -210,8 +211,10 @@ skips echo cancellation and the device buffers, which only real devices have.
 the real speakers, and a raw mic recording (`bench/audio/record-mic.swift`, AVAudioEngine, no
 processing) goes to `tc-spike listen`, which times each burst from when the sharer started it.
 The recorder stamps samples with their capture time, so its own buffering doesn't count. Its
-input path stands in for the talker's mic, so the result is close to mouth to ear. Taking away
-the viewer's own "left the jitter buffer" time leaves the speakers, the air and the mic.
+mic stands in for the talker's, but the sharer's tones skip WebRTC's recording buffer, so mouth
+to ear is this plus that buffer (see docs/performance.md, Where the time goes). Taking away the
+viewer's own "left the jitter buffer" time leaves WebRTC's playout, the speakers, the air and the
+mic.
 
 `bench/audio-echo.sh` checks echo cancellation the same way. The sharer sends recorded speech
 (`--audio file`), the viewer plays it and sends its mic back, and `tc-spike listen --echo`

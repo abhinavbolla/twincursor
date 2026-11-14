@@ -13,7 +13,9 @@ yet. Where something isn't built, it says so.
 - **What's on the sharer's screen.** Only people in the call should see it.
 - **What the guest types.** While in control, the guest's keystrokes go to the sharer's machine.
   They may include passwords.
-- **Voice** (when it exists), and accounts and room access on the server (when it exists).
+- **What's said.** Only people in the call should hear it, and nothing should be sent while
+  you're muted.
+- Accounts and room access on the server (when it exists).
 
 ## Who we consider
 
@@ -24,7 +26,7 @@ yet. Where something isn't built, it says so.
 | A guest you granted control | Anything you can do on that computer | Allowed by design, so consent must be obvious and revocable |
 | A guest you didn't grant control | Inject input anyway | Must be stopped |
 | A buggy or stalled network | Leave a key or button stuck down | Must be handled |
-| Whoever runs the server | See video and keystrokes | **Not protected today**: see below |
+| Whoever runs the server | See video, hear voice and read keystrokes | **Not protected today**: see below |
 | Malware on either computer | Anything | Out of scope |
 
 ## How control works
@@ -51,6 +53,17 @@ be tested with scripted traces. *Status: the session rules are built and tested,
 with a consent prompt in the sharer's terminal, the revoke hotkey, the on-screen label, and real
 input on macOS.*
 
+## Voice
+
+- **Your mic is on from the moment you join,** unless you start with `--audio off`. The desktop
+  app will ask first.
+- **Mute stops the sound at its source.** A muted track sends silence, not your voice at a lower
+  level, and the other side is shown that you're muted. Mute is yours alone: the other side
+  can't unmute you.
+- **You can see that you're muted.** The viewer says so in its window title and its HUD. The
+  sharer has no window yet, so today it's a line in its terminal.
+- **Only voices are sent,** not the computer's own sound.
+
 ## Known limits
 
 - **The server can see everything that passes through it.** WebRTC encrypts traffic between each
@@ -71,9 +84,10 @@ input on macOS.*
 
 ## macOS permissions
 
-TwinCursor needs Screen Recording to capture and Accessibility to inject input. macOS grants these
-to the app you launch it from, which today is your terminal. So everything else running from that
-terminal gets them too. The desktop app will hold these permissions itself.
+TwinCursor needs Screen Recording to capture, Accessibility to inject input, and Microphone to
+talk. macOS grants these to the app you launch it from, which today is your terminal. So
+everything else running from that terminal gets them too. The desktop app will hold these
+permissions itself.
 
 ## Supply chain
 
