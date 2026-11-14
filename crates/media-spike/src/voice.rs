@@ -123,7 +123,7 @@ pub fn list_devices() -> anyhow::Result<()> {
 /// Microphone access, as macOS records it for this app (the terminal, when run from one).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-enum MicPermission {
+pub(crate) enum MicPermission {
     NotAsked,
     Restricted,
     Denied,
@@ -163,7 +163,7 @@ fn check_mic_permission() -> anyhow::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn mic_permission() -> Option<MicPermission> {
+pub(crate) fn mic_permission() -> Option<MicPermission> {
     use objc2::runtime::{AnyClass, AnyObject};
     use objc2::{class, msg_send};
 
@@ -182,7 +182,7 @@ fn mic_permission() -> Option<MicPermission> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn mic_permission() -> Option<MicPermission> {
+pub(crate) fn mic_permission() -> Option<MicPermission> {
     None
 }
 

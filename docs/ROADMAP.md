@@ -16,9 +16,9 @@ native viewer, measured on real networks.
 
 The results are in [performance.md](performance.md).
 
-## Now: remote control on macOS
+## Now
 
-The guest uses the sharer's Mac with their own mouse and keyboard, with consent built in. It's
+**Remote control on macOS.** The guest uses the sharer's Mac with their own mouse and keyboard, with consent built in. It's
 done when a guest can comfortably edit a file in the sharer's editor.
 
 - [x] Measure the path input takes, and choose its transport (ADR 0003)
@@ -30,13 +30,32 @@ done when a guest can comfortably edit a file in the sharer's editor.
 - [x] Guest cursor overlay on the sharer's screen
 - [ ] Hands-on: edit a real file on the sharer's Mac from the Windows laptop
 
+**Voice.** Both sides talk through their mic and speakers, so pairing needs no second app. It's
+done when two people can talk over speakers, without headphones, while one controls the other's
+Mac. The design is in [ADR 0006](adr/0006-voice.md).
+
+- [x] Measure voice latency without a mic, and show the screen doesn't wait for the voice
+- [x] Real mic and speakers on both sides, with device selection
+- [x] Echo cancellation and noise suppression, checked offline and through real speakers
+- [x] Mute on both sides, and devices that can change mid-call
+- [ ] Hands-on: a call over speakers on both ends, between the Mac and the Windows laptop
+- [ ] Bring mouth-to-ear delay under 150 ms (the jitter and playout buffers)
+
+**Desktop app.** A Tauri shell with a tray icon, lobby, call panel and settings, plus onboarding
+for macOS permissions. The shell starts the engine as a second process
+([ADR 0007](adr/0007-shell-and-engine.md)). It's done when two people can start a call, talk and
+hand over control without a terminal.
+
+- [x] A shell that starts the engine from inside the app bundle, and an engine that leaves when
+  the shell does
+- [ ] Hands-on: the macOS permission prompts name TwinCursor, and the shell's windows stay out of
+  the shared screen
+- [ ] The engine as a library, and an engine binary the shell drives with messages
+- [ ] Lobby and call panel, with the control request as a window
+- [ ] Permissions onboarding and settings
+- [ ] A bundled app and disk image
+
 ## Next
-
-**Audio.** Mic capture and playback in Rust, echo cancellation, noise suppression, mute and device
-selection.
-
-**Desktop app.** A Tauri shell with a tray icon, lobby, call window and settings, plus onboarding
-for macOS permissions.
 
 **Self-hosting.** An axum API for sign-in, teams, rooms and LiveKit tokens. Join calls by link, and
 run it all with one `docker compose up`.

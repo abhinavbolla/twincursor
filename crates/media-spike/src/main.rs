@@ -8,6 +8,7 @@ mod hud;
 mod input;
 mod listen;
 mod overlay;
+mod permissions;
 mod probe;
 mod replay;
 mod sharer;
@@ -31,6 +32,10 @@ use media::token;
 struct Cli {
     #[command(subcommand)]
     command: Command,
+    /// Exit when stdin reaches end of file: for a desktop app that starts this tool and keeps
+    /// its stdin open, so the tool never outlives the app.
+    #[arg(long, global = true)]
+    exit_on_stdin_close: bool,
 }
 
 #[derive(Subcommand)]
@@ -46,6 +51,8 @@ enum Command {
     },
     /// List the microphones and speakers `--mic` and `--speaker` can pick.
     Devices,
+    /// Print this process's Screen Recording, Accessibility and Microphone access as JSON.
+    Permissions(permissions::PermissionsArgs),
     /// Hear the sharer's synthetic voice through a real mic (stdin, from
     /// bench/audio/record-mic.swift) and time it against when the sharer started each burst.
     /// With --echo, check the viewer's echo cancellation instead (bench/audio-echo.sh).
@@ -194,6 +201,10 @@ struct ShareArgs {
     /// shows the sharer who is in control.
     #[arg(long, requires = "allow_control")]
     headless: bool,
+    /// Also leave this app's windows out of the capture, by process id (the desktop app that
+    /// started this one).
+    #[arg(long)]
+    exclude_app_pid: Option<u32>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -203,11 +214,20 @@ fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| "info,livekit=warn,libwebrtc=warn".into()),
         )
         .init();
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    if cli.exit_on_stdin_close {
+        // The control prompt reads its answers from stdin, so the two can't share it.
+        if matches!(&cli.command, Command::Share(args) if args.allow_control) {
+            anyhow::bail!("--exit-on-stdin-close doesn't work with --allow-control yet");
+        }
+        permissions::exit_on_stdin_close();
+    }
+    match cli.command {
         Command::Share(args) => share(args),
         Command::View(args) => view::run(args),
         Command::Compare { sharer, viewer } => compare(&sharer, &viewer),
         Command::Devices => voice::list_devices(),
+        Command::Permissions(args) => permissions::run(args),
         Command::Listen(args) => listen::run(args),
         Command::Probe(args) => probe::run(args),
         Command::Replay {
@@ -266,6 +286,7 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
             max_fps: args.fps,
             // A guest in control needs to see where the pointer is.
             show_cursor: args.cursor || args.allow_control,
+            exclude_app_pid: args.exclude_app_pid,
         },
         codec: args.codec.into(),
         max_bitrate: bitrate_kbps * 1000,

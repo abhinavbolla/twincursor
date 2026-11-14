@@ -38,6 +38,25 @@ jobs:
         with:
           triple: mac-arm64-release
 
+      # The desktop app embeds the built UI (apps/desktop/dist), so it has to exist before the
+      # app crate compiles.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install UI dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Type-check, test and build the UI
+        working-directory: apps/desktop
+        run: |
+          npx tsc --noEmit
+          npx vitest run
+          npx vite build
+
       - name: Clippy
         run: cargo clippy --locked --release --workspace --all-targets -- -D warnings
 

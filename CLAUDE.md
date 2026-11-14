@@ -90,7 +90,12 @@ Fill these in as code lands; keep them accurate.
   `bench/netlab/report.sh` (profiles and SLOs in ARCHITECTURE.md). Synthetic voice runs
   alongside unless `AUDIO=off`; `SHARE_FLAGS="--voice-kbps 24 --no-red"` changes its encoding
 - Releases: `docs/RELEASING.md`; a `v*` tag builds archives and a draft release
-- Desktop dev: _TBD_
+- Desktop app (`apps/desktop`, Node 20.19+): `npm ci`, then `npm run build` (UI into `dist`,
+  which the app crate embeds: build it before `cargo clippy/test --workspace`), `npx tsc
+  --noEmit`, `npx vitest run`. Bundle: `apps/desktop/scripts/bundle.sh` →
+  `target/release/bundle/macos/TwinCursor.app` (ad-hoc signed, `tc-spike` inside). Unattended
+  checks that raise no prompt: `open -n TwinCursor.app --args --run-checks /path/out.json`.
+  `tc-spike permissions [--request] [--watch]` prints the helper's macOS permissions as JSON
 - CI: `.github/workflows/ci.yml` runs fmt, clippy and tests on `macos-26` for every PR and
   push to `main`. Keep it green; run the same three commands locally before pushing.
 - Building needs **Xcode 26** (macOS 26 SDK): `screencapturekit`'s `apple-metal` Swift bridge

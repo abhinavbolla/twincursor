@@ -15,8 +15,14 @@ allow = [
   "BSD-3-Clause",
   "ISC",
   "MIT",
+  "MPL-2.0",
   "Unicode-3.0",
   "Zlib",
+]
+exceptions = [
+  # Apache-2.0 plus the LLVM exception, which only adds permissions. A build tool of Tauri's GTK
+  # bindings on Linux (system-deps → cfg-expr).
+  { allow = ["Apache-2.0 WITH LLVM-exception"], crate = "target-lexicon" },
 ]
 
 [bans]
@@ -31,4 +37,5 @@ unknown-git = "deny"
 [advisories]
 ignore = [
   { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained, not vulnerable. It comes from winit's Linux window decorations, and we don't ship Linux yet." },
+  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is unmaintained, not vulnerable. A build-time macro of the GTK bindings Tauri uses on Linux, which we don't ship yet." },
 ]
