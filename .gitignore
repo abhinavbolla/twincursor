@@ -8,6 +8,8 @@ dist/
 
 # Tauri
 apps/desktop/src-tauri/gen/
+# The helper, copied in by apps/desktop/scripts/bundle.sh
+apps/desktop/src-tauri/binaries/
 
 # Env and secrets
 .env
