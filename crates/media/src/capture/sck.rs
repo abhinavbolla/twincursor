@@ -7,7 +7,7 @@ use screencapturekit::cv::CVPixelBufferLockFlags;
 use screencapturekit::prelude::*;
 use screencapturekit::stream::configuration::color_matrix;
 
-use super::{wall_clock_us, CaptureConfig, CaptureError, Frame, FrameBuffer};
+use super::{wall_clock_us, CaptureConfig, CaptureError, Frame, FrameBuffer, WindowRect};
 
 /// Capture is stopped when the stream is dropped.
 pub struct SckCapture {
@@ -27,6 +27,40 @@ fn backend_err(e: impl std::fmt::Display) -> CaptureError {
     CaptureError::Backend(e.to_string())
 }
 
+/// SCK's process ids are `pid_t`. An id that doesn't fit matches no app.
+fn pid_i32(pid: u32) -> i32 {
+    i32::try_from(pid).unwrap_or(-1)
+}
+
+/// The first display's size in points, and the on-screen windows of app `pid` on it.
+pub fn app_windows(pid: u32) -> Option<((f64, f64), Vec<WindowRect>)> {
+    let content = SCShareableContent::get().ok()?;
+    let display = content.displays().into_iter().next()?;
+    let screen = display.frame();
+    let pid = pid_i32(pid);
+    let windows = content
+        .windows()
+        .into_iter()
+        .filter(|w| w.is_on_screen())
+        .filter(|w| {
+            w.owning_application()
+                .is_some_and(|app| app.process_id() == pid)
+        })
+        .map(|w| {
+            let frame = w.frame();
+            WindowRect {
+                id: w.window_id(),
+                title: w.title().unwrap_or_default(),
+                x: frame.origin.x - screen.origin.x,
+                y: frame.origin.y - screen.origin.y,
+                width: frame.size.width,
+                height: frame.size.height,
+            }
+        })
+        .collect();
+    Some(((screen.size.width, screen.size.height), windows))
+}
+
 pub fn start(
     config: CaptureConfig,
     sink: impl Fn(Frame) + Send + Sync + 'static,
@@ -37,20 +71,34 @@ pub fn start(
         .into_iter()
         .next()
         .ok_or(CaptureError::NoDisplay)?;
-    // Leave out this app's own windows, such as the remote-control overlay, so the guest
-    // doesn't see them in the stream. A command-line sharer without windows isn't listed.
-    let me = i32::try_from(std::process::id()).unwrap_or(-1);
-    let own_app = content
-        .applications()
-        .into_iter()
-        .find(|app| app.process_id() == me);
-    let builder = SCContentFilter::create().with_display(&display);
-    let filter = match &own_app {
-        Some(app) => {
-            tracing::info!("leaving this app's own windows out of the capture");
-            builder.with_excluding_applications(&[app], &[])
+    // Leave out this app's own windows, such as the remote-control overlay, and those of the
+    // desktop app that started it, so the guest doesn't see them in the stream. Excluding by
+    // application also covers windows the app opens after capture starts. An app is only
+    // listed while it has a window: a command-line sharer without windows isn't.
+    let me = pid_i32(std::process::id());
+    let parent = config.exclude_app_pid.map(pid_i32);
+    let apps = content.applications();
+    let excluded: Vec<&SCRunningApplication> = apps
+        .iter()
+        .filter(|app| app.process_id() == me || Some(app.process_id()) == parent)
+        .collect();
+    if let Some(pid) = parent {
+        if excluded.iter().any(|app| app.process_id() == pid) {
+            tracing::info!("leaving the windows of the app that started this one (pid {pid}) out of the capture");
+        } else {
+            tracing::warn!(
+                "app {pid} has no windows ScreenCaptureKit knows of, so it can't be left out of the capture"
+            );
         }
-        None => builder.with_excluding_windows(&[]),
+    }
+    let builder = SCContentFilter::create().with_display(&display);
+    let filter = if excluded.is_empty() {
+        builder.with_excluding_windows(&[])
+    } else {
+        if excluded.iter().any(|app| app.process_id() == me) {
+            tracing::info!("leaving this app's own windows out of the capture");
+        }
+        builder.with_excluding_applications(&excluded, &[])
     }
     .build()
     .map_err(backend_err)?;

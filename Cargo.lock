@@ -3865,6 +3865,7 @@ name = "twincursor-media-spike"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "block2 0.6.2",
  "clap",
  "font8x8",
  "futures",

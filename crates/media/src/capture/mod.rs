@@ -91,6 +91,35 @@ pub struct CaptureConfig {
     pub height: u32,
     pub max_fps: u32,
     pub show_cursor: bool,
+    /// Another app whose windows stay out of the capture, by process id: the desktop app that
+    /// started this process, so its windows never reach the guest. Only ScreenCaptureKit
+    /// supports it; this process's own windows are always left out there.
+    pub exclude_app_pid: Option<u32>,
+}
+
+/// An on-screen window, in points from the top-left corner of the captured display.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowRect {
+    pub id: u32,
+    pub title: String,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// The captured display's size in points and the on-screen windows of the app with process id
+/// `pid` on it, so a check can find where they would appear in a frame.
+pub fn app_windows(pid: u32) -> Option<((f64, f64), Vec<WindowRect>)> {
+    #[cfg(target_os = "macos")]
+    {
+        sck::app_windows(pid)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        None
+    }
 }
 
 /// Pixel data of a captured frame.
