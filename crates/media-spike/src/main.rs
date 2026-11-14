@@ -2,16 +2,10 @@
 //! native window and measures latency. Start `livekit-server --dev` first.
 
 mod echo;
-mod guest;
-mod hotkey;
-mod hud;
-mod input;
 mod listen;
-mod overlay;
 mod probe;
 mod replay;
-mod sharer;
-mod view;
+mod view_args;
 mod voice;
 
 use std::sync::atomic::Ordering;
@@ -20,6 +14,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use engine::{hotkey, sharer};
 use livekit::options::VideoCodec;
 use media::audio::AudioMode;
 use media::capture::{self, Backend, CaptureConfig, Tier};
@@ -38,7 +33,7 @@ enum Command {
     /// Capture the main display and publish it.
     Share(ShareArgs),
     /// Subscribe, render in a window, and measure latency.
-    View(view::ViewArgs),
+    View(view_args::ViewArgs),
     /// Compare two snapshots (PGM) and print SSIM and PSNR, skipping the marker area.
     Compare {
         sharer: std::path::PathBuf,
@@ -205,7 +200,7 @@ fn main() -> anyhow::Result<()> {
         .init();
     match Cli::parse().command {
         Command::Share(args) => share(args),
-        Command::View(args) => view::run(args),
+        Command::View(args) => view_args::run(args),
         Command::Compare { sharer, viewer } => compare(&sharer, &viewer),
         Command::Devices => voice::list_devices(),
         Command::Listen(args) => listen::run(args),
