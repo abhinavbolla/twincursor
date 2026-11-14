@@ -22,6 +22,17 @@ building on it.
                                      server/ (axum + Postgres)
 ```
 
+The Rust core is split into crates:
+- `crates/media`: capture, encoding, the LiveKit session, voice and the latency and quality
+  measurements.
+- `crates/control`: the rules of remote control (consent, input checks, the deadman, revoke) and
+  input injection, with no network or window code.
+- `crates/engine`: what has to own the main thread (the viewer window, the sharer's global
+  hotkeys and "is controlling" overlay), the viewer's input mapping, and the control threads on
+  both sides.
+- `crates/media-spike` builds `tc-spike`, a command line over the engine that every bench script
+  drives. The desktop app's engine process will be another front end on the same library.
+
 ## Key decisions
 
 ### 1. Tauri 2 for the app shell, Rust for all media
