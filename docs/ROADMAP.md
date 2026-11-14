@@ -39,7 +39,6 @@ Mac. The design is in [ADR 0006](adr/0006-voice.md).
 - [x] Echo cancellation and noise suppression, checked offline and through real speakers
 - [x] Mute on both sides, and devices that can change mid-call
 - [ ] Hands-on: a call over speakers on both ends, between the Mac and the Windows laptop
-- [ ] Bring mouth-to-ear delay under 150 ms (the jitter and playout buffers)
 
 ## Next
 
@@ -52,6 +51,8 @@ run it all with one `docker compose up`.
 **First public release on macOS.**
 
 - [ ] Signed and notarized builds, and auto-update
+- [ ] Voice mouth to ear under 150 ms (about 180–190 ms today): 10 ms Opus frames and a smaller
+  macOS audio device layer, both below the LiveKit SDK ([budget](performance.md#where-the-time-goes))
 - [ ] Live bitrate control without republishing the track, and FEC for lossy links
 - [ ] Encoder tuning, sharpening and a faster Metal or wgpu viewer
 - [ ] Real-world checks: Mac to Mac, Mac on Ethernet, Network Link Conditioner profiles
