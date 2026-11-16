@@ -17,6 +17,7 @@ Wi-Fi 6 AX201. LiveKit runs on the Mac. TwinCursor is pre-release, so expect the
 | Delay the input path adds | Under 1 ms on top of the network |
 | Voice on one Mac, sound sent → played | 45–54 ms typical, screen latency unchanged |
 | Voice on one Mac, out of real speakers into a mic | 155–159 ms typical, 178–204 ms at p95 |
+| Echo removed, a MacBook's own speakers and mic | 46–53 dB once the canceller has settled |
 
 **Round trip** is the remote-control loop: the viewer sends a tick, the sharer stamps it into the
 next frame, and that frame comes back and is decoded. It runs on the viewer's clock, so it's valid

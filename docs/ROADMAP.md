@@ -16,9 +16,9 @@ native viewer, measured on real networks.
 
 The results are in [performance.md](performance.md).
 
-## Now: remote control on macOS
+## Now
 
-The guest uses the sharer's Mac with their own mouse and keyboard, with consent built in. It's
+**Remote control on macOS.** The guest uses the sharer's Mac with their own mouse and keyboard, with consent built in. It's
 done when a guest can comfortably edit a file in the sharer's editor.
 
 - [x] Measure the path input takes, and choose its transport (ADR 0003)
@@ -30,10 +30,18 @@ done when a guest can comfortably edit a file in the sharer's editor.
 - [x] Guest cursor overlay on the sharer's screen
 - [ ] Hands-on: edit a real file on the sharer's Mac from the Windows laptop
 
-## Next
+**Voice.** Both sides talk through their mic and speakers, so pairing needs no second app. It's
+done when two people can talk over speakers, without headphones, while one controls the other's
+Mac. The design is in [ADR 0006](adr/0006-voice.md).
 
-**Audio.** Mic capture and playback in Rust, echo cancellation, noise suppression, mute and device
-selection.
+- [x] Measure voice latency without a mic, and show the screen doesn't wait for the voice
+- [x] Real mic and speakers on both sides, with device selection
+- [x] Echo cancellation and noise suppression, checked offline and through real speakers
+- [x] Mute on both sides, and devices that can change mid-call
+- [ ] Hands-on: a call over speakers on both ends, between the Mac and the Windows laptop
+- [ ] Bring mouth-to-ear delay under 150 ms (the jitter and playout buffers)
+
+## Next
 
 **Desktop app.** A Tauri shell with a tray icon, lobby, call window and settings, plus onboarding
 for macOS permissions.

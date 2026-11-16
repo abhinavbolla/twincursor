@@ -127,6 +127,7 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
   types the text unless it's a shortcut. ADR 0004 has the rules.
 
 ### 5. Voice
+The decisions and what they cost are in [ADR 0006](adr/0006-voice.md).
 - Both sides send their mic and play the other's, through WebRTC's own device layer
   (`PlatformAudio` in the LiveKit SDK: CoreAudio on macOS, WASAPI on Windows), wrapped in
   `crates/media/src/audio/device.rs`. We write no device or echo cancellation code.
