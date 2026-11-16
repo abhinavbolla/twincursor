@@ -22,6 +22,17 @@ building on it.
                                      server/ (axum + Postgres)
 ```
 
+The Rust core is split into crates:
+- `crates/media`: capture, encoding, the LiveKit session, voice and the latency and quality
+  measurements.
+- `crates/control`: the rules of remote control (consent, input checks, the deadman, revoke) and
+  input injection, with no network or window code.
+- `crates/engine`: what has to own the main thread (the viewer window, the sharer's global
+  hotkeys and "is controlling" overlay), the viewer's input mapping, and the control threads on
+  both sides.
+- `crates/media-spike` builds `tc-spike`, a command line over the engine that every bench script
+  drives. The desktop app's engine process will be another front end on the same library.
+
 ## Key decisions
 
 ### 1. Tauri 2 for the app shell, Rust for all media
@@ -211,8 +222,10 @@ skips echo cancellation and the device buffers, which only real devices have.
 the real speakers, and a raw mic recording (`bench/audio/record-mic.swift`, AVAudioEngine, no
 processing) goes to `tc-spike listen`, which times each burst from when the sharer started it.
 The recorder stamps samples with their capture time, so its own buffering doesn't count. Its
-input path stands in for the talker's mic, so the result is close to mouth to ear. Taking away
-the viewer's own "left the jitter buffer" time leaves the speakers, the air and the mic.
+mic stands in for the talker's, but the sharer's tones skip WebRTC's recording buffer, so mouth
+to ear is this plus that buffer (see docs/performance.md, Where the time goes). Taking away the
+viewer's own "left the jitter buffer" time leaves WebRTC's playout, the speakers, the air and the
+mic.
 
 `bench/audio-echo.sh` checks echo cancellation the same way. The sharer sends recorded speech
 (`--audio file`), the viewer plays it and sends its mic back, and `tc-spike listen --echo`

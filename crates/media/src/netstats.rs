@@ -57,6 +57,8 @@ pub struct AudioInbound {
     pub concealed_samples: u64,
     /// Sum over emitted samples of the time each spent in the jitter buffer, in seconds.
     pub jitter_buffer_delay_s: f64,
+    /// The same sum for the delay the jitter buffer was aiming for, in seconds.
+    pub jitter_buffer_target_s: f64,
     pub jitter_buffer_emitted: u64,
     pub loudness: Loudness,
 }
@@ -153,6 +155,9 @@ pub struct NetSnapshot {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AudioRecvStats {
     pub kbps: f64,
+    /// Voice packets per second: 50 with 20 ms Opus frames, 100 with 10 ms.
+    #[serde(default)]
+    pub packets_per_s: f64,
     pub loss_pct: f64,
     pub jitter_ms: f64,
     /// Share of this interval's audio that was made up rather than received.
@@ -161,6 +166,9 @@ pub struct AudioRecvStats {
     pub concealed_run_pct: f64,
     /// Average time audio waited in the jitter buffer this interval.
     pub jitter_buffer_ms: Option<f64>,
+    /// Average delay the jitter buffer aimed for this interval: what it holds on a steady link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jitter_buffer_target_ms: Option<f64>,
     /// How loud the other side's voice was over this interval, in dBFS (RMS).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub level_db: Option<f64>,
@@ -231,6 +239,7 @@ pub fn collect(stats: &[RtcStats]) -> Counters {
             total_samples: s.inbound.total_samples_received,
             concealed_samples: s.inbound.concealed_samples,
             jitter_buffer_delay_s: s.inbound.jitter_buffer_delay,
+            jitter_buffer_target_s: s.inbound.jitter_buffer_target_delay,
             jitter_buffer_emitted: s.inbound.jitter_buffer_emitted_count,
             loudness: Loudness {
                 energy: s.inbound.total_audio_energy,
@@ -421,6 +430,7 @@ fn audio_recv(prev: Option<&AudioInbound>, c: &AudioInbound, secs: f64) -> Audio
         .saturating_sub(p.jitter_buffer_emitted);
     AudioRecvStats {
         kbps: c.bytes_received.saturating_sub(p.bytes_received) as f64 * 8.0 / secs / 1000.0,
+        packets_per_s: (received + lost) as f64 / secs,
         loss_pct: percent(lost, received + lost),
         jitter_ms: c.jitter_s * 1000.0,
         concealed_pct: percent(
@@ -430,6 +440,9 @@ fn audio_recv(prev: Option<&AudioInbound>, c: &AudioInbound, secs: f64) -> Audio
         concealed_run_pct: percent(c.concealed_samples, c.total_samples),
         jitter_buffer_ms: (emitted > 0).then(|| {
             (c.jitter_buffer_delay_s - p.jitter_buffer_delay_s).max(0.0) * 1000.0 / emitted as f64
+        }),
+        jitter_buffer_target_ms: (emitted > 0).then(|| {
+            (c.jitter_buffer_target_s - p.jitter_buffer_target_s).max(0.0) * 1000.0 / emitted as f64
         }),
         level_db: c.loudness.level_db(prev.map(|p| p.loudness)),
     }
@@ -643,6 +656,7 @@ mod tests {
                 total_samples: 48_000,
                 concealed_samples: 480,
                 jitter_buffer_delay_s: 1_000.0,
+                jitter_buffer_target_s: 900.0,
                 jitter_buffer_emitted: 48_000,
                 bytes_received: 4_000,
                 loudness: Loudness {
@@ -665,6 +679,7 @@ mod tests {
                 total_samples: 96_000,
                 concealed_samples: 1_440,
                 jitter_buffer_delay_s: 2_920.0,
+                jitter_buffer_target_s: 2_340.0,
                 jitter_buffer_emitted: 96_000,
                 bytes_received: 8_000,
                 jitter_s: 0.003,
@@ -686,10 +701,12 @@ mod tests {
         assert_eq!(snap.audio_send_kbps, Some(32.0));
         let a = snap.audio_recv.unwrap();
         assert_eq!(a.kbps, 32.0);
+        assert_eq!(a.packets_per_s, 50.0);
         assert_eq!(a.loss_pct, 4.0);
         assert_eq!(a.concealed_pct, 2.0);
         assert_eq!(a.concealed_run_pct, 1.5);
         assert!((a.jitter_buffer_ms.unwrap() - 40.0).abs() < 1e-9);
+        assert!((a.jitter_buffer_target_ms.unwrap() - 30.0).abs() < 1e-9);
         assert_eq!(a.jitter_ms, 3.0);
         assert!((a.level_db.unwrap() + 20.0).abs() < 1e-6);
         assert_eq!(snap.audio_send_db, Some(-100.0));

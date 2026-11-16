@@ -15,7 +15,7 @@ use std::time::Instant;
 use clap::Args;
 use serde::Serialize;
 
-use crate::voice::MicPermission;
+use engine::permission::MicPermission;
 
 /// Printed on its own line once the capture that leaves the app out is running, so the app can
 /// open a window that wasn't there when capture started.
@@ -78,7 +78,7 @@ fn status() -> Status {
     Status {
         screen_recording: sys::screen_recording(),
         accessibility: sys::accessibility(),
-        microphone: crate::voice::mic_permission().into(),
+        microphone: engine::permission::mic_permission().into(),
         pid: std::process::id(),
         parent_pid: parent_pid(),
         executable: std::env::current_exe()
@@ -127,7 +127,7 @@ pub fn run(args: PermissionsArgs) -> anyhow::Result<()> {
             sys::request_accessibility();
         }
         if before.microphone == Access::NotAsked {
-            sys::request_microphone(Duration::from_secs(120));
+            engine::permission::request_mic_permission(Duration::from_secs(120));
         }
     }
     let status = status();
@@ -383,7 +383,6 @@ fn capture_check_into(exclude: Option<u32>, report: &mut CaptureReport) -> anyho
 #[cfg(target_os = "macos")]
 mod sys {
     use std::ffi::c_void;
-    use std::time::Duration;
 
     use super::Access;
 
@@ -460,39 +459,10 @@ mod sys {
             CFRelease(options);
         }
     }
-
-    /// Asks for the microphone and waits for the answer, up to `timeout`.
-    pub fn request_microphone(timeout: Duration) {
-        use block2::RcBlock;
-        use objc2::runtime::{AnyClass, AnyObject, Bool};
-        use objc2::{class, msg_send};
-
-        #[link(name = "AVFoundation", kind = "framework")]
-        extern "C" {
-            static AVMediaTypeAudio: &'static AnyObject;
-        }
-        let (tx, rx) = std::sync::mpsc::channel();
-        let done = RcBlock::new(move |_granted: Bool| {
-            let _ = tx.send(());
-        });
-        let _: Option<&AnyClass> = AnyClass::get(c"AVCaptureDevice");
-        // SAFETY: `requestAccessForMediaType:completionHandler:` takes an AVMediaType and a
-        // block taking a BOOL; AVFoundation copies the block before returning.
-        unsafe {
-            let _: () = msg_send![
-                class!(AVCaptureDevice),
-                requestAccessForMediaType: AVMediaTypeAudio,
-                completionHandler: &*done
-            ];
-        }
-        let _ = rx.recv_timeout(timeout);
-    }
 }
 
 #[cfg(not(target_os = "macos"))]
 mod sys {
-    use std::time::Duration;
-
     use super::Access;
 
     pub fn screen_recording() -> Access {
@@ -506,8 +476,6 @@ mod sys {
     pub fn request_screen_recording() {}
 
     pub fn request_accessibility() {}
-
-    pub fn request_microphone(_timeout: Duration) {}
 }
 
 #[cfg(test)]

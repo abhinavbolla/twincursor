@@ -9,12 +9,16 @@ Read before larger work:
 - `docs/ROADMAP.md`: milestones; work on the current one only
 - `docs/performance.md`: current numbers and how to reproduce them
 - `docs/research/hopp-lessons.md`: what we learned from Hopp's public engineering blog
+- `docs/research/rustdesk-lessons.md`: what RustDesk's design teaches us, and what not to take
 
 ## Hard rules
 
 1. **Clean room: never copy code from Hopp (github.com/gethopp/hopp) or Tuple.** Do not open,
    fetch, paste, or paraphrase their source files. Learning from their *public blog posts* and
    docs is fine; implement ideas in our own code. If a task seems to need their code, stop and ask.
+   RustDesk (AGPL-3.0, like us) is different: its source and docs may be read to learn from, but
+   write our own code. Copying a file needs asking first, its notices kept, and a third-party
+   notice entry; never copy from its unlicensed repositories (`hbb_common`, `hwcodec`).
 2. **Media never runs in the webview.** Capture, encode, WebRTC, decode and rendering of the
    shared screen live in Rust (`crates/`). The Tauri webview is only for app UI (lobby, settings,
    call controls). This is the main lesson from Hopp; see the research note.
@@ -30,8 +34,11 @@ Read before larger work:
 
 ```
 apps/desktop/     Tauri 2 shell (Rust + TypeScript/React UI)
-crates/media/     screen capture, encoding, LiveKit/WebRTC session, native viewer
-crates/control/   remote input: event protocol, injection (enigo), cursor overlay
+crates/media/     screen capture, encoding, LiveKit/WebRTC session, voice
+crates/control/   remote input: event protocol, injection (enigo)
+crates/engine/    what owns the main thread: native viewer, sharer hotkeys and overlay,
+                  the control threads on both sides
+crates/media-spike/  tc-spike, the development CLI over engine and media
 crates/protocol/  shared message types (serde), versioned
 server/           Rust (axum) API: auth, rooms, LiveKit token issuing
 deploy/           docker compose for self-hosting (server + LiveKit + Postgres)

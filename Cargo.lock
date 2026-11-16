@@ -5936,6 +5936,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "twincursor-engine"
+version = "0.1.0"
+dependencies = [
+ "block2 0.6.2",
+ "font8x8",
+ "global-hotkey",
+ "livekit",
+ "objc2 0.6.5",
+ "serde",
+ "serde_json",
+ "softbuffer",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "twincursor-control",
+ "twincursor-media",
+ "twincursor-protocol",
+ "winit",
+]
+
+[[package]]
 name = "twincursor-media"
 version = "0.1.0"
 dependencies = [
@@ -5957,20 +5978,16 @@ name = "twincursor-media-spike"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "block2 0.6.2",
  "clap",
- "font8x8",
  "futures",
- "global-hotkey",
  "livekit",
- "objc2 0.6.5",
  "serde",
  "serde_json",
- "softbuffer",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "twincursor-control",
+ "twincursor-engine",
  "twincursor-media",
  "twincursor-protocol",
  "winit",

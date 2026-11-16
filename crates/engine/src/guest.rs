@@ -1,4 +1,4 @@
-//! The guest's side of remote control in `tc-spike view`.
+//! The guest's side of remote control in the viewer.
 //!
 //! One thread owns the [`GuestSession`]. The window (or a script) hands it input, the link hands
 //! it the sharer's answers, and it sends to the sharer whose screen we're receiving.
@@ -15,6 +15,8 @@ use control::guest::{GuestSession, GuestState};
 use media::link::{ControlLink, LinkEvent, LinkSender, Outgoing};
 use protocol::{InputEvent, Message, Platform};
 use serde::Deserialize;
+
+use crate::{Error, ScriptError};
 
 const TICK: Duration = Duration::from_millis(4);
 
@@ -73,7 +75,7 @@ impl Guest {
     pub fn start(
         name: String,
         sent_log: Option<&Path>,
-    ) -> anyhow::Result<(Self, ControlLink, JoinHandle<()>)> {
+    ) -> Result<(Self, ControlLink, JoinHandle<()>), Error> {
         let (tx, rx) = mpsc::channel();
         let (link, outgoing) = {
             let tx = tx.clone();
@@ -243,7 +245,7 @@ fn this_platform() -> Platform {
     }
 }
 
-/// One step of a control script for `view --headless --control-script`.
+/// One step of a control script for a headless viewer (`view --headless --control-script`).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "do", rename_all = "snake_case")]
 pub enum Step {
@@ -267,13 +269,13 @@ pub enum Step {
 /// How long `request` waits for the sharer.
 const GRANT_TIMEOUT: Duration = Duration::from_secs(60);
 
-pub fn read_script(path: &PathBuf) -> anyhow::Result<Vec<Step>> {
+pub fn read_script(path: &PathBuf) -> Result<Vec<Step>, Error> {
     let text = std::fs::read_to_string(path)?;
     Ok(serde_json::from_str(&text)?)
 }
 
 /// Plays a script through the guest session. Fails if the sharer doesn't grant control.
-pub fn play(guest: &Guest, steps: &[Step]) -> anyhow::Result<()> {
+pub fn play(guest: &Guest, steps: &[Step]) -> Result<(), ScriptError> {
     for step in steps {
         match step {
             Step::Request => {
@@ -285,11 +287,12 @@ pub fn play(guest: &Guest, steps: &[Step]) -> anyhow::Result<()> {
                         GuestState::InControl => break,
                         GuestState::Requested => pending = true,
                         // Idle before the session took the request, or after a "no".
-                        GuestState::Idle => {
-                            anyhow::ensure!(!pending, "the sharer turned the request down")
-                        }
+                        GuestState::Idle if pending => return Err(ScriptError::Denied),
+                        GuestState::Idle => {}
                     }
-                    anyhow::ensure!(asked.elapsed() < GRANT_TIMEOUT, "no answer from the sharer");
+                    if asked.elapsed() >= GRANT_TIMEOUT {
+                        return Err(ScriptError::NoAnswer);
+                    }
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 tracing::info!("control granted");
@@ -308,11 +311,11 @@ pub fn play(guest: &Guest, steps: &[Step]) -> anyhow::Result<()> {
             }
             Step::Wait { ms } => std::thread::sleep(Duration::from_millis(*ms)),
         }
-        anyhow::ensure!(
-            !matches!(step, Step::Input { .. } | Step::Type { .. })
-                || guest.status.get() == GuestState::InControl,
-            "control ended while the script was still running"
-        );
+        if matches!(step, Step::Input { .. } | Step::Type { .. })
+            && guest.status.get() != GuestState::InControl
+        {
+            return Err(ScriptError::Ended);
+        }
     }
     Ok(())
 }

@@ -1,4 +1,5 @@
-//! The `view` subcommand: a winit + softbuffer window that shows the newest decoded frame.
+//! The viewer: a winit + softbuffer window that shows the newest decoded frame, or a headless
+//! viewer that only decodes and measures.
 //!
 //! winit must own the main thread on macOS, so LiveKit runs on a Tokio runtime in a
 //! background thread. Frames are handed over through a single "latest frame" slot, so a
@@ -10,8 +11,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::Context;
-use clap::Args;
 use control::guest::GuestState;
 use livekit::webrtc::native::yuv_helper;
 use livekit::webrtc::video_frame::VideoBuffer;
@@ -19,7 +18,6 @@ use media::audio::VoiceState;
 use media::capture::wall_clock_us;
 use media::latency::Recorder;
 use media::netstats::Board;
-use media::quality::Snapshots;
 use media::stats::{summarize, Summary};
 use media::subscribe::{self, DecodedFrame, ViewConfig};
 use protocol::InputEvent;
@@ -33,60 +31,30 @@ use winit::window::{Window, WindowId};
 
 use crate::guest::{Guest, Ui};
 use crate::input::{self, Rect};
-use crate::{hud, Connection};
+use crate::{hud, Error};
 
 const REPORT_EVERY: Duration = Duration::from_secs(10);
 
-#[derive(Args)]
-pub struct ViewArgs {
-    #[command(flatten)]
-    connection: Connection,
-    /// Interval between latency ticks, in milliseconds. Not a multiple of the frame time:
-    /// at 250 ms (15 frames at 60 fps) every tick lands at the same point of the frame clock.
-    #[arg(long, default_value_t = 247)]
-    tick_ms: u64,
+/// What [`run`] needs: the call to join, and how to show and measure it.
+pub struct ViewOptions {
+    /// The call: server, token, latency ticks, voice and what to measure.
+    pub config: ViewConfig,
+    /// Mute, and what is known about both voices.
+    pub voice: Arc<VoiceState>,
+    /// Decode and measure without opening a window. Latency is then measured at decode.
+    pub headless: bool,
     /// Stop automatically after this many seconds.
-    #[arg(long)]
-    duration: Option<u64>,
+    pub duration: Option<u64>,
     /// Label stored in the results file, e.g. "sck-vp8-static".
-    #[arg(long, default_value = "run")]
-    label: String,
-    /// Don't poll network stats or show the HUD.
-    #[arg(long)]
-    no_stats: bool,
-    /// Decode and measure without opening a window (for benchmarks and the network lab).
-    /// Latency is then measured at decode.
-    #[arg(long)]
-    headless: bool,
-    /// Score frames against the synthetic pattern (needs `share --capture pattern`).
-    #[arg(long)]
-    measure_quality: bool,
-    /// Measure the data-packet path remote-control input takes (reliable vs lossy).
-    #[arg(long)]
-    measure_input: bool,
-    /// Time the markers in the sharer's voice (needs `share --audio pattern`).
-    #[arg(long)]
-    measure_audio: bool,
-    #[command(flatten)]
-    voice: crate::voice::VoiceArgs,
-    /// Save the frame carrying every Nth latency tick as a PGM (see `tc-spike compare`).
-    #[arg(long, default_value_t = 0)]
-    snapshot_every: u32,
-    #[arg(long, default_value = "bench/snapshots")]
-    snapshot_dir: PathBuf,
+    pub label: String,
     /// Directory for the JSON results file.
-    #[arg(long, default_value = "bench/results")]
-    out: PathBuf,
-    /// Play a remote-control script (JSON steps; see `bench/control/`), then stop. Needs
-    /// `--headless` and a sharer started with `--allow-control`.
-    #[arg(long, requires = "headless")]
-    control_script: Option<PathBuf>,
-    /// Write every control message sent as a line of JSON (see `tc-spike replay`).
-    #[arg(long)]
-    sent_log: Option<PathBuf>,
-    /// The name the sharer sees when you ask for control.
-    #[arg(long, default_value = "guest")]
-    name: String,
+    pub out: PathBuf,
+    /// Play this remote-control script, then stop (headless only).
+    pub control_script: Option<PathBuf>,
+    /// Write every control message sent as a line of JSON.
+    pub sent_log: Option<PathBuf>,
+    /// The name the sharer sees when this guest asks for control.
+    pub name: String,
 }
 
 #[derive(Debug)]
@@ -104,25 +72,9 @@ struct Latest {
     wake_pending: AtomicBool,
 }
 
-fn view_config(args: &ViewArgs) -> anyhow::Result<ViewConfig> {
-    Ok(ViewConfig {
-        url: args.connection.url.clone(),
-        token: args.connection.token("viewer")?,
-        tick_interval: Duration::from_millis(args.tick_ms),
-        net_stats: !args.no_stats,
-        measure_quality: args.measure_quality,
-        measure_input: args.measure_input,
-        measure_audio: args.measure_audio,
-        audio: args.voice.mode(false)?,
-        voice: args.voice.options(),
-        snapshots: (args.snapshot_every > 0).then(|| Snapshots {
-            every: args.snapshot_every,
-            dir: args.snapshot_dir.clone(),
-        }),
-    })
-}
-
-pub fn run(args: ViewArgs) -> anyhow::Result<()> {
+/// Joins the call and shows the sharer's screen until the window closes, the call ends or
+/// `duration` passes, then writes the results file. Must run on the main thread.
+pub fn run(args: ViewOptions) -> Result<(), Error> {
     if args.headless {
         return run_headless(args);
     }
@@ -142,8 +94,8 @@ pub fn run(args: ViewArgs) -> anyhow::Result<()> {
     let board = Arc::new(Mutex::new(Board::default()));
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
 
-    let config = view_config(&args)?;
-    let voice = args.voice.state();
+    let config = args.config.clone();
+    let voice = args.voice.clone();
     let (guest, link, guest_thread) = Guest::start(args.name.clone(), args.sent_log.as_deref())?;
     let network = {
         let latest = latest.clone();
@@ -192,7 +144,7 @@ pub fn run(args: ViewArgs) -> anyhow::Result<()> {
         latest,
         recorder: recorder.clone(),
         board: board.clone(),
-        hud: !args.no_stats,
+        hud: args.config.net_stats,
         recent_rtt: None,
         rtt_mark: 0,
         voice,
@@ -621,12 +573,12 @@ fn log_report(
 }
 
 /// Viewer without a window: frames count as presented when decoded.
-fn run_headless(args: ViewArgs) -> anyhow::Result<()> {
+fn run_headless(args: ViewOptions) -> Result<(), Error> {
     let recorder = Arc::new(Mutex::new(Recorder::default()));
     let board = Arc::new(Mutex::new(Board::default()));
     let frame_size = Arc::new(Mutex::new((0u32, 0u32)));
-    let config = view_config(&args)?;
-    let voice = args.voice.state();
+    let config = args.config.clone();
+    let voice = args.voice.clone();
     let started = Instant::now();
 
     let on_frame = {
@@ -726,8 +678,8 @@ fn run_headless(args: ViewArgs) -> anyhow::Result<()> {
     if let Some(player) = player {
         player
             .join()
-            .map_err(|_| anyhow::anyhow!("control script panicked"))?
-            .context("control script failed")?;
+            .map_err(|_| Error::ScriptPanicked)?
+            .map_err(Error::Script)?;
         tracing::info!("control script finished");
     }
     Ok(())
@@ -756,12 +708,12 @@ fn fit_within(frame: (u32, u32), max: (u32, u32)) -> (u32, u32) {
 }
 
 fn write_results(
-    args: &ViewArgs,
+    args: &ViewOptions,
     recorder: &Recorder,
     board: &Board,
     elapsed: Duration,
     size: (u32, u32),
-) -> anyhow::Result<()> {
+) -> Result<(), Error> {
     let mut report = recorder.report();
     if let Some(audio) = report.audio.as_mut() {
         audio.concealed_pct = board
@@ -777,7 +729,7 @@ fn write_results(
         "duration_s": secs,
         "resolution": [size.0, size.1],
         "avg_fps": report.frames as f64 / secs,
-        "tick_ms": args.tick_ms,
+        "tick_ms": args.config.tick_interval.as_millis() as u64,
         "report": report,
         "net": board.history,
         "sharer_net_last": board.remote,
@@ -788,8 +740,10 @@ fn write_results(
         args.label,
         wall_clock_us() / 1_000_000
     ));
-    std::fs::write(&path, serde_json::to_string_pretty(&results)?)
-        .with_context(|| format!("writing {}", path.display()))?;
+    let json = serde_json::to_string_pretty(&results)?;
+    if let Err(source) = std::fs::write(&path, json) {
+        return Err(Error::Write { path, source });
+    }
     tracing::info!("results written to {}", path.display());
     println!("{}", serde_json::to_string_pretty(&results)?);
     Ok(())

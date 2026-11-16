@@ -9,14 +9,13 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use clap::Args;
+use engine::input;
 use protocol::InputEvent;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{Fullscreen, Window, WindowId};
-
-use crate::input;
 
 #[derive(Args)]
 pub struct ProbeArgs {

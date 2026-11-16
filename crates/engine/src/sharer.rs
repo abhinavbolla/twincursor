@@ -1,4 +1,4 @@
-//! The sharer's side of remote control in `tc-spike share --allow-control`.
+//! The sharer's side of remote control (`tc-spike share --allow-control`).
 //!
 //! One thread owns the [`Controller`]: it takes link events and the sharer's answers, ticks the
 //! deadman, and sends what the controller says to. Consent is a terminal prompt for now: a guest
@@ -16,6 +16,7 @@ use control::{
 use media::link::{ControlLink, LinkEvent, LinkSender, Outgoing};
 
 use crate::overlay::{OverlayHandle, OverlayState};
+use crate::Error;
 
 const TICK: Duration = Duration::from_millis(20);
 
@@ -49,6 +50,7 @@ enum In {
     Stop,
 }
 
+/// The control thread, which owns the controller and the injector.
 pub struct Sharer {
     tx: Sender<In>,
     thread: JoinHandle<()>,
@@ -61,14 +63,14 @@ impl Sharer {
         inject: &Inject,
         revoke: RevokeSwitch,
         overlay: Option<OverlayHandle>,
-    ) -> anyhow::Result<(Self, ControlLink)> {
+    ) -> Result<(Self, ControlLink), Error> {
         let injector: Box<dyn Injector + Send> = match inject {
             Inject::Log => Box::new(LogInjector),
             Inject::Record(path) => Box::new(RecordInjector::new(std::fs::File::create(path)?)),
             #[cfg(target_os = "macos")]
             Inject::Real => Box::new(control::macos::MacInjector::new()?),
             #[cfg(not(target_os = "macos"))]
-            Inject::Real => anyhow::bail!("real input injection is macOS only for now"),
+            Inject::Real => return Err(Error::NoRealInjection),
         };
         let (tx, rx) = mpsc::channel();
         let (link, outgoing) = {

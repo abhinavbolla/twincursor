@@ -9,9 +9,13 @@ use winit::keyboard::KeyCode;
 /// Where the frame is drawn inside the window, in physical pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rect {
+    /// Left edge.
     pub x: u32,
+    /// Top edge.
     pub y: u32,
+    /// Width.
     pub w: u32,
+    /// Height.
     pub h: u32,
 }
 
@@ -46,6 +50,7 @@ pub fn to_surface_clamped(rect: Rect, (px, py): (f64, f64)) -> (f64, f64) {
     (x.clamp(0.0, 1.0), y.clamp(0.0, 1.0))
 }
 
+/// The protocol's name for a mouse button, or `None` for buttons it doesn't carry.
 pub fn button(b: MouseButton) -> Option<Button> {
     match b {
         MouseButton::Left => Some(Button::Left),
