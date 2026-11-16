@@ -731,6 +731,7 @@ fn write_results(
         "avg_fps": report.frames as f64 / secs,
         "tick_ms": args.config.tick_interval.as_millis() as u64,
         "report": report,
+        "media": media::netstats::media_summary(&board.history),
         "net": board.history,
         "sharer_net_last": board.remote,
     });
