@@ -95,6 +95,8 @@ enum Codec {
     Vp8,
     Vp9,
     H264,
+    /// HEVC: hardware on macOS, opt-in (see docs/adr/0008).
+    H265,
     Av1,
 }
 
@@ -106,6 +108,8 @@ enum Resolution {
     P1080,
     #[value(name = "1440")]
     P1440,
+    #[value(name = "2160")]
+    P2160,
     Native,
 }
 
@@ -115,6 +119,7 @@ impl From<Resolution> for Tier {
             Resolution::P720 => Tier::P720,
             Resolution::P1080 => Tier::P1080,
             Resolution::P1440 => Tier::P1440,
+            Resolution::P2160 => Tier::P2160,
             Resolution::Native => Tier::Native,
         }
     }
@@ -126,6 +131,7 @@ impl From<Codec> for VideoCodec {
             Codec::Vp8 => VideoCodec::VP8,
             Codec::Vp9 => VideoCodec::VP9,
             Codec::H264 => VideoCodec::H264,
+            Codec::H265 => VideoCodec::H265,
             Codec::Av1 => VideoCodec::AV1,
         }
     }
@@ -137,14 +143,16 @@ struct ShareArgs {
     connection: Connection,
     #[arg(long, value_enum, default_value = "sck")]
     capture: CaptureBackend,
-    /// Video codec. H.264 is the default (hardware on macOS; see docs/adr/0002).
+    /// Video codec. H.264 is the default (hardware on macOS; see docs/adr/0002). H.265 (HEVC)
+    /// is opt-in, for 4K (docs/adr/0008).
     #[arg(long, value_enum, default_value = "h264")]
     codec: Codec,
     /// Output size in lines (the width follows the display's aspect ratio), or the
-    /// display's own pixel size.
+    /// display's own pixel size. Never larger than the display.
     #[arg(long, value_enum, default_value = "1080")]
     resolution: Resolution,
-    /// Maximum video bitrate in kbit/s. Defaults per resolution: 2500, 5000, 8000, 12000.
+    /// Maximum video bitrate in kbit/s. Defaults per resolution: 2500, 5000, 8000, 15000 for
+    /// 2160, and 12000 for native.
     #[arg(long)]
     bitrate_kbps: Option<u64>,
     #[arg(long, default_value_t = 60)]

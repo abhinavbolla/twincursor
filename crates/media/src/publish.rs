@@ -190,14 +190,11 @@ pub async fn run(
         config.capture.height,
         config.capture.max_fps,
     )));
-    let codec_factor = if config.codec == VideoCodec::H264 {
-        1.0
-    } else {
-        2.0
-    };
-    let mut adapter = config
-        .adapt
-        .map(|a| (Adapter::new(a.max, config.capture.max_fps, codec_factor), a));
+    let codec_factor = codec_factor(config.codec);
+    let mut adapter = config.adapt.map(|a| {
+        let adapter = Adapter::new(a.max, config.capture.max_fps, a.display, codec_factor);
+        (adapter, a)
+    });
     let mut adapt_note: Option<String> = None;
     let mut cap = config
         .adapt
@@ -340,6 +337,16 @@ pub async fn run(
     let _ = sender.join();
     room.close().await?;
     Ok(())
+}
+
+/// How much more bitrate than H.264 a codec needs for the same text sharpness, for the
+/// auto-throttle's floors. H.264 and HEVC run in hardware (VideoToolbox on macOS); the others
+/// are software encoders, where VP8 needs about twice.
+fn codec_factor(codec: VideoCodec) -> f64 {
+    match codec {
+        VideoCodec::H264 | VideoCodec::H265 => 1.0,
+        _ => 2.0,
+    }
 }
 
 /// Publishes the track again with new options: the only way the SDK offers to change the max
@@ -536,6 +543,15 @@ mod tests {
     use super::*;
     use livekit::webrtc::video_frame::I420Buffer;
     use std::time::Duration;
+
+    #[test]
+    fn hardware_codecs_share_the_h264_floors() {
+        assert_eq!(codec_factor(VideoCodec::H264), 1.0);
+        assert_eq!(codec_factor(VideoCodec::H265), 1.0);
+        assert_eq!(codec_factor(VideoCodec::VP8), 2.0);
+        assert_eq!(codec_factor(VideoCodec::VP9), 2.0);
+        assert_eq!(codec_factor(VideoCodec::AV1), 2.0);
+    }
 
     fn frame(id: u64) -> Frame {
         Frame {

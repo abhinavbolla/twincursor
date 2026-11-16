@@ -9,6 +9,8 @@
 //! This controller walks a ladder that halves the frame rate before giving up resolution,
 //! because text needs pixels more than it needs 60 fps:
 //! 1440p 60 → 1440p 30 → 1080p 30 → 720p 30 → 720p 15.
+//! 2160p and native start higher and step down through 1440p (native through 2160p first, when
+//! the display is taller than 2160 lines).
 //! It steps down after 3 s of trouble and back up after a stretch of calm with headroom. It's a
 //! pure state machine fed once a second, so it's tested on traces.
 
@@ -53,15 +55,31 @@ impl Level {
     /// Smallest bitrate (kbit/s) at which this level still shows sharp text while scrolling.
     /// The tier bases are from the synthetic pattern with H.264 (`docs/performance.md`);
     /// VP8 needs about twice. Bitrate grows less than linearly with frame rate.
-    fn floor_kbps(self, codec_factor: f64) -> f64 {
+    fn floor_kbps(self, codec_factor: f64, display: (u32, u32)) -> f64 {
         let base = match self.tier {
             Tier::P720 => 500.0,
             Tier::P1080 => 1000.0,
             Tier::P1440 => 1600.0,
-            Tier::Native => 2500.0,
+            // On a display shorter than 2160 lines, 2160p is the display's own size.
+            Tier::P2160 if display.1 >= 2160 => P2160_FLOOR_KBPS,
+            Tier::P2160 | Tier::Native => native_floor_kbps(display),
         };
         base * codec_factor * (f64::from(self.fps) / 60.0).powf(0.75)
     }
+}
+
+/// 2160p's floor: 1080p's scaled by pixel count to the power 0.8, the curve 720p, 1080p and
+/// 1440p's floors follow (4^0.8 ≈ 3).
+const P2160_FLOOR_KBPS: f64 = 3000.0;
+
+/// Native on a display shorter than 2160 lines is 2.5 Mbps. From 2160 lines up it grows from
+/// 2160p's floor with the pixel count, so the floors never rise on the way down the ladder.
+fn native_floor_kbps(display: (u32, u32)) -> f64 {
+    if display.1 < 2160 {
+        return 2500.0;
+    }
+    let pixels = f64::from(display.0) * f64::from(display.1);
+    P2160_FLOOR_KBPS * (pixels / (3840.0 * 2160.0)).powf(0.8).max(1.0)
 }
 
 impl std::fmt::Display for Level {
@@ -70,14 +88,16 @@ impl std::fmt::Display for Level {
             Tier::P720 => "720p",
             Tier::P1080 => "1080p",
             Tier::P1440 => "1440p",
+            Tier::P2160 => "2160p",
             Tier::Native => "native",
         };
         write!(f, "{lines} {} fps", self.fps)
     }
 }
 
-/// The levels from best to worst, starting at what the user asked for.
-pub fn ladder(max: Tier, max_fps: u32) -> Vec<Level> {
+/// The levels from best to worst, starting at what the user asked for, on a display of
+/// `display` pixels.
+pub fn ladder(max: Tier, max_fps: u32, display: (u32, u32)) -> Vec<Level> {
     let mut levels = vec![Level {
         tier: max,
         fps: max_fps,
@@ -90,7 +110,7 @@ pub fn ladder(max: Tier, max_fps: u32) -> Vec<Level> {
         });
     }
     let mut tier = max;
-    while let Some(lower) = lower(tier) {
+    while let Some(lower) = lower(tier, display) {
         tier = lower;
         levels.push(Level { tier, fps: reduced });
     }
@@ -103,11 +123,14 @@ pub fn ladder(max: Tier, max_fps: u32) -> Vec<Level> {
     levels
 }
 
-fn lower(tier: Tier) -> Option<Tier> {
+fn lower(tier: Tier, display: (u32, u32)) -> Option<Tier> {
     match tier {
         Tier::P720 => None,
         Tier::P1080 => Some(Tier::P720),
         Tier::P1440 => Some(Tier::P1080),
+        Tier::P2160 => Some(Tier::P1440),
+        // On a display up to 2160 lines, 2160p is the display's own size: nothing gained.
+        Tier::Native if display.1 > 2160 => Some(Tier::P2160),
         Tier::Native => Some(Tier::P1440),
     }
 }
@@ -126,6 +149,7 @@ pub struct Adapter {
     /// Index into `ladder`; 0 is the best.
     at: usize,
     codec_factor: f64,
+    display: (u32, u32),
     trouble_since: Option<f64>,
     calm_since: Option<f64>,
     last_up: Option<f64>,
@@ -134,12 +158,14 @@ pub struct Adapter {
 
 impl Adapter {
     /// Starts at `max` tier and `max_fps`, what the user asked for, and never goes above them.
-    /// `codec_factor` scales the bitrate floors (1.0 for H.264, about 2.0 for VP8).
-    pub fn new(max: Tier, max_fps: u32, codec_factor: f64) -> Self {
+    /// `display` is the captured display's pixel size, which the tiers are computed from.
+    /// `codec_factor` scales the bitrate floors (1.0 for H.264 and HEVC, about 2.0 for VP8).
+    pub fn new(max: Tier, max_fps: u32, display: (u32, u32), codec_factor: f64) -> Self {
         Self {
-            ladder: ladder(max, max_fps),
+            ladder: ladder(max, max_fps, display),
             at: 0,
             codec_factor,
+            display,
             trouble_since: None,
             calm_since: None,
             last_up: None,
@@ -167,13 +193,14 @@ impl Adapter {
             (false, bwe) => bwe?,
         };
         let level = self.level();
-        let floor = level.floor_kbps(self.codec_factor);
+        let floor = level.floor_kbps(self.codec_factor, self.display);
         let recv = viewer.and_then(|v| v.recv.as_ref());
 
         // On a big drop, go straight to the first level the budget can carry rather than
         // walking down one level every few seconds while the picture stalls.
-        let fits =
-            |i: usize| self.ladder[i].floor_kbps(self.codec_factor) * FLOOR_TOLERANCE <= budget;
+        let fits = |i: usize| {
+            self.ladder[i].floor_kbps(self.codec_factor, self.display) * FLOOR_TOLERANCE <= budget
+        };
         let mut step_to = self.at + 1;
         let severe = budget < floor * SEVERE_SHARE;
         let trouble = if send.limit == Limit::Cpu {
@@ -216,7 +243,8 @@ impl Adapter {
             return None;
         }
         let viewer_clean = recv.is_none_or(|r| r.loss_pct < 1.0 && r.freezes == 0);
-        let needed = self.ladder[self.at - 1].floor_kbps(self.codec_factor) * UP_HEADROOM;
+        let needed =
+            self.ladder[self.at - 1].floor_kbps(self.codec_factor, self.display) * UP_HEADROOM;
         // The budget only grows to what the encoder asks for; on a mostly static screen it
         // asks for little, so also accept a bandwidth estimate with headroom.
         let available = budget.max(own.bwe_kbps.unwrap_or(0.0));
@@ -377,6 +405,96 @@ mod tests {
         Level { tier, fps }
     }
 
+    const RETINA_14: (u32, u32) = (3024, 1964);
+    const UHD: (u32, u32) = (3840, 2160);
+    const FIVE_K: (u32, u32) = (5120, 2880);
+
+    /// An adapter on this Mac's display.
+    fn adapter(max: Tier, max_fps: u32, codec_factor: f64) -> Adapter {
+        Adapter::new(max, max_fps, RETINA_14, codec_factor)
+    }
+
+    #[test]
+    fn ladder_from_2160_steps_through_1440() {
+        let below_1440 = [l(Tier::P1080, 30), l(Tier::P720, 30), l(Tier::P720, 15)];
+        let from_2160 = [l(Tier::P2160, 60), l(Tier::P2160, 30), l(Tier::P1440, 30)];
+        for display in [RETINA_14, UHD, FIVE_K] {
+            assert_eq!(
+                ladder(Tier::P2160, 60, display),
+                [&from_2160[..], &below_1440[..]].concat(),
+                "{display:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_steps_to_2160_only_on_taller_displays() {
+        let tail = [
+            l(Tier::P1440, 30),
+            l(Tier::P1080, 30),
+            l(Tier::P720, 30),
+            l(Tier::P720, 15),
+        ];
+        let native = [l(Tier::Native, 60), l(Tier::Native, 30)];
+        // Up to 2160 lines, 2160p would be the same size as native.
+        for display in [RETINA_14, UHD] {
+            assert_eq!(
+                ladder(Tier::Native, 60, display),
+                [&native[..], &tail[..]].concat(),
+                "{display:?}"
+            );
+        }
+        assert_eq!(
+            ladder(Tier::Native, 60, FIVE_K),
+            [&native[..], &[l(Tier::P2160, 30)], &tail[..]].concat()
+        );
+    }
+
+    #[test]
+    fn floors_never_rise_down_the_ladder() {
+        for display in [RETINA_14, UHD, FIVE_K, (6016, 3384), (1920, 1080)] {
+            for max in [Tier::P1440, Tier::P2160, Tier::Native] {
+                let floors: Vec<f64> = ladder(max, 60, display)
+                    .iter()
+                    .map(|level| level.floor_kbps(1.0, display))
+                    .collect();
+                assert!(
+                    floors.windows(2).all(|w| w[0] >= w[1]),
+                    "{max:?} on {display:?}: {floors:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn floors_for_4k_and_taller() {
+        assert_eq!(l(Tier::P2160, 60).floor_kbps(1.0, UHD), 3000.0);
+        assert_eq!(l(Tier::Native, 60).floor_kbps(1.0, RETINA_14), 2500.0);
+        assert_eq!(l(Tier::Native, 60).floor_kbps(1.0, UHD), 3000.0);
+        // 2160p on this Mac is the display's own size, and costs the same.
+        assert_eq!(l(Tier::P2160, 60).floor_kbps(1.0, RETINA_14), 2500.0);
+        let five_k = l(Tier::Native, 60).floor_kbps(1.0, FIVE_K);
+        assert!((4700.0..4800.0).contains(&five_k), "{five_k}");
+        assert_eq!(l(Tier::P2160, 30).to_string(), "2160p 30 fps");
+    }
+
+    #[test]
+    fn squeezed_4k_drops_frame_rate_then_to_1440() {
+        let mut a = Adapter::new(Tier::P2160, 60, UHD, 1.0);
+        // 2.2 Mbps: under 2160p 60's floor (3.0), enough for 2160p 30 (~1.8).
+        let squeezed = own(2200.0, 2300.0, 40.0, Limit::Bandwidth);
+        assert_eq!(
+            run(&mut a, 0, 4, &squeezed, None),
+            vec![(3, l(Tier::P2160, 30))]
+        );
+        // 1.2 Mbps: under 2160p 30's floor, enough for 1440p 30 (~0.95).
+        let less = own(1200.0, 1300.0, 25.0, Limit::Bandwidth);
+        assert_eq!(
+            run(&mut a, 4, 4, &less, None),
+            vec![(7, l(Tier::P1440, 30))]
+        );
+    }
+
     /// Runs one snapshot per second from `t0`, returning the changes with their times.
     fn run(
         a: &mut Adapter,
@@ -393,7 +511,7 @@ mod tests {
     #[test]
     fn ladder_drops_frame_rate_before_resolution() {
         assert_eq!(
-            ladder(Tier::P1440, 60),
+            ladder(Tier::P1440, 60, RETINA_14),
             vec![
                 l(Tier::P1440, 60),
                 l(Tier::P1440, 30),
@@ -403,22 +521,22 @@ mod tests {
             ]
         );
         assert_eq!(
-            ladder(Tier::P720, 30),
+            ladder(Tier::P720, 30, RETINA_14),
             vec![l(Tier::P720, 30), l(Tier::P720, 15)]
         );
-        assert_eq!(ladder(Tier::P720, 15), vec![l(Tier::P720, 15)]);
+        assert_eq!(ladder(Tier::P720, 15, RETINA_14), vec![l(Tier::P720, 15)]);
     }
 
     #[test]
     fn steady_good_network_stays_put() {
-        let mut a = Adapter::new(Tier::P1440, 60, 1.0);
+        let mut a = adapter(Tier::P1440, 60, 1.0);
         assert!(run(&mut a, 0, 120, &good(), None).is_empty());
         assert_eq!(a.level(), l(Tier::P1440, 60));
     }
 
     #[test]
     fn bandwidth_drop_halves_frame_rate_first_and_recovers() {
-        let mut a = Adapter::new(Tier::P1440, 60, 1.0);
+        let mut a = adapter(Tier::P1440, 60, 1.0);
         // 1.2 Mbps is below 1440p 60's floor but enough for 1440p 30: text stays sharp.
         let squeezed = own(1200.0, 1300.0, 40.0, Limit::Bandwidth);
         assert_eq!(
@@ -431,7 +549,7 @@ mod tests {
 
     #[test]
     fn severe_drop_jumps_to_a_level_that_fits() {
-        let mut a = Adapter::new(Tier::P1440, 60, 1.0);
+        let mut a = adapter(Tier::P1440, 60, 1.0);
         // 0.35 Mbps: only 720p fits, at 30 fps (floor ~0.3).
         let starved = own(350.0, 400.0, 10.0, Limit::Bandwidth);
         let downs = run(&mut a, 0, 12, &starved, None);
@@ -446,7 +564,7 @@ mod tests {
 
     #[test]
     fn nothing_fits_goes_to_the_bottom_fast() {
-        let mut a = Adapter::new(Tier::P1440, 60, 1.0);
+        let mut a = adapter(Tier::P1440, 60, 1.0);
         let starved = own(50.0, 60.0, 5.0, Limit::Bandwidth);
         // Under half the floor is severe: one second, not three.
         assert_eq!(
@@ -458,14 +576,14 @@ mod tests {
     #[test]
     fn other_trouble_steps_one_level() {
         // Viewer loss says nothing about how far to go: one level at a time.
-        let mut a = Adapter::new(Tier::P1440, 60, 1.0);
+        let mut a = adapter(Tier::P1440, 60, 1.0);
         let changes = run(&mut a, 0, 4, &good(), Some(&viewer(9.0, 0)));
         assert_eq!(changes, vec![(3, l(Tier::P1440, 30))]);
     }
 
     #[test]
     fn short_blips_are_ignored() {
-        let mut a = Adapter::new(Tier::P1080, 60, 1.0);
+        let mut a = adapter(Tier::P1080, 60, 1.0);
         let squeezed = own(500.0, 600.0, 20.0, Limit::Bandwidth);
         for t in 0..60 {
             let s = if t % 4 == 0 { &squeezed } else { &good() };
@@ -475,7 +593,7 @@ mod tests {
 
     #[test]
     fn cpu_limit_steps_down() {
-        let mut a = Adapter::new(Tier::Native, 60, 1.0);
+        let mut a = adapter(Tier::Native, 60, 1.0);
         let cpu = own(9000.0, 9000.0, 25.0, Limit::Cpu);
         assert_eq!(
             run(&mut a, 0, 5, &cpu, None),
@@ -486,7 +604,7 @@ mod tests {
     #[test]
     fn viewer_distress_steps_down_even_with_good_uplink() {
         // The viewer's downlink is the bottleneck: our own estimate looks fine.
-        let mut a = Adapter::new(Tier::P1440, 60, 1.0);
+        let mut a = adapter(Tier::P1440, 60, 1.0);
         let lossy = viewer(8.0, 0);
         assert_eq!(
             run(&mut a, 0, 8, &good(), Some(&lossy)),
@@ -496,20 +614,20 @@ mod tests {
 
     #[test]
     fn repeated_freezes_count_even_without_duration() {
-        let mut a = Adapter::new(Tier::P1080, 60, 1.0);
+        let mut a = adapter(Tier::P1080, 60, 1.0);
         let freezing = viewer(0.0, 2);
         assert_eq!(
             run(&mut a, 0, 5, &good(), Some(&freezing)),
             vec![(3, l(Tier::P1080, 30))]
         );
         // One freeze now and then (scrolling after a pause) is not distress.
-        let mut a = Adapter::new(Tier::P1080, 60, 1.0);
+        let mut a = adapter(Tier::P1080, 60, 1.0);
         assert!(run(&mut a, 0, 30, &good(), Some(&viewer(0.0, 1))).is_empty());
     }
 
     #[test]
     fn does_not_step_up_while_viewer_struggles() {
-        let mut a = Adapter::new(Tier::P1440, 60, 1.0);
+        let mut a = adapter(Tier::P1440, 60, 1.0);
         run(
             &mut a,
             0,
@@ -523,14 +641,14 @@ mod tests {
 
     #[test]
     fn never_exceeds_requested_level() {
-        let mut a = Adapter::new(Tier::P1080, 30, 1.0);
+        let mut a = adapter(Tier::P1080, 30, 1.0);
         assert!(run(&mut a, 0, 120, &good(), None).is_empty());
         assert_eq!(a.level(), l(Tier::P1080, 30));
     }
 
     #[test]
     fn flapping_backs_off() {
-        let mut a = Adapter::new(Tier::P1440, 60, 1.0);
+        let mut a = adapter(Tier::P1440, 60, 1.0);
         let squeezed = own(1200.0, 1300.0, 30.0, Limit::Bandwidth);
         let (down, up) = (l(Tier::P1440, 30), l(Tier::P1440, 60));
         assert_eq!(run(&mut a, 0, 4, &squeezed, None), vec![(3, down)]);
@@ -546,8 +664,8 @@ mod tests {
 
     #[test]
     fn vp8_needs_more_bitrate() {
-        let mut h264 = Adapter::new(Tier::P1080, 60, 1.0);
-        let mut vp8 = Adapter::new(Tier::P1080, 60, 2.0);
+        let mut h264 = adapter(Tier::P1080, 60, 1.0);
+        let mut vp8 = adapter(Tier::P1080, 60, 2.0);
         let budget = own(1500.0, 1600.0, 50.0, Limit::None);
         assert!(run(&mut h264, 0, 10, &budget, None).is_empty());
         assert_eq!(
@@ -559,20 +677,20 @@ mod tests {
     #[test]
     fn static_screen_low_fps_is_not_trouble() {
         // SCK sends few frames on a static screen; with no limit reported that's fine.
-        let mut a = Adapter::new(Tier::P1440, 60, 1.0);
+        let mut a = adapter(Tier::P1440, 60, 1.0);
         let idle = own(8000.0, 9000.0, 4.0, Limit::None);
         assert!(run(&mut a, 0, 60, &idle, None).is_empty());
     }
 
     #[test]
     fn no_send_stats_no_decision() {
-        let mut a = Adapter::new(Tier::P1440, 60, 1.0);
+        let mut a = adapter(Tier::P1440, 60, 1.0);
         assert_eq!(a.update(0.0, &NetSnapshot::default(), None), None);
     }
 
     #[test]
     fn level_floors_follow_tier_and_frame_rate() {
-        let f = |t, fps| l(t, fps).floor_kbps(1.0);
+        let f = |t, fps| l(t, fps).floor_kbps(1.0, RETINA_14);
         assert!(f(Tier::P1440, 30) < f(Tier::P1440, 60));
         assert!(f(Tier::P1080, 30) < f(Tier::P1440, 30));
         assert!(f(Tier::P720, 15) < f(Tier::P720, 30));
