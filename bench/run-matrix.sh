@@ -21,9 +21,10 @@ CONFIGS=(
   "lk-vp8|--capture lk --codec vp8"
   "sck-vp8-1440|--capture sck --codec vp8 --resolution 1440"
   "sck-h264-1440|--capture sck --codec h264 --resolution 1440"
-  # The display's own size (above 1440 lines on Retina and 4K displays), H.264 vs HEVC.
-  "sck-h264-native|--capture sck --codec h264 --resolution native"
-  "sck-h265-native|--capture sck --codec h265 --resolution native"
+  # The display's own size (above 1440 lines on Retina and 4K displays), H.264 vs HEVC. Without
+  # the auto-throttle, which steps a mostly static screen down while the encoder asks for little.
+  "sck-h264-native|--capture sck --codec h264 --resolution native --no-adapt"
+  "sck-h265-native|--capture sck --codec h265 --resolution native --no-adapt"
   # Text quality on the synthetic pattern: headless, no screen capture, no windows.
   "q-h264-1080|--capture pattern --codec h264 --resolution 1080|--headless --measure-quality"
   "q-vp8-1080|--capture pattern --codec vp8 --resolution 1080|--headless --measure-quality"
