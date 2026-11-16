@@ -56,8 +56,10 @@ Fill these in as code lands; keep them accurate.
 - Format: `cargo fmt --all`
 - Local LiveKit: `livekit-server --dev` (`brew install livekit`), or
   `docker compose -f deploy/dev/docker-compose.yml up`
-- Media spike: `target/release/tc-spike share [--resolution 720|1080|1440|native] [--codec vp8]`
-  and `target/release/tc-spike view` (see `--help`; `S` toggles the stats HUD)
+- Media spike: `target/release/tc-spike share [--resolution 720|1080|1440|2160|native]
+  [--codec h264|h265|vp8|vp9|av1]` and `target/release/tc-spike view` (see `--help`; `S` toggles
+  the stats HUD). H.264 is the default; `h265` (HEVC) is opt-in, see `docs/adr/0008-hevc-for-4k.md`.
+  `--capture pattern` pretends to be a 3840x2160 display, so every tier up to 2160 is 16:9
 - Quality without windows or screen capture: `tc-spike share --capture pattern` +
   `tc-spike view --headless --measure-quality` (SSIM/PSNR vs the synthetic pattern)
 - Input path: `tc-spike view --headless --measure-input` (reliable vs lossy data channels)

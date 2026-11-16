@@ -62,11 +62,14 @@ Codecs are configurable (`tc-spike share --codec`). Measurements are in
 - **VP8** is the software fallback.
 - **VP9** was worse on every measure.
 - Simulcast is off for screen share.
-- **Resolution tiers** (`--resolution`): 720, 1080 (default), 1440 or native lines; the width
-  follows the display's aspect ratio, rounded to a multiple of 16 so encoders don't crop
-  (1662 became 1660). On a 3024x1964 MacBook panel: 1104x720, 1664x1080, 2224x1440.
-  ScreenCaptureKit scales on the GPU. Default max bitrates are 2.5 / 5 / 8 / 12 Mbps; the
-  bandwidth estimate usually sets the actual target lower.
+- **Resolution tiers** (`--resolution`): 720, 1080 (default), 1440, 2160 or native lines; the
+  width follows the display's aspect ratio, rounded to a multiple of 16 so encoders don't crop
+  (1662 became 1660), and no tier upscales. On a 3024x1964 MacBook panel: 1104x720, 1664x1080,
+  2224x1440, and 2160 is the panel's own 3024x1964. ScreenCaptureKit scales on the GPU. Default
+  max bitrates are 2.5 / 5 / 8 / 15 Mbps, and 12 Mbps for native; the bandwidth estimate
+  usually sets the actual target lower.
+- **HEVC** (`--codec h265`) is opt-in for 4K, through VideoToolbox like H.264
+  ([ADR 0008](adr/0008-hevc-for-4k.md)). H.264 stays the default.
 - The viewer shows frames 1:1 (sharpest text) and only downscales when a frame doesn't fit
   on its monitor (e.g. 1440p onto a 1080p screen).
 - `is_screencast` showed no frame-rate cap and no latency difference.
@@ -336,11 +339,15 @@ resolution, because text needs pixels more than 60 fps:
 
 1440p 60 → 1440p 30 → 1080p 30 → 720p 30 → 720p 15
 
-The ladder starts at what the user picked.
+The ladder starts at what the user picked. 2160p steps down to 1440p (2160p 60 → 2160p 30 →
+1440p 30 → …). Native steps down through 2160p only on a display taller than 2160 lines; on a
+shorter one 2160p would be the same size, so it goes straight to 1440p.
 - **Step down one level** after 3 s of trouble:
   - the budget (encoder target, capped by the bandwidth estimate) is under 90% of the
-    level's floor. Floors are 0.5 / 1.0 / 1.6 / 2.5 Mbps for 720 / 1080 / 1440 / native at
-    60 fps with H.264, ~2x for VP8, and scale with (fps/60)^0.75;
+    level's floor. Floors are 0.5 / 1.0 / 1.6 / 3.0 Mbps for 720 / 1080 / 1440 / 2160 at
+    60 fps with H.264 or HEVC, ~2x for VP8, and scale with (fps/60)^0.75. Native is 2.5 Mbps
+    on a display shorter than 2160 lines (and so is 2160 there, being the same size); from
+    2160 lines up it grows from 3.0 Mbps with (pixels / 4K pixels)^0.8;
   - or the encoder is CPU-limited;
   - or it's bandwidth-limited below half the level's frame rate;
   - or the viewer reports ≥ 5% loss or ≥ 2 freezes a second.
@@ -368,9 +375,14 @@ The ladder starts at what the user picked.
 `crates/media/src/netstats.rs` polls WebRTC stats once a second on both ends (`Room::get_stats`)
 and turns the cumulative counters into per-second `NetSnapshot`s:
 - link RTT and path (ICE candidate type and protocol, e.g. `host udp`, `relay tcp`);
-- receive: bitrate, fps, resolution, loss %, jitter, freezes, dropped frames, NACK/PLI, decoder;
+- receive: bitrate, fps, resolution, loss %, jitter, freezes, dropped frames, NACK/PLI, decoder,
+  codec, decode time per frame;
 - send: bitrate vs target, fps, resolution, loss reported by the SFU, retransmit %, bandwidth
-  estimate, what limits quality (`cpu`/`bandwidth`), encoder.
+  estimate, what limits quality (`cpu`/`bandwidth`), encoder, codec, encode time per frame.
+
+The viewer's results file has a `media` block that sums these up over the call: the sizes
+actually sent and received, the codec negotiated, median encode and decode time per frame,
+mean bitrate, and how many seconds each quality limitation lasted.
 
 The sharer sends its snapshot to the viewer on data topic `tc.stats`, so the viewer sees both
 ends. `connection_quality` grades the call Good/Fair/Poor; the worst signal wins:
