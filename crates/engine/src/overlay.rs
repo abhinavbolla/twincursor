@@ -46,6 +46,7 @@ pub struct OverlayHandle {
 }
 
 impl OverlayHandle {
+    /// A handle that wakes `proxy`'s event loop, and the state it shares with [`Overlay`].
     pub fn new(proxy: EventLoopProxy<UiEvent>) -> (Self, Arc<Mutex<OverlayState>>) {
         let state = Arc::new(Mutex::new(OverlayState::default()));
         (
@@ -57,6 +58,7 @@ impl OverlayHandle {
         )
     }
 
+    /// Asks the main thread to show `next`, if it differs from what is shown.
     pub fn show(&self, next: OverlayState) {
         let mut state = self.state.lock().unwrap();
         if *state != next {

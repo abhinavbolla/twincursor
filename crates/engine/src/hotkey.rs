@@ -21,9 +21,11 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::WindowId;
 
 use crate::overlay::{Overlay, OverlayHandle, OverlayState, UiEvent};
+use crate::Error;
 
-/// How the hotkeys are shown to the sharer in the terminal.
+/// How the revoke hotkey is shown to the sharer in the terminal.
 pub const REVOKE: &str = "⌃⌥⌘R";
+/// How the mute hotkey is shown to the sharer in the terminal.
 pub const MUTE: &str = "⌃⌥⌘M";
 
 fn hotkey(key: Code) -> HotKey {
@@ -33,6 +35,7 @@ fn hotkey(key: Code) -> HotKey {
     )
 }
 
+/// The sharer's main-thread app: its event loop, hotkeys and overlay.
 pub struct SharerUi {
     event_loop: EventLoop<UiEvent>,
     handle: OverlayHandle,
@@ -40,7 +43,8 @@ pub struct SharerUi {
 }
 
 impl SharerUi {
-    pub fn new() -> anyhow::Result<Self> {
+    /// Makes the event loop. Call it on the main thread.
+    pub fn new() -> Result<Self, Error> {
         let mut builder = EventLoop::<UiEvent>::with_user_event();
         #[cfg(target_os = "macos")]
         {
@@ -76,7 +80,7 @@ impl SharerUi {
         revoke: Option<RevokeSwitch>,
         mute: Option<Arc<VoiceState>>,
         work: impl FnOnce() -> T + Send + 'static,
-    ) -> anyhow::Result<T> {
+    ) -> Result<T, Error> {
         let manager = match GlobalHotKeyManager::new() {
             Ok(manager) => Some(manager),
             Err(e) if revoke.is_some() => return Err(e.into()),
@@ -147,9 +151,9 @@ impl SharerUi {
             }
         }
         app.worker
-            .ok_or_else(|| anyhow::anyhow!("the event loop ended before it started"))?
+            .ok_or(Error::NotStarted)?
             .join()
-            .map_err(|_| anyhow::anyhow!("the sharer's network thread panicked"))
+            .map_err(|_| Error::WorkerPanicked)
     }
 }
 
