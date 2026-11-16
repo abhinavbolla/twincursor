@@ -21,15 +21,24 @@ CONFIGS=(
   "lk-vp8|--capture lk --codec vp8"
   "sck-vp8-1440|--capture sck --codec vp8 --resolution 1440"
   "sck-h264-1440|--capture sck --codec h264 --resolution 1440"
+  # The display's own size (above 1440 lines on Retina and 4K displays), H.264 vs HEVC.
+  "sck-h264-native|--capture sck --codec h264 --resolution native"
+  "sck-h265-native|--capture sck --codec h265 --resolution native"
   # Text quality on the synthetic pattern: headless, no screen capture, no windows.
   "q-h264-1080|--capture pattern --codec h264 --resolution 1080|--headless --measure-quality"
   "q-vp8-1080|--capture pattern --codec vp8 --resolution 1080|--headless --measure-quality"
   "q-h264-1440|--capture pattern --codec h264 --resolution 1440|--headless --measure-quality"
   "q-vp8-1440|--capture pattern --codec vp8 --resolution 1440|--headless --measure-quality"
+  "q-h265-1440|--capture pattern --codec h265 --resolution 1440|--headless --measure-quality"
+  # 4K (3840x2160), H.264 vs HEVC.
+  "q-h264-2160|--capture pattern --codec h264 --resolution 2160|--headless --measure-quality"
+  "q-h265-2160|--capture pattern --codec h265 --resolution 2160|--headless --measure-quality"
   "q-h264-1080-1500k|--capture pattern --codec h264 --resolution 1080 --bitrate-kbps 1500|--headless --measure-quality"
   "q-vp8-1080-1500k|--capture pattern --codec vp8 --resolution 1080 --bitrate-kbps 1500|--headless --measure-quality"
   "q-h264-1440-2500k|--capture pattern --codec h264 --resolution 1440 --bitrate-kbps 2500|--headless --measure-quality"
   "q-h264-1080-noadapt|--capture pattern --codec h264 --resolution 1080 --no-adapt|--headless --measure-quality"
+  "q-h264-2160-4000k|--capture pattern --codec h264 --resolution 2160 --bitrate-kbps 4000|--headless --measure-quality"
+  "q-h265-2160-4000k|--capture pattern --codec h265 --resolution 2160 --bitrate-kbps 4000|--headless --measure-quality"
   "q-vp8-1440-2500k|--capture pattern --codec vp8 --resolution 1440 --bitrate-kbps 2500|--headless --measure-quality"
   # The data-packet path remote-control input takes, during normal video.
   "input-h264|--capture pattern --codec h264 --resolution 1080|--headless --measure-input"
@@ -95,6 +104,23 @@ echo "=== summary (ms)"
             (.report.rtt_presented.p50 // 0 | floor), (.report.rtt_presented.p95 // 0 | floor),
             (.report.one_way_presented.p50 // 0 | floor), (.report.one_way_presented.p95 // 0 | floor),
             "\(.report.ticks_seen)/\(.report.ticks_sent)"] | @tsv' "$f"
+  done | sort
+} | column -t -s $'\t'
+
+echo "=== media (sizes sent and received, codec negotiated, time per frame)"
+{
+  printf 'label\tsent\treceived\tcodec\tencode_ms\tdecode_ms\tkbps\tssim_p5\tlimits\n'
+  for f in bench/results/*.json; do
+    # Results written before the media summary existed have none.
+    jq -r 'select(.media) | .media as $m | [.label,
+            ($m.sent_sizes | map("\(.[0])x\(.[1])") | join(",")),
+            ($m.received_sizes | map("\(.[0])x\(.[1])") | join(",")),
+            "\($m.send_codec)/\($m.recv_codec)",
+            ($m.encode_ms_p50 // 0 | . * 100 | round / 100),
+            ($m.decode_ms_p50 // 0 | . * 100 | round / 100),
+            ($m.recv_kbps_mean // 0 | floor),
+            (.report.ssim.p5 // 0 | . * 10000 | floor / 10000),
+            ($m.limit_s | map("\(.[0]) \(.[1])s") | join(","))] | @tsv' "$f"
   done | sort
 } | column -t -s $'\t'
 
