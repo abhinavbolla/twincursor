@@ -3,6 +3,7 @@
 mod lk;
 #[cfg(target_os = "macos")]
 mod sck;
+pub mod select;
 mod synthetic;
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -57,13 +58,14 @@ impl Tier {
         }
     }
 
-    /// Output size for this tier on a display of `native` pixels. Keeps the aspect ratio,
-    /// rounds the width to a multiple of 16 (encoders crop other widths: 1662 became 1660),
-    /// keeps the height even (NV12) and never upscales.
+    /// Output size for this tier on a display (or window) of `native` pixels. Keeps the
+    /// aspect ratio, rounds the width to a multiple of 16 and the height down to a multiple
+    /// of 4 (the encoder crops other sizes: a width of 1662 became 1660, a height of 1046
+    /// became 1044) and never upscales.
     pub fn size(self, native: (u32, u32)) -> (u32, u32) {
-        let (nw, nh) = (native.0.max(16), native.1.max(2));
+        let (nw, nh) = (native.0.max(16), native.1.max(4));
         let max_w = nw / 16 * 16;
-        let lines = self.lines().unwrap_or(nh).min(nh) & !1;
+        let lines = self.lines().unwrap_or(nh).min(nh) & !3;
         let width = (u64::from(lines) * u64::from(nw) + u64::from(nh) / 2) / u64::from(nh);
         let width = ((width as u32 + 8) / 16 * 16).clamp(16, max_w);
         (width, lines)
@@ -89,8 +91,22 @@ pub fn display_pixels() -> Option<(u32, u32)> {
     }
 }
 
+/// What to capture. Only ScreenCaptureKit captures a window or an app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Source {
+    /// The main display, leaving out every TwinCursor window (see
+    /// [`select::is_twincursor`]), so a viewer on the same Mac doesn't show itself.
+    #[default]
+    Display,
+    /// One window, by id ([`select::WindowInfo::id`]), wherever it is and whatever covers it.
+    Window(u32),
+    /// The main display, showing only the windows of the app with this process id.
+    App(i32),
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct CaptureConfig {
+    pub source: Source,
     /// Output size. Backends that can't scale on capture scale on the CPU instead.
     pub width: u32,
     pub height: u32,
@@ -141,26 +157,69 @@ pub enum CaptureError {
     NoDisplay,
     #[error("capture backend failed: {0}")]
     Backend(String),
+    #[error("{0} is no longer available to capture")]
+    Gone(String),
+    #[error("only ScreenCaptureKit (macOS) can capture a single window or app")]
+    Unsupported,
 }
 
 /// Keeps a capture running; capture stops when this is dropped.
 pub struct CaptureHandle {
     _inner: Box<dyn Send>,
+    ended: Option<tokio::sync::oneshot::Receiver<String>>,
 }
 
-/// Starts capturing the main display and calls `sink` for every new frame.
+impl CaptureHandle {
+    /// Resolves, with the reason, if capture stops on its own: for example when the shared
+    /// window is closed. Never resolves for captures that can't end by themselves.
+    pub async fn ended(&mut self) -> String {
+        match self.ended.as_mut() {
+            Some(rx) => {
+                let reason = rx.await;
+                self.ended = None;
+                match reason {
+                    Ok(reason) => reason,
+                    Err(_) => std::future::pending().await,
+                }
+            }
+            None => std::future::pending().await,
+        }
+    }
+}
+
+/// Every window that could be shared with [`Source::Window`], front to back, and the apps
+/// that own them (for [`Source::App`]).
+pub fn shareable() -> Result<(Vec<select::WindowInfo>, Vec<select::AppInfo>), CaptureError> {
+    #[cfg(target_os = "macos")]
+    {
+        sck::shareable()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(CaptureError::Unsupported)
+    }
+}
+
+/// Starts capturing `config.source` and calls `sink` for every new frame.
 pub fn start(
     backend: Backend,
     config: CaptureConfig,
     sink: impl Fn(Frame) + Send + Sync + 'static,
 ) -> Result<CaptureHandle, CaptureError> {
+    let (end_tx, end_rx) = tokio::sync::oneshot::channel();
     let inner: Box<dyn Send> = match backend {
         #[cfg(target_os = "macos")]
-        Backend::ScreenCaptureKit => Box::new(sck::start(config, sink)?),
+        Backend::ScreenCaptureKit => Box::new(sck::start(config, sink, end_tx)?),
+        _ if config.source != Source::Display => return Err(CaptureError::Unsupported),
         Backend::LiveKit => Box::new(lk::start(config, sink)?),
         Backend::Pattern => Box::new(synthetic::start(config, sink)),
     };
-    Ok(CaptureHandle { _inner: inner })
+    #[cfg(not(target_os = "macos"))]
+    drop(end_tx);
+    Ok(CaptureHandle {
+        _inner: inner,
+        ended: Some(end_rx),
+    })
 }
 
 /// Current wall-clock time in microseconds since the Unix epoch.
@@ -226,13 +285,22 @@ mod tests {
     }
 
     #[test]
+    fn a_window_keeps_its_own_size_within_the_rounding() {
+        // A 754x523-point window on a Retina display.
+        assert_eq!(Tier::Native.size((1508, 1046)), (1504, 1044));
+        assert_eq!(Tier::P1080.size((1508, 1046)), (1504, 1044));
+        // Taller than the tier: scaled down like a display.
+        assert_eq!(Tier::P720.size((1508, 1046)), (1040, 720));
+    }
+
+    #[test]
     fn never_upscales() {
         assert_eq!(Tier::P1440.size((1920, 1080)), (1920, 1080));
         assert_eq!(Tier::Native.size((1366, 768)), (1360, 768));
     }
 
     #[test]
-    fn widths_are_multiples_of_16_and_heights_even() {
+    fn widths_are_multiples_of_16_and_heights_of_4() {
         for native in [
             (3024, 1964),
             (2560, 1600),
@@ -252,7 +320,7 @@ mod tests {
             ] {
                 let (w, h) = tier.size(native);
                 assert_eq!(w % 16, 0, "{tier:?} on {native:?}");
-                assert_eq!(h % 2, 0, "{tier:?} on {native:?}");
+                assert_eq!(h % 4, 0, "{tier:?} on {native:?}");
                 assert!(w <= native.0 && h <= native.1, "{tier:?} on {native:?}");
             }
         }

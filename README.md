@@ -81,6 +81,18 @@ target/release/tc-spike view
 macOS will ask you to allow Screen Recording for your terminal. Press `S` in the viewer to show or
 hide the stats HUD. Run `tc-spike --help` to see the options, such as `--resolution 1440`.
 
+To share one window instead of the whole screen, list the windows and pick one by part of its
+title or app name, or by id; `--app` shows only one app's windows:
+
+```bash
+target/release/tc-spike windows
+target/release/tc-spike share --window "Safari" --resolution native
+```
+
+The viewer leaves itself out of a whole-screen share, so you can try both ends on one Mac
+without the picture repeating inside itself. Its stats HUD says whether you're seeing the
+stream's real pixels ("shown 1:1") or a scaled picture.
+
 Both sides talk through their mic and speakers, so macOS will also ask to allow the microphone.
 Echo cancellation is always on, so speakers work without headphones once the two ends are in
 different rooms. On one Mac, use headphones or `--audio off` on one side: each end cancels only its

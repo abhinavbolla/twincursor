@@ -62,6 +62,9 @@ pub enum ShareError {
     Capture(#[from] capture::CaptureError),
     #[error("voice: {0}")]
     Voice(VoiceError),
+    /// Capture stopped by itself, for example because the shared window was closed.
+    #[error("{0}")]
+    Ended(String),
 }
 
 /// Counters the sharer reports periodically.
@@ -224,7 +227,7 @@ pub async fn run(
             )
         })
     };
-    let _capture = {
+    let mut capture = {
         let mailbox = mailbox.clone();
         let stats = stats.clone();
         capture::start(config.backend, config.capture, move |frame| {
@@ -242,10 +245,15 @@ pub async fn run(
     let mut poller = Poller::new(Side::Publisher);
     let mut stats_timer = tokio::time::interval(STATS_EVERY);
     let mut device_timer = tokio::time::interval(audio::DEVICE_CHECK_EVERY);
+    let mut ended = None;
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
             _ = &mut shutdown => break,
+            reason = capture.ended() => {
+                ended = Some(reason);
+                break;
+            }
             _ = voice_state.changed() => voice.apply_mute(),
             _ = device_timer.tick() => voice.check_devices(),
             _ = stats_timer.tick(), if config.net_stats => {
@@ -332,11 +340,14 @@ pub async fn run(
 
     pings.abort();
     link_tasks.iter().flatten().for_each(|t| t.abort());
-    drop(_capture);
+    drop(capture);
     mailbox.close();
     let _ = sender.join();
     room.close().await?;
-    Ok(())
+    match ended {
+        Some(reason) => Err(ShareError::Ended(reason)),
+        None => Ok(()),
+    }
 }
 
 /// How much more bitrate than H.264 a codec needs for the same text sharpness, for the
