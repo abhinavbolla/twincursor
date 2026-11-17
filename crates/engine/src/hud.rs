@@ -193,7 +193,7 @@ pub fn shown_line(frame: (u32, u32), drawn: (u32, u32)) -> Line {
     if frame == drawn {
         return Line::new(format!("picture {w}x{h} shown 1:1"), WHITE);
     }
-    let pct = f64::from(drawn.0) * 100.0 / f64::from(w.max(1));
+    let pct = shown_pct(frame, drawn);
     Line::new(
         format!(
             "picture {w}x{h} scaled to {pct:.0}% ({}x{})",
@@ -201,6 +201,12 @@ pub fn shown_line(frame: (u32, u32), drawn: (u32, u32)) -> Line {
         ),
         AMBER,
     )
+}
+
+/// The size the frame is drawn at, in percent of its own: 100 is 1:1. The one place this is
+/// worked out, for the HUD's line and the desktop app's stats.
+pub fn shown_pct(frame: (u32, u32), drawn: (u32, u32)) -> f64 {
+    f64::from(drawn.0) * 100.0 / f64::from(frame.0.max(1))
 }
 
 fn mbps(kbps: f64) -> String {

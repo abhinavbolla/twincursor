@@ -107,6 +107,7 @@ fn hello(name: &str, platform: Platform) -> Message {
     Message::Hello {
         name: name.into(),
         platform,
+        decoders: vec![],
     }
 }
 

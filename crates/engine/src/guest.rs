@@ -12,10 +12,12 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use control::guest::{GuestSession, GuestState};
+use ipc::{ConnectionState, ControlState, Event, Peer};
 use media::link::{ControlLink, LinkEvent, LinkSender, Outgoing};
 use protocol::{InputEvent, Message, Platform};
 use serde::Deserialize;
 
+use crate::app::{Events, People};
 use crate::{Error, ScriptError};
 
 const TICK: Duration = Duration::from_millis(4);
@@ -71,10 +73,12 @@ pub struct Guest {
 impl Guest {
     /// Starts the guest thread. Returns the link to hand to `subscribe::run`, and the thread
     /// to join after [`Guest::stop`]. With `sent_log`, every message sent is also written there
-    /// as a line of JSON (see `tc-spike replay`).
+    /// as a line of JSON (see `tc-spike replay`). With `events`, the connection, who is in the
+    /// call and this guest's control state go there too, for the desktop app.
     pub fn start(
         name: String,
         sent_log: Option<&Path>,
+        events: Option<Events>,
     ) -> Result<(Self, ControlLink, JoinHandle<()>), Error> {
         let (tx, rx) = mpsc::channel();
         let (link, outgoing) = {
@@ -89,7 +93,7 @@ impl Guest {
             let status = status.clone();
             std::thread::Builder::new().name("guest".into()).spawn({
                 let outgoing = outgoing.clone();
-                move || run(name, &rx, &outgoing, &status, log)
+                move || run(name, &rx, &outgoing, &status, log, events.map(AppSeam::new))
             })?
         };
         Ok((
@@ -120,12 +124,81 @@ impl Guest {
     }
 }
 
+/// What the desktop app is told from the guest thread.
+struct AppSeam {
+    events: Events,
+    people: People,
+    /// This guest, once connected.
+    me: Option<Peer>,
+    shown: Option<GuestState>,
+}
+
+impl AppSeam {
+    fn new(events: Events) -> Self {
+        Self {
+            events,
+            people: People::default(),
+            me: None,
+            shown: None,
+        }
+    }
+
+    fn link(&mut self, event: &LinkEvent, name: &str) {
+        let event = match event {
+            LinkEvent::Connected { identity } => {
+                self.me = Some(Peer {
+                    identity: identity.clone(),
+                    name: name.to_owned(),
+                });
+                Event::Connection {
+                    state: ConnectionState::Connected,
+                }
+            }
+            LinkEvent::Reconnected => Event::Connection {
+                state: ConnectionState::Connected,
+            },
+            LinkEvent::Reconnecting => Event::Connection {
+                state: ConnectionState::Reconnecting,
+            },
+            LinkEvent::Joined { identity, name } => self.people.joined(identity, name),
+            LinkEvent::Left(identity) => match self.people.left(identity) {
+                Some(event) => event,
+                None => return,
+            },
+            LinkEvent::Sharing(_) | LinkEvent::Data { .. } => return,
+        };
+        (self.events)(event);
+    }
+
+    fn show(&mut self, state: GuestState) {
+        if self.shown == Some(state) {
+            return;
+        }
+        self.shown = Some(state);
+        let (state, by) = match state {
+            GuestState::Idle => (ControlState::None, None),
+            GuestState::Requested => (ControlState::Asked, self.me.clone()),
+            GuestState::InControl => (ControlState::Controlling, self.me.clone()),
+        };
+        (self.events)(Event::Control { state, by });
+    }
+}
+
+fn hello(name: &str) -> Message {
+    Message::Hello {
+        name: name.to_owned(),
+        platform: this_platform(),
+        decoders: crate::app::decoders(),
+    }
+}
+
 fn run(
     name: String,
     rx: &mpsc::Receiver<In>,
     outgoing: &LinkSender,
     status: &Status,
     mut log: Option<std::fs::File>,
+    mut app: Option<AppSeam>,
 ) {
     let mut session = GuestSession::new(Instant::now());
     let mut sharer: Option<String> = None;
@@ -150,14 +223,15 @@ fn run(
     loop {
         let now = Instant::now();
         let mut out = Vec::new();
-        match rx.recv_timeout(TICK) {
+        let received = rx.recv_timeout(TICK);
+        if let (Some(app), Ok(In::Link(event))) = (app.as_mut(), &received) {
+            app.link(event, &name);
+        }
+        match received {
             Ok(In::Link(LinkEvent::Sharing(identity))) => {
                 tracing::info!(%identity, "sharer found");
                 sharer = Some(identity);
-                out.push(Message::Hello {
-                    name: name.clone(),
-                    platform: this_platform(),
-                });
+                out.push(hello(&name));
                 // A request made before the sharer was found went nowhere: make it now.
                 if session.state() == GuestState::Requested {
                     out.push(Message::RequestControl);
@@ -200,6 +274,9 @@ fn run(
                     send(&sharer, m);
                 }
                 status.set(session.state());
+                if let Some(app) = app.as_mut() {
+                    app.show(session.state());
+                }
                 return;
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -207,10 +284,7 @@ fn run(
         for message in session.tick(now) {
             // A repeated request goes with a repeated hello, in case that was lost too.
             if message == Message::RequestControl {
-                out.push(Message::Hello {
-                    name: name.clone(),
-                    platform: this_platform(),
-                });
+                out.push(hello(&name));
             }
             out.push(message);
         }
@@ -221,6 +295,9 @@ fn run(
             send(&sharer, message);
         }
         status.set(session.state());
+        if let Some(app) = app.as_mut() {
+            app.show(session.state());
+        }
         if let Some(deadline) = leave_by {
             if !awaiting_release {
                 return;
@@ -251,6 +328,11 @@ fn this_platform() -> Platform {
 pub enum Step {
     /// Ask for control and wait until it's granted.
     Request,
+    /// Wait until control is granted, without asking: the request comes from elsewhere, such
+    /// as the desktop app's `request_control` command.
+    AwaitControl,
+    /// Wait until control ends, by the sharer taking it back or the guest giving it back.
+    AwaitEnd,
     Release,
     Input {
         event: InputEvent,
@@ -296,6 +378,26 @@ pub fn play(guest: &Guest, steps: &[Step]) -> Result<(), ScriptError> {
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 tracing::info!("control granted");
+            }
+            Step::AwaitControl => {
+                let asked = Instant::now();
+                while guest.status.get() != GuestState::InControl {
+                    if asked.elapsed() >= GRANT_TIMEOUT {
+                        return Err(ScriptError::NoAnswer);
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                tracing::info!("control granted");
+            }
+            Step::AwaitEnd => {
+                let since = Instant::now();
+                while guest.status.get() == GuestState::InControl {
+                    if since.elapsed() >= GRANT_TIMEOUT {
+                        return Err(ScriptError::NoAnswer);
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                tracing::info!("control ended");
             }
             Step::Release => guest.send(Ui::Release),
             Step::Input { event } => guest.send(Ui::Input(event.clone())),
@@ -356,10 +458,11 @@ mod tests {
     fn scripts_parse() {
         let steps: Vec<Step> = serde_json::from_str(
             r#"[{"do":"request"},{"do":"input","event":{"kind":"move","x":0.5,"y":0.5}},
-                {"do":"type","text":"hi"},{"do":"wait","ms":5},{"do":"release"}]"#,
+                {"do":"type","text":"hi"},{"do":"wait","ms":5},{"do":"release"},
+                {"do":"await_control"},{"do":"await_end"}]"#,
         )
         .unwrap();
-        assert_eq!(steps.len(), 5);
+        assert_eq!(steps.len(), 7);
     }
 
     #[test]

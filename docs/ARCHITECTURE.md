@@ -31,7 +31,10 @@ The Rust core is split into crates:
   hotkeys and "is controlling" overlay), the viewer's input mapping, and the control threads on
   both sides.
 - `crates/media-spike` builds `tc-spike`, a command line over the engine that every bench script
-  drives. The desktop app's engine process will be another front end on the same library.
+  drives.
+- `crates/engine-cli` builds `tc-engine`, the engine process the desktop app starts. It speaks
+  the commands and events in `crates/ipc` as JSON lines on stdin and stdout; see
+  [the IPC protocol](ipc.md).
 
 ## Key decisions
 

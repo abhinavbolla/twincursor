@@ -104,6 +104,12 @@ Fill these in as code lands; keep them accurate.
 - Network lab (Docker): `bench/netlab/run.sh [--build] [profile ...]`, then
   `bench/netlab/report.sh` (profiles and SLOs in ARCHITECTURE.md). Synthetic voice runs
   alongside unless `AUDIO=off`; `SHARE_FLAGS="--voice-kbps 24 --no-red"` changes its encoding
+- Engine for the desktop app: `target/release/tc-engine share|view --ipc --room R --name N`
+  (JSON lines on stdin and stdout, logs on stderr, exits when stdin closes; see `docs/ipc.md`),
+  `tc-engine permissions`, `tc-engine devices`, `tc-engine windows`. Build: `cargo build --release -p twincursor-engine-cli`
+- IPC end to end: `bench/engine-e2e.sh` (a scripted app drives a sharer and a headless guest:
+  request, allow, typing recorded not injected, revoke, leave, and the engine exiting when its
+  stdin closes; pattern capture and `--audio off`, so no permissions or unlocked screen needed)
 - Releases: `docs/RELEASING.md`; a `v*` tag builds archives and a draft release
 - Desktop app (`apps/desktop`, Node 20.19+): `npm ci`, then `npm run build` (UI into `dist`,
   which the app crate embeds: build it before `cargo clippy/test --workspace`), `npx tsc

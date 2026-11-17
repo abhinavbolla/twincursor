@@ -15,8 +15,16 @@ use tokio::task::JoinHandle;
 /// What the link reports to the app.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkEvent {
-    /// A participant is in the room: already there when we joined, or just arrived.
-    Joined(String),
+    /// We are in the room, as `identity`. Comes first, before anyone already there.
+    Connected {
+        identity: String,
+    },
+    /// A participant is in the room: already there when we joined, or just arrived. `name` is
+    /// the display name in their token, which they chose: not proof of who they are.
+    Joined {
+        identity: String,
+        name: String,
+    },
     /// This participant's screen is now being received (viewer side only).
     Sharing(String),
     Data {
@@ -24,6 +32,9 @@ pub enum LinkEvent {
         payload: Vec<u8>,
     },
     Left(String),
+    /// The connection to the server dropped, and the SDK is getting it back.
+    Reconnecting,
+    Reconnected,
 }
 
 /// Bytes for the link to send.
@@ -109,9 +120,15 @@ pub(crate) fn start(room: &Room, link: ControlLink) -> [JoinHandle<()>; 2] {
         pending,
     } = link;
     let events = room.subscribe();
+    on_event(LinkEvent::Connected {
+        identity: room.local_participant().identity().to_string(),
+    });
     // Participants already in the room produce no connect event.
-    for identity in room.remote_participants().keys() {
-        on_event(LinkEvent::Joined(identity.to_string()));
+    for (identity, participant) in room.remote_participants() {
+        on_event(LinkEvent::Joined {
+            identity: identity.to_string(),
+            name: participant.name(),
+        });
     }
     [
         tokio::spawn(receive(events, topic.clone(), on_event)),
@@ -139,13 +156,18 @@ async fn receive(mut events: UnboundedReceiver<RoomEvent>, topic: String, on_eve
                 from: from.identity().to_string(),
                 payload: payload.to_vec(),
             },
-            RoomEvent::ParticipantConnected(p) => LinkEvent::Joined(p.identity().to_string()),
+            RoomEvent::ParticipantConnected(p) => LinkEvent::Joined {
+                identity: p.identity().to_string(),
+                name: p.name(),
+            },
             RoomEvent::ParticipantDisconnected(p) => LinkEvent::Left(p.identity().to_string()),
             RoomEvent::TrackSubscribed {
                 track: RemoteTrack::Video(_),
                 participant,
                 ..
             } => LinkEvent::Sharing(participant.identity().to_string()),
+            RoomEvent::Reconnecting => LinkEvent::Reconnecting,
+            RoomEvent::Reconnected => LinkEvent::Reconnected,
             _ => continue,
         };
         on_event(report);

@@ -117,6 +117,33 @@ impl Session {
         tracing::info!(muted, "voice");
     }
 
+    /// Moves to the devices asked for with [`VoiceState::choose_mic`] and
+    /// [`VoiceState::choose_speaker`]. Call when [`VoiceState::changed`] resolves.
+    pub fn apply_devices(&mut self) {
+        let wish = self.state.take_device_wish();
+        if wish.mic.is_none() && wish.speaker.is_none() {
+            return;
+        }
+        let Some(Voice::Mic { devices, .. }) = &mut self.voice else {
+            self.state.device_failed(
+                "The voice is off in this call, so there is no device to change.".into(),
+            );
+            return;
+        };
+        let mut result = Ok(());
+        if let Some(mic) = &wish.mic {
+            result = devices.select_mic(mic.as_ref());
+        }
+        if let (Ok(()), Some(speaker)) = (&result, &wish.speaker) {
+            result = devices.select_speaker(speaker.as_ref());
+        }
+        if let Err(e) = result {
+            self.state
+                .device_failed(format!("That device couldn't be used: {e}."));
+        }
+        self.note_devices();
+    }
+
     /// Follows the other side's voice track. Returns `Some(muted)` when its mute state changed.
     pub fn on_event(&self, event: &RoomEvent) -> Option<bool> {
         let remote_muted = match event {

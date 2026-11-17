@@ -231,10 +231,60 @@ impl Devices {
         changed
     }
 
+    /// Moves the mic to `wanted` mid-call, or to the system default for `None`.
+    pub fn select_mic(&mut self, wanted: Option<&DeviceRef>) -> Result<(), DeviceError> {
+        let devices: Vec<_> = self.audio.recording_devices().collect();
+        let names: Vec<_> = devices.iter().map(|d| d.name.clone()).collect();
+        let (i, next) = choose("mic", &names, wanted)?;
+        self.audio
+            .switch_recording_device(&devices[i].id)
+            .map_err(|e| DeviceError::Select("mic", e.to_string()))?;
+        tracing::info!(
+            from = self.mic_in_use.name(),
+            to = next.name(),
+            "mic chosen"
+        );
+        self.mic_in_use = next;
+        Ok(())
+    }
+
+    /// Moves the speakers to `wanted` mid-call, or to the system default for `None`.
+    pub fn select_speaker(&mut self, wanted: Option<&DeviceRef>) -> Result<(), DeviceError> {
+        let devices: Vec<_> = self.audio.playout_devices().collect();
+        let names: Vec<_> = devices.iter().map(|d| d.name.clone()).collect();
+        let (i, next) = choose("speaker", &names, wanted)?;
+        self.audio
+            .switch_playout_device(&devices[i].id)
+            .map_err(|e| DeviceError::Select("speaker", e.to_string()))?;
+        tracing::info!(
+            from = self.speaker_in_use.name(),
+            to = next.name(),
+            "speakers chosen"
+        );
+        self.speaker_in_use = next;
+        Ok(())
+    }
+
     /// The source for a mic track.
     pub fn source(&self) -> RtcAudioSource {
         self.audio.rtc_source()
     }
+}
+
+/// The entry to switch to for `wanted` (`None`: the system default), and what is then in use.
+fn choose(
+    kind: &'static str,
+    names: &[String],
+    wanted: Option<&DeviceRef>,
+) -> Result<(usize, InUse), DeviceError> {
+    let i = match wanted {
+        Some(wanted) => pick(kind, names, wanted)?,
+        None => default_entry(names).map_or(0, |(i, _)| i),
+    };
+    if i >= names.len() {
+        return Err(DeviceError::Unavailable(format!("no {kind} at all")));
+    }
+    Ok((i, in_use(names, i)))
 }
 
 /// What entry `i` of a device list is: the system default, or a device of its own.
@@ -309,6 +359,20 @@ mod tests {
         assert_eq!(pick("mic", &names(), &r("3")).unwrap(), 3);
         assert_eq!(pick("mic", &names(), &r("macbook")).unwrap(), 0);
         assert_eq!(pick("mic", &names(), &r("usb mic")).unwrap(), 3);
+    }
+
+    #[test]
+    fn choosing_the_default_or_a_device() {
+        let names = list(&["default (USB Mic)", "MacBook Pro Microphone", "USB Mic"]);
+        let (i, in_use) = choose("mic", &names, None).unwrap();
+        assert_eq!((i, in_use), (0, InUse::Default(Some("USB Mic".into()))));
+        let (i, in_use) = choose("mic", &names, Some(&r("macbook"))).unwrap();
+        assert_eq!(
+            (i, in_use),
+            (1, InUse::Named("MacBook Pro Microphone".into()))
+        );
+        assert!(choose("mic", &names, Some(&r("airpods"))).is_err());
+        assert!(choose("mic", &[], None).is_err());
     }
 
     #[test]

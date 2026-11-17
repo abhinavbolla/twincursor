@@ -3,9 +3,10 @@
 //! Recording, Accessibility and Microphone access, can ask for the ones not yet decided, and can
 //! check that capture works and leaves the desktop app's windows out. It never injects input.
 //!
-//! Also home to `--exit-on-stdin-close`, which ties this process's life to the app's.
+//! The permission report itself lives in `engine::permission`, which `tc-engine permissions`
+//! prints too.
 
-use std::io::{Read, Write};
+use std::io::Write;
 #[cfg(target_os = "macos")]
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -15,7 +16,7 @@ use std::time::Instant;
 use clap::Args;
 use serde::Serialize;
 
-use engine::permission::MicPermission;
+use engine::permission::{status, Access, Status};
 
 /// Printed on its own line once the capture that leaves the app out is running, so the app can
 /// open a window that wasn't there when capture started.
@@ -39,65 +40,6 @@ pub struct PermissionsArgs {
     exclude_app_pid: Option<u32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum Access {
-    Granted,
-    /// Not allowed, or not asked yet: macOS doesn't tell the two apart for this one.
-    NotGranted,
-    NotAsked,
-    Denied,
-    Restricted,
-    /// Nothing to allow on this platform.
-    NotApplicable,
-}
-
-impl From<Option<MicPermission>> for Access {
-    fn from(mic: Option<MicPermission>) -> Self {
-        match mic {
-            Some(MicPermission::Granted) => Self::Granted,
-            Some(MicPermission::NotAsked) => Self::NotAsked,
-            Some(MicPermission::Denied) => Self::Denied,
-            Some(MicPermission::Restricted) => Self::Restricted,
-            None => Self::NotApplicable,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct Status {
-    screen_recording: Access,
-    accessibility: Access,
-    microphone: Access,
-    pid: u32,
-    parent_pid: u32,
-    executable: String,
-}
-
-fn status() -> Status {
-    Status {
-        screen_recording: sys::screen_recording(),
-        accessibility: sys::accessibility(),
-        microphone: engine::permission::mic_permission().into(),
-        pid: std::process::id(),
-        parent_pid: parent_pid(),
-        executable: std::env::current_exe()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default(),
-    }
-}
-
-fn parent_pid() -> u32 {
-    #[cfg(unix)]
-    {
-        std::os::unix::process::parent_id()
-    }
-    #[cfg(not(unix))]
-    {
-        0
-    }
-}
-
 #[derive(Serialize)]
 struct Report {
     #[serde(flatten)]
@@ -119,16 +61,7 @@ pub fn run(args: PermissionsArgs) -> anyhow::Result<()> {
         }
     }
     if args.request {
-        let before = status();
-        if before.screen_recording != Access::Granted {
-            sys::request_screen_recording();
-        }
-        if before.accessibility != Access::Granted {
-            sys::request_accessibility();
-        }
-        if before.microphone == Access::NotAsked {
-            engine::permission::request_mic_permission(Duration::from_secs(120));
-        }
+        engine::permission::request_missing(&status());
     }
     let status = status();
     let capture = args.capture.then(|| {
@@ -153,22 +86,7 @@ fn print_line(line: &str) {
 /// Exits the process when stdin reaches end of file: the app that started us has closed its end,
 /// or died. Nothing else may read stdin while this runs.
 pub fn exit_on_stdin_close() {
-    std::thread::Builder::new()
-        .name("stdin-watch".into())
-        .spawn(|| {
-            let mut stdin = std::io::stdin().lock();
-            let mut buf = [0u8; 1024];
-            loop {
-                match stdin.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => {}
-                }
-            }
-            // No log line: if the app died, stdout and stderr are closed pipes too, and a
-            // failed write to stderr panics this thread instead of exiting.
-            std::process::exit(0);
-        })
-        .expect("starting the stdin watcher");
+    engine::app::watch_stdin(|_| {}, || {});
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -385,104 +303,6 @@ fn capture_check_into(exclude: Option<u32>, report: &mut CaptureReport) -> anyho
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-mod sys {
-    use std::ffi::c_void;
-
-    use super::Access;
-
-    #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
-        fn CGPreflightScreenCaptureAccess() -> bool;
-        fn CGRequestScreenCaptureAccess() -> bool;
-    }
-
-    #[link(name = "ApplicationServices", kind = "framework")]
-    extern "C" {
-        fn AXIsProcessTrusted() -> bool;
-        fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
-        static kAXTrustedCheckOptionPrompt: *const c_void;
-    }
-
-    #[link(name = "CoreFoundation", kind = "framework")]
-    extern "C" {
-        static kCFBooleanTrue: *const c_void;
-        static kCFTypeDictionaryKeyCallBacks: u8;
-        static kCFTypeDictionaryValueCallBacks: u8;
-        fn CFDictionaryCreate(
-            allocator: *const c_void,
-            keys: *const *const c_void,
-            values: *const *const c_void,
-            count: isize,
-            key_callbacks: *const u8,
-            value_callbacks: *const u8,
-        ) -> *const c_void;
-        fn CFRelease(cf: *const c_void);
-    }
-
-    fn granted(yes: bool) -> Access {
-        if yes {
-            Access::Granted
-        } else {
-            Access::NotGranted
-        }
-    }
-
-    pub fn screen_recording() -> Access {
-        // SAFETY: plain CoreGraphics call without arguments; it never prompts.
-        granted(unsafe { CGPreflightScreenCaptureAccess() })
-    }
-
-    pub fn accessibility() -> Access {
-        // SAFETY: plain call without arguments; it never prompts.
-        granted(unsafe { AXIsProcessTrusted() })
-    }
-
-    pub fn request_screen_recording() {
-        // SAFETY: as above. Shows the system prompt once per app; the answer only takes effect
-        // in processes started after it.
-        unsafe { CGRequestScreenCaptureAccess() };
-    }
-
-    pub fn request_accessibility() {
-        // SAFETY: a one-entry CFDictionary of CF constants, released after the call.
-        unsafe {
-            let keys = [kAXTrustedCheckOptionPrompt];
-            let values = [kCFBooleanTrue];
-            let options = CFDictionaryCreate(
-                std::ptr::null(),
-                keys.as_ptr(),
-                values.as_ptr(),
-                1,
-                &raw const kCFTypeDictionaryKeyCallBacks,
-                &raw const kCFTypeDictionaryValueCallBacks,
-            );
-            if options.is_null() {
-                return;
-            }
-            AXIsProcessTrustedWithOptions(options);
-            CFRelease(options);
-        }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-mod sys {
-    use super::Access;
-
-    pub fn screen_recording() -> Access {
-        Access::NotApplicable
-    }
-
-    pub fn accessibility() -> Access {
-        Access::NotApplicable
-    }
-
-    pub fn request_screen_recording() {}
-
-    pub fn request_accessibility() {}
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,21 +350,5 @@ mod tests {
             probe_share(&uv, 200, (200, 100), [500.0, 500.0, 10.0, 10.0]),
             0.0
         );
-    }
-
-    #[test]
-    fn status_serializes_as_snake_case() {
-        let json = serde_json::to_value(Status {
-            screen_recording: Access::Granted,
-            accessibility: Access::NotGranted,
-            microphone: Access::NotAsked,
-            pid: 1,
-            parent_pid: 2,
-            executable: "x".into(),
-        })
-        .unwrap();
-        assert_eq!(json["screen_recording"], "granted");
-        assert_eq!(json["accessibility"], "not_granted");
-        assert_eq!(json["microphone"], "not_asked");
     }
 }

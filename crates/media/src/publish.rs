@@ -271,7 +271,10 @@ pub async fn run(
                 size.1 = h;
                 tracing::info!("window now {}x{}: sending {w}x{h}", resize.window.0, resize.window.1);
             }
-            _ = voice_state.changed() => voice.apply_mute(),
+            _ = voice_state.changed() => {
+                voice.apply_mute();
+                voice.apply_devices();
+            }
             _ = device_timer.tick() => voice.check_devices(),
             _ = stats_timer.tick(), if config.net_stats => {
                 if let Some(mut snap) = poller.poll(&room).await {

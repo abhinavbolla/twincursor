@@ -18,7 +18,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use engine::{hotkey, sharer};
 use livekit::options::VideoCodec;
 use media::audio::AudioMode;
-use media::capture::select::{self, Pick, WindowInfo};
+use media::capture::select;
 use media::capture::{self, Backend, CaptureConfig, Source, Tier};
 use media::publish::{self, AdaptConfig, ShareConfig, ShareStats};
 use media::token;
@@ -261,32 +261,12 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-/// One line of the window table.
-fn window_row(w: &WindowInfo) -> String {
-    format!(
-        "{:>7}  {:>11}  {:<20}  {}",
-        w.id,
-        format!("{}x{}", w.pixels.0, w.pixels.1),
-        w.app,
-        w.title
-    )
-}
-
-fn window_table<'a>(windows: impl IntoIterator<Item = &'a WindowInfo>) -> String {
-    let mut out = format!("{:>7}  {:>11}  {:<20}  {}", "id", "pixels", "app", "title");
-    for w in windows {
-        out.push('\n');
-        out += &window_row(w);
-    }
-    out
-}
-
 fn list_windows(json: bool) -> anyhow::Result<()> {
     let (windows, _) = capture::shareable().context("listing windows")?;
     if json {
         println!("{}", serde_json::to_string_pretty(&windows)?);
     } else {
-        println!("{}", window_table(&windows));
+        println!("{}", select::window_table(&windows));
     }
     Ok(())
 }
@@ -302,51 +282,15 @@ fn pick_source(args: &ShareArgs) -> anyhow::Result<(Source, Option<(u32, u32)>)>
         "--window and --app need --capture sck"
     );
     let (windows, apps) = capture::shareable().context("listing windows")?;
-    if let Some(query) = &args.window {
-        return match select::pick_window(&windows, query) {
-            Pick::One(w) => {
-                tracing::info!("sharing window {} ({}: {:?})", w.id, w.app, w.title);
-                Ok((Source::Window(w.id), Some(w.pixels)))
-            }
-            Pick::None => anyhow::bail!(
-                "no window matches {query:?}. Shareable windows:\n{}",
-                window_table(&windows)
-            ),
-            Pick::Many(found) => anyhow::bail!(
-                "{} windows match {query:?}; give more of the title, or the id:\n{}",
-                found.len(),
-                window_table(found)
-            ),
-        };
-    }
-    let query = args.app.as_deref().unwrap_or_default();
-    let names = |apps: &[&select::AppInfo]| {
-        apps.iter()
-            .map(|a| format!("  {} ({})", a.name, a.bundle_id))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    match select::pick_app(&apps, query) {
-        Pick::One(a) => {
-            tracing::info!("sharing the windows of {} ({})", a.name, a.bundle_id);
-            Ok((Source::App(a.pid), None))
-        }
-        Pick::None => anyhow::bail!(
-            "no app with windows matches {query:?}. Apps with windows:\n{}",
-            names(&apps.iter().collect::<Vec<_>>())
-        ),
-        Pick::Many(found) => anyhow::bail!(
-            "{} apps match {query:?}; give the full name or the bundle id:\n{}",
-            found.len(),
-            names(&found)
-        ),
-    }
+    select::resolve(&windows, &apps, args.window.as_deref(), args.app.as_deref())
+        .map_err(anyhow::Error::msg)
 }
 
 fn share(args: ShareArgs) -> anyhow::Result<()> {
     anyhow::ensure!(
         !(args.allow_control && (args.window.is_some() || args.app.is_some())),
-        "--allow-control can't be combined with --window or --app: remote control maps the guest's pointer onto the whole display, so share the whole display to give control"
+        "{}",
+        select::CONTROL_NEEDS_DISPLAY
     );
     let (source, source_pixels) = pick_source(&args)?;
     let backend = match args.capture {
@@ -454,13 +398,19 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
             !matches!(args.inject, sharer::Inject::Real),
             "--headless only works with --inject log or record: real control needs the label"
         );
-        let (sharer, link) = sharer::Sharer::start(&args.inject, revoke, None)?;
+        let (sharer, link) =
+            sharer::Sharer::start(&args.inject, revoke, None, sharer::Consent::Terminal)?;
         let result = network(Some(link));
         sharer.stop();
         return result;
     }
     let ui = hotkey::SharerUi::new()?;
-    let (sharer, link) = sharer::Sharer::start(&args.inject, revoke.clone(), Some(ui.overlay()))?;
+    let (sharer, link) = sharer::Sharer::start(
+        &args.inject,
+        revoke.clone(),
+        Some(ui.overlay()),
+        sharer::Consent::Terminal,
+    )?;
     let result = ui.run(Some(revoke), mute, move || network(Some(link)));
     // Release anything a guest still holds before exiting.
     sharer.stop();

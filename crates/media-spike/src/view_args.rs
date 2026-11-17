@@ -89,10 +89,11 @@ pub fn run(args: ViewArgs) -> anyhow::Result<()> {
         headless: args.headless,
         duration: args.duration,
         label: args.label,
-        out: args.out,
+        out: Some(args.out),
         control_script: args.control_script,
         sent_log: args.sent_log,
         name: args.name,
+        app: None,
     })?;
     Ok(())
 }

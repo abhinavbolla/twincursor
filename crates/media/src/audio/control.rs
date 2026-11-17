@@ -9,6 +9,8 @@ use std::sync::Mutex;
 
 use tokio::sync::Notify;
 
+use super::DeviceRef;
+
 /// What is true about the voices right now, for the HUD and the terminal.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct VoiceStatus {
@@ -23,11 +25,21 @@ pub struct VoiceStatus {
     pub speaker: Option<String>,
 }
 
+/// Devices asked for mid-call. The outer `Option` is whether to change that direction at all,
+/// the inner one the device (`None`: the system default).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeviceWish {
+    pub mic: Option<Option<DeviceRef>>,
+    pub speaker: Option<Option<DeviceRef>>,
+}
+
 #[derive(Debug, Default)]
 pub struct VoiceState {
     want_muted: AtomicBool,
     changed: Notify,
     status: Mutex<VoiceStatus>,
+    want_devices: Mutex<DeviceWish>,
+    device_error: Mutex<Option<String>>,
 }
 
 impl VoiceState {
@@ -42,6 +54,32 @@ impl VoiceState {
         let muted = !self.want_muted.fetch_xor(true, Ordering::AcqRel);
         self.changed.notify_one();
         muted
+    }
+
+    /// Asks for another mic mid-call (`None`: the system default). Takes effect when the session
+    /// loop next runs; a failure shows in [`VoiceState::take_device_error`].
+    pub fn choose_mic(&self, mic: Option<DeviceRef>) {
+        self.want_devices.lock().unwrap().mic = Some(mic);
+        self.changed.notify_one();
+    }
+
+    /// Asks for other speakers mid-call, as for [`VoiceState::choose_mic`].
+    pub fn choose_speaker(&self, speaker: Option<DeviceRef>) {
+        self.want_devices.lock().unwrap().speaker = Some(speaker);
+        self.changed.notify_one();
+    }
+
+    /// Why the last device change didn't happen, once.
+    pub fn take_device_error(&self) -> Option<String> {
+        self.device_error.lock().unwrap().take()
+    }
+
+    pub(crate) fn take_device_wish(&self) -> DeviceWish {
+        std::mem::take(&mut *self.want_devices.lock().unwrap())
+    }
+
+    pub(crate) fn device_failed(&self, why: String) {
+        *self.device_error.lock().unwrap() = Some(why);
     }
 
     pub fn wants_muted(&self) -> bool {
@@ -86,6 +124,21 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), state.changed())
             .await
             .expect("the change was remembered");
+    }
+
+    #[test]
+    fn device_wishes_are_taken_once() {
+        let state = VoiceState::default();
+        assert_eq!(state.take_device_wish(), DeviceWish::default());
+        state.choose_mic(Some(DeviceRef::Name("USB".into())));
+        state.choose_speaker(None);
+        let wish = state.take_device_wish();
+        assert_eq!(wish.mic, Some(Some(DeviceRef::Name("USB".into()))));
+        assert_eq!(wish.speaker, Some(None));
+        assert_eq!(state.take_device_wish(), DeviceWish::default());
+        state.device_failed("no".into());
+        assert_eq!(state.take_device_error().as_deref(), Some("no"));
+        assert_eq!(state.take_device_error(), None);
     }
 
     #[test]

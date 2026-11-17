@@ -1,0 +1,16 @@
+[package]
+name = "twincursor-ipc"
+version = "0.1.0"
+publish = false
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Commands and events between the TwinCursor desktop app and its engine, as JSON lines"
+
+[lib]
+name = "ipc"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

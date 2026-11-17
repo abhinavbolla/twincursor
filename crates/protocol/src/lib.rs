@@ -28,6 +28,10 @@ pub enum Message {
     Hello {
         name: String,
         platform: Platform,
+        /// The video codecs this viewer can decode, so the sharer can pick one it shows.
+        /// Viewers before this field send none, which means "not said".
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        decoders: Vec<Codec>,
     },
     RequestControl,
     /// The guest gives control back, or withdraws a request.
@@ -114,6 +118,37 @@ pub enum Platform {
     Unknown,
 }
 
+/// A video codec, as viewers announce what they decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Codec {
+    H264,
+    H265,
+    Vp8,
+    Vp9,
+    Av1,
+    /// A codec this version doesn't know.
+    #[serde(other)]
+    Unknown,
+}
+
+impl Codec {
+    /// The name used in logs and in the app's events.
+    pub fn name(self) -> &'static str {
+        match self {
+            Codec::H264 => "h264",
+            Codec::H265 => "h265",
+            Codec::Vp8 => "vp8",
+            Codec::Vp9 => "vp9",
+            Codec::Av1 => "av1",
+            Codec::Unknown => "unknown",
+        }
+    }
+}
+
+/// Most codecs a hello may list.
+pub const MAX_DECODERS: usize = 16;
+
 #[derive(Debug, thiserror::Error)]
 pub enum DecodeError {
     #[error("message is {0} bytes, more than {MAX_LEN}")]
@@ -146,6 +181,9 @@ impl Message {
                 if name.chars().count() > MAX_NAME_CHARS || name.chars().any(char::is_control) =>
             {
                 Err("bad name")
+            }
+            Message::Hello { decoders, .. } if decoders.len() > MAX_DECODERS => {
+                Err("too many codecs")
             }
             Message::Input { event, .. } => event.validate(),
             _ => Ok(()),
@@ -247,6 +285,12 @@ mod tests {
             Message::Hello {
                 name: "André".into(),
                 platform: Platform::Windows,
+                decoders: vec![],
+            },
+            Message::Hello {
+                name: "Sam".into(),
+                platform: Platform::Macos,
+                decoders: vec![Codec::H264, Codec::H265],
             },
             Message::RequestControl,
             Message::ReleaseControl,
@@ -346,6 +390,12 @@ mod tests {
             Message::Hello {
                 name: "a\u{7}b".into(),
                 platform: Platform::Macos,
+                decoders: vec![],
+            },
+            Message::Hello {
+                name: "x".into(),
+                platform: Platform::Macos,
+                decoders: vec![Codec::H264; MAX_DECODERS + 1],
             },
         ];
         for message in bad {
@@ -361,9 +411,35 @@ mod tests {
             msg.unwrap(),
             Message::Hello {
                 name: "x".into(),
-                platform: Platform::Unknown
+                platform: Platform::Unknown,
+                decoders: vec![],
             }
         );
+    }
+
+    #[test]
+    fn hellos_with_and_without_codecs_read_both_ways() {
+        // A hello from a viewer before codecs were announced reads as "not said".
+        let old = decode(br#"{"v":1,"msg":{"type":"hello","name":"x","platform":"macos"}}"#);
+        assert!(matches!(old.unwrap(), Message::Hello { decoders, .. } if decoders.is_empty()));
+        // A hello without codecs is written exactly as before, so older sharers read it.
+        let bytes = encode(&Message::Hello {
+            name: "x".into(),
+            platform: Platform::Macos,
+            decoders: vec![],
+        });
+        assert_eq!(
+            std::str::from_utf8(&bytes).unwrap(),
+            r#"{"v":1,"msg":{"type":"hello","name":"x","platform":"macos"}}"#
+        );
+        // Codecs from a newer viewer that this version doesn't know still read.
+        let new = decode(
+            br#"{"v":1,"msg":{"type":"hello","name":"x","platform":"macos","decoders":["h265","h266"]}}"#,
+        );
+        assert!(matches!(
+            new.unwrap(),
+            Message::Hello { decoders, .. } if decoders == [Codec::H265, Codec::Unknown]
+        ));
     }
 
     #[test]

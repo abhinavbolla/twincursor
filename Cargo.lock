@@ -5951,9 +5951,35 @@ dependencies = [
  "tokio",
  "tracing",
  "twincursor-control",
+ "twincursor-ipc",
  "twincursor-media",
  "twincursor-protocol",
  "winit",
+]
+
+[[package]]
+name = "twincursor-engine-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "livekit",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "twincursor-control",
+ "twincursor-engine",
+ "twincursor-ipc",
+ "twincursor-media",
+]
+
+[[package]]
+name = "twincursor-ipc"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

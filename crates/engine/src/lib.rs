@@ -4,6 +4,7 @@
 //! `tc-spike` is a command line over this crate. Media itself (capture, WebRTC, voice) lives in
 //! `twincursor-media`; the rules of remote control live in `twincursor-control`.
 
+pub mod app;
 mod error;
 mod guest;
 pub mod hotkey;

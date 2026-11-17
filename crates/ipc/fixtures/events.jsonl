@@ -1,0 +1,17 @@
+{"event":"hello","version":1,"role":"sharer","engine":"0.1.0"}
+{"event":"connection","state":"connecting"}
+{"event":"connection","state":"connected"}
+{"event":"connection","state":"reconnecting"}
+{"event":"participants","participants":[{"identity":"guest-1f2e3d4c","name":"Sam","role":"guest","decoders":["h264","h265","vp8","vp9","av1"]}]}
+{"event":"participants","participants":[]}
+{"event":"control_asked","request":1,"identity":"guest-1f2e3d4c","name":"Sam","platform":"macos"}
+{"event":"control","state":"asked","by":{"identity":"guest-1f2e3d4c","name":"Sam"}}
+{"event":"control","state":"controlling","by":{"identity":"guest-1f2e3d4c","name":"Sam"}}
+{"event":"control","state":"none","by":null}
+{"event":"voice","sending":true,"muted":false,"mic":"MacBook Pro Microphone","speaker":"MacBook Pro Speakers"}
+{"event":"voice","sending":false,"muted":false,"mic":null,"speaker":null}
+{"event":"stats","width":1920,"height":1080,"fps":59.8,"kbps":2480.5,"rtt_ms":4.2,"codec":"h264","shown_pct":100}
+{"event":"stats","width":3840,"height":2160,"fps":60.0,"kbps":9800.0,"rtt_ms":null,"codec":"h265","shown_pct":null}
+{"event":"error","message":"No one is asking for control right now."}
+{"event":"ended","reason":"left"}
+{"event":"ended","reason":"disconnected"}

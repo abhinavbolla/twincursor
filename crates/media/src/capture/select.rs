@@ -151,6 +151,83 @@ pub fn window_pixels(points: (f64, f64), scale: f64) -> (u32, u32) {
     (px(points.0), px(points.1))
 }
 
+/// Why sharing one window or app and remote control don't go together.
+pub const CONTROL_NEEDS_DISPLAY: &str = "--allow-control can't be combined with --window or --app: remote control maps the guest's pointer onto the whole display, so share the whole display to give control";
+
+/// One line of the window table.
+fn window_row(w: &WindowInfo) -> String {
+    format!(
+        "{:>7}  {:>11}  {:<20}  {}",
+        w.id,
+        format!("{}x{}", w.pixels.0, w.pixels.1),
+        w.app,
+        w.title
+    )
+}
+
+/// The shareable windows as a table: id, pixels, app and title.
+pub fn window_table<'a>(windows: impl IntoIterator<Item = &'a WindowInfo>) -> String {
+    let mut out = format!("{:>7}  {:>11}  {:<20}  {}", "id", "pixels", "app", "title");
+    for w in windows {
+        out.push('\n');
+        out += &window_row(w);
+    }
+    out
+}
+
+/// What a `--window` or `--app` query asks for, and the pixel size the tiers are computed from
+/// (`None`: the display's). Without either query, the display. The error lists what there is
+/// to pick from.
+pub fn resolve(
+    windows: &[WindowInfo],
+    apps: &[AppInfo],
+    window: Option<&str>,
+    app: Option<&str>,
+) -> Result<(super::Source, Option<(u32, u32)>), String> {
+    use super::Source;
+    if let Some(query) = window {
+        return match pick_window(windows, query) {
+            Pick::One(w) => {
+                tracing::info!("sharing window {} ({}: {:?})", w.id, w.app, w.title);
+                Ok((Source::Window(w.id), Some(w.pixels)))
+            }
+            Pick::None => Err(format!(
+                "no window matches {query:?}. Shareable windows:\n{}",
+                window_table(windows)
+            )),
+            Pick::Many(found) => Err(format!(
+                "{} windows match {query:?}; give more of the title, or the id:\n{}",
+                found.len(),
+                window_table(found)
+            )),
+        };
+    }
+    let Some(query) = app else {
+        return Ok((Source::Display, None));
+    };
+    let names = |apps: &[&AppInfo]| {
+        apps.iter()
+            .map(|a| format!("  {} ({})", a.name, a.bundle_id))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    match pick_app(apps, query) {
+        Pick::One(a) => {
+            tracing::info!("sharing the windows of {} ({})", a.name, a.bundle_id);
+            Ok((Source::App(a.pid), None))
+        }
+        Pick::None => Err(format!(
+            "no app with windows matches {query:?}. Apps with windows:\n{}",
+            names(&apps.iter().collect::<Vec<_>>())
+        )),
+        Pick::Many(found) => Err(format!(
+            "{} apps match {query:?}; give the full name or the bundle id:\n{}",
+            found.len(),
+            names(&found)
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,5 +415,39 @@ mod tests {
         assert_eq!(window_pixels((754.0, 491.0), 2.0), (1508, 982));
         assert_eq!(window_pixels((1280.0, 800.0), 1.0), (1280, 800));
         assert_eq!(window_pixels((100.25, 50.5), 2.0), (201, 101));
+    }
+
+    #[test]
+    fn resolves_queries_to_a_source() {
+        use crate::capture::Source;
+        let windows = [WindowInfo {
+            id: 7,
+            app: "Xcode".into(),
+            pid: 10,
+            title: "main.rs".into(),
+            pixels: (1000, 800),
+        }];
+        let apps = [AppInfo {
+            pid: 10,
+            name: "Xcode".into(),
+            bundle_id: "com.apple.dt.Xcode".into(),
+        }];
+        assert_eq!(
+            resolve(&windows, &apps, None, None),
+            Ok((Source::Display, None))
+        );
+        assert_eq!(
+            resolve(&windows, &apps, Some("main"), None),
+            Ok((Source::Window(7), Some((1000, 800))))
+        );
+        assert_eq!(
+            resolve(&windows, &apps, None, Some("xcode")),
+            Ok((Source::App(10), None))
+        );
+        let err = resolve(&windows, &apps, Some("safari"), None).unwrap_err();
+        assert!(
+            err.starts_with("no window matches") && err.contains("main.rs"),
+            "{err}"
+        );
     }
 }

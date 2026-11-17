@@ -7,8 +7,8 @@
 
 use std::num::NonZeroU32;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use control::guest::GuestState;
@@ -29,6 +29,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+use crate::app::Events;
 use crate::guest::{Guest, Ui};
 use crate::input::{self, Rect};
 use crate::{hud, Error};
@@ -47,14 +48,136 @@ pub struct ViewOptions {
     pub duration: Option<u64>,
     /// Label stored in the results file, e.g. "sck-vp8-static".
     pub label: String,
-    /// Directory for the JSON results file.
-    pub out: PathBuf,
+    /// Directory for the JSON results file, which is also printed to stdout. `None` writes
+    /// and prints nothing.
+    pub out: Option<PathBuf>,
     /// Play this remote-control script, then stop (headless only).
     pub control_script: Option<PathBuf>,
     /// Write every control message sent as a line of JSON.
     pub sent_log: Option<PathBuf>,
     /// The name the sharer sees when this guest asks for control.
     pub name: String,
+    /// The desktop app, when it drives this viewer.
+    pub app: Option<ViewApp>,
+}
+
+/// How the desktop app drives a viewer: commands in, events out.
+pub struct ViewApp {
+    pub events: Events,
+    pub commands: mpsc::Receiver<ipc::Command>,
+}
+
+/// Carries out the app's commands until they stop coming. `leave` ends the call.
+fn obey(
+    commands: mpsc::Receiver<ipc::Command>,
+    events: Events,
+    guest: Option<Guest>,
+    voice: Arc<VoiceState>,
+    left: Arc<AtomicBool>,
+    leave: impl FnOnce() + Send + 'static,
+) -> std::thread::JoinHandle<()> {
+    use ipc::Command;
+    std::thread::spawn(move || {
+        let mut leave = Some(leave);
+        for command in commands {
+            match command {
+                Command::Mute => voice.set_muted(true),
+                Command::Unmute => voice.set_muted(false),
+                Command::SetMic { device } => voice.choose_mic(device.map(|d| d.parse().unwrap())),
+                Command::SetSpeaker { device } => {
+                    voice.choose_speaker(device.map(|d| d.parse().unwrap()))
+                }
+                Command::RequestControl | Command::ReleaseControl => match &guest {
+                    Some(guest) => guest.send(if command == Command::RequestControl {
+                        Ui::Request
+                    } else {
+                        Ui::Release
+                    }),
+                    None => events(ipc::Event::Error {
+                        message: "Remote control isn't available in this call.".into(),
+                    }),
+                },
+                Command::AllowControl { .. }
+                | Command::DenyControl { .. }
+                | Command::RevokeControl => events(ipc::Event::Error {
+                    message: "Only the sharer can answer requests for control.".into(),
+                }),
+                Command::Leave => {
+                    left.store(true, Ordering::Release);
+                    if let Some(leave) = leave.take() {
+                        leave();
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// Tells the app about the voice when it changes, and about the video about once a second.
+/// Runs until `done` is set.
+fn report_to_app(
+    events: Events,
+    voice: Arc<VoiceState>,
+    board: Arc<Mutex<Board>>,
+    shown_pct: Arc<AtomicU32>,
+    done: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut last_voice = None;
+        let mut ticks = 0u32;
+        while !done.load(Ordering::Acquire) {
+            let status = voice.status();
+            let now = (status.sending, status.muted, status.mic, status.speaker);
+            if last_voice.as_ref() != Some(&now) {
+                last_voice = Some(now.clone());
+                let (sending, muted, mic, speaker) = now;
+                events(ipc::Event::Voice {
+                    sending,
+                    muted,
+                    mic,
+                    speaker,
+                });
+            }
+            if let Some(message) = voice.take_device_error() {
+                events(ipc::Event::Error { message });
+            }
+            ticks += 1;
+            if ticks.is_multiple_of(4) {
+                let board = board.lock().unwrap();
+                if let Some(local) = &board.local {
+                    if let Some(recv) = &local.recv {
+                        let pct = shown_pct.load(Ordering::Acquire);
+                        events(ipc::Event::Stats {
+                            width: recv.width,
+                            height: recv.height,
+                            fps: recv.fps,
+                            kbps: recv.kbps,
+                            rtt_ms: local.rtt_ms,
+                            codec: crate::app::codec_name(&recv.codec),
+                            shown_pct: (pct > 0).then_some(pct),
+                        });
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    })
+}
+
+/// The app's last words about a call: the connection is gone, why, and that it ended.
+fn tell_ended(events: &Events, left: bool, error: Option<String>) {
+    events(ipc::Event::Connection {
+        state: ipc::ConnectionState::Disconnected,
+    });
+    let reason = match error {
+        Some(message) => {
+            events(ipc::Event::Error { message });
+            ipc::EndReason::Failed
+        }
+        None if left => ipc::EndReason::Left,
+        None => ipc::EndReason::Disconnected,
+    };
+    events(ipc::Event::Ended { reason });
 }
 
 #[derive(Debug)]
@@ -74,7 +197,7 @@ struct Latest {
 
 /// Joins the call and shows the sharer's screen until the window closes, the call ends or
 /// `duration` passes, then writes the results file. Must run on the main thread.
-pub fn run(args: ViewOptions) -> Result<(), Error> {
+pub fn run(mut args: ViewOptions) -> Result<(), Error> {
     if args.headless {
         return run_headless(args);
     }
@@ -96,8 +219,37 @@ pub fn run(args: ViewOptions) -> Result<(), Error> {
 
     let config = args.config.clone();
     let voice = args.voice.clone();
-    let (guest, link, guest_thread) = Guest::start(args.name.clone(), args.sent_log.as_deref())?;
+    let mut app_link = args.app.take();
+    let events = app_link.as_ref().map(|a| a.events.clone());
+    let (guest, link, guest_thread) =
+        Guest::start(args.name.clone(), args.sent_log.as_deref(), events.clone())?;
+    let failure = Arc::new(Mutex::new(None::<String>));
+    let left = Arc::new(AtomicBool::new(false));
+    let shown_pct = Arc::new(AtomicU32::new(0));
+    let reporting = Arc::new(AtomicBool::new(false));
+    let mut helpers = Vec::new();
+    if let Some(app) = app_link.take() {
+        let proxy = proxy.clone();
+        helpers.push(obey(
+            app.commands,
+            app.events.clone(),
+            Some(guest.clone()),
+            voice.clone(),
+            left.clone(),
+            move || {
+                let _ = proxy.send_event(UserEvent::Stop);
+            },
+        ));
+        report_to_app(
+            app.events,
+            voice.clone(),
+            board.clone(),
+            shown_pct.clone(),
+            reporting.clone(),
+        );
+    }
     let network = {
+        let failure = failure.clone();
         let latest = latest.clone();
         let recorder = recorder.clone();
         let board = board.clone();
@@ -126,6 +278,7 @@ pub fn run(args: ViewOptions) -> Result<(), Error> {
             ));
             if let Err(e) = &result {
                 tracing::error!("viewer failed: {e}");
+                *failure.lock().unwrap() = Some(format!("The call failed: {e}."));
             }
             let _ = proxy.send_event(UserEvent::Stop);
         })
@@ -165,6 +318,7 @@ pub fn run(args: ViewOptions) -> Result<(), Error> {
         },
         cursor: None,
         surface_size: (0, 0),
+        shown_pct: shown_pct.clone(),
         requested: None,
         manual_size: false,
     };
@@ -178,6 +332,12 @@ pub fn run(args: ViewOptions) -> Result<(), Error> {
     let _ = guest_thread.join();
     let _ = stop_tx.send(());
     let _ = network.join();
+    reporting.store(true, Ordering::Release);
+    drop(helpers);
+    if let Some(events) = &events {
+        let error = failure.lock().unwrap().take();
+        tell_ended(events, left.load(Ordering::Acquire), error);
+    }
     let recorder = recorder.lock().unwrap();
     let board = board.lock().unwrap();
     write_results(&args, &recorder, &board, started.elapsed(), app.frame_size)
@@ -213,6 +373,9 @@ struct App {
     /// The pointer in window pixels, while it's over the window.
     cursor: Option<(f64, f64)>,
     surface_size: (u32, u32),
+    /// How the frame is drawn, in percent of its size (as the HUD's "shown" line says), for
+    /// the app's stats.
+    shown_pct: Arc<AtomicU32>,
     /// The window size we last asked for, to tell our resizes from the guest's.
     requested: Option<(u32, u32)>,
     /// The guest resized the window by hand, so it stays as they left it.
@@ -382,6 +545,8 @@ impl App {
             return;
         }
         let rect = input::letterbox(frame_size, (w, h));
+        let pct = hud::shown_pct(frame_size, (rect.w, rect.h)).round() as u32;
+        self.shown_pct.store(pct, Ordering::Release);
         if rect != self.rect {
             tracing::info!(
                 "drawing {}x{} at ({}, {}) in a {w}x{h} window: {}",
@@ -618,7 +783,7 @@ fn log_report(
 }
 
 /// Viewer without a window: frames count as presented when decoded.
-fn run_headless(args: ViewOptions) -> Result<(), Error> {
+fn run_headless(mut args: ViewOptions) -> Result<(), Error> {
     let recorder = Arc::new(Mutex::new(Recorder::default()));
     let board = Arc::new(Mutex::new(Board::default()));
     let frame_size = Arc::new(Mutex::new((0u32, 0u32)));
@@ -646,27 +811,63 @@ fn run_headless(args: ViewOptions) -> Result<(), Error> {
         .map(crate::guest::read_script)
         .transpose()?;
     let (script_done_tx, script_done_rx) = tokio::sync::oneshot::channel::<()>();
+    let (leave_tx, leave_rx) = tokio::sync::oneshot::channel::<()>();
+    let app_link = args.app.take();
+    let events = app_link.as_ref().map(|a| a.events.clone());
+    let left = Arc::new(AtomicBool::new(false));
+    let reporting = Arc::new(AtomicBool::new(false));
     let mut link = None;
     let mut player = None;
-    if let Some(steps) = script {
-        let (guest, control, thread) =
-            crate::guest::Guest::start(args.name.clone(), args.sent_log.as_deref())?;
+    let mut guest_for_app = None;
+    let mut guest_thread = None;
+    if script.is_some() || app_link.is_some() {
+        let (guest, control, thread) = crate::guest::Guest::start(
+            args.name.clone(),
+            args.sent_log.as_deref(),
+            events.clone(),
+        )?;
         link = Some(control);
-        player = Some(std::thread::spawn(move || {
-            let result = crate::guest::play(&guest, &steps);
-            // Waits until the sharer confirms it has applied everything the script sent.
-            guest.stop(Duration::from_secs(60));
-            let _ = thread.join();
-            if guest.unsent() > 0 {
-                tracing::warn!("some control messages were still unsent when the viewer left");
-            }
-            let _ = script_done_tx.send(());
-            result
-        }));
+        guest_for_app = Some(guest.clone());
+        if let Some(steps) = script {
+            player = Some(std::thread::spawn(move || {
+                let result = crate::guest::play(&guest, &steps);
+                // Waits until the sharer confirms it has applied everything the script sent.
+                guest.stop(Duration::from_secs(60));
+                let _ = thread.join();
+                if guest.unsent() > 0 {
+                    tracing::warn!("some control messages were still unsent when the viewer left");
+                }
+                let _ = script_done_tx.send(());
+                result
+            }));
+        } else {
+            guest_thread = Some((guest, thread));
+        }
     }
+    if let Some(app) = app_link {
+        obey(
+            app.commands,
+            app.events.clone(),
+            guest_for_app,
+            args.voice.clone(),
+            left.clone(),
+            move || {
+                let _ = leave_tx.send(());
+            },
+        );
+        report_to_app(
+            app.events,
+            args.voice.clone(),
+            board.clone(),
+            Arc::new(AtomicU32::new(0)),
+            reporting.clone(),
+        );
+    }
+    // With the app, the call lasts until it says to leave, even after a script ends.
+    let ends_with_script = player.is_some() && events.is_none();
 
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async {
+    let result = runtime.block_on(async {
         let reporter = {
             let (recorder, board, voice) = (recorder.clone(), board.clone(), voice.clone());
             tokio::spawn(async move {
@@ -687,7 +888,7 @@ fn run_headless(args: ViewOptions) -> Result<(), Error> {
             })
         };
         let duration = args.duration;
-        let scripted = player.is_some();
+        let scripted = ends_with_script;
         let shutdown = async move {
             let timer = async {
                 match duration {
@@ -700,6 +901,7 @@ fn run_headless(args: ViewOptions) -> Result<(), Error> {
             tokio::select! {
                 _ = timer => {}
                 Ok(()) = script_done_rx, if scripted => {}
+                Ok(()) = leave_rx => {}
             }
         };
         let result = subscribe::run(
@@ -714,7 +916,20 @@ fn run_headless(args: ViewOptions) -> Result<(), Error> {
         .await;
         reporter.abort();
         result
-    })?;
+    });
+    if let Some((guest, thread)) = guest_thread {
+        guest.stop(Duration::from_secs(2));
+        let _ = thread.join();
+    }
+    reporting.store(true, Ordering::Release);
+    if let Some(events) = &events {
+        let error = result
+            .as_ref()
+            .err()
+            .map(|e| format!("The call failed: {e}."));
+        tell_ended(events, left.load(Ordering::Acquire), error);
+    }
+    result?;
 
     let recorder = recorder.lock().unwrap();
     let board = board.lock().unwrap();
@@ -767,6 +982,9 @@ fn write_results(
             .and_then(|s| s.audio_recv.as_ref())
             .map(|a| a.concealed_run_pct);
     }
+    let Some(out) = &args.out else {
+        return Ok(());
+    };
     let secs = elapsed.as_secs_f64();
     let results = json!({
         "label": args.label,
@@ -780,8 +998,8 @@ fn write_results(
         "net": board.history,
         "sharer_net_last": board.remote,
     });
-    std::fs::create_dir_all(&args.out)?;
-    let path = args.out.join(format!(
+    std::fs::create_dir_all(out)?;
+    let path = out.join(format!(
         "{}-{}.json",
         args.label,
         wall_clock_us() / 1_000_000

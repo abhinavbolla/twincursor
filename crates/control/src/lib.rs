@@ -138,7 +138,7 @@ impl<I: Injector> Controller<I> {
     /// Handles a message from `from`, the sender's identity as LiveKit reports it.
     pub fn handle(&mut self, from: &str, message: Message, now: Instant) -> Vec<Effect> {
         match message {
-            Message::Hello { name, platform } => {
+            Message::Hello { name, platform, .. } => {
                 self.hellos.insert(from.to_owned(), (name, platform));
                 vec![]
             }
