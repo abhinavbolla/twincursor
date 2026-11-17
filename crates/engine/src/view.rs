@@ -377,11 +377,12 @@ impl App {
         let rect = input::letterbox(frame_size, (w, h));
         if rect != self.rect {
             tracing::info!(
-                "drawing {}x{} at ({}, {}) in a {w}x{h} window",
+                "drawing {}x{} at ({}, {}) in a {w}x{h} window: {}",
                 rect.w,
                 rect.h,
                 rect.x,
-                rect.y
+                rect.y,
+                hud::shown_line(frame_size, (rect.w, rect.h)).text
             );
             self.rect = rect;
         }
@@ -412,24 +413,50 @@ impl App {
         let offset = (rect.y * w + rect.x) as usize * 4;
         let (y, u, v) = i420.data();
         let (sy, su, sv) = i420.strides();
-        yuv_helper::i420_to_argb(
-            y,
-            sy,
-            u,
-            su,
-            v,
-            sv,
-            &mut bytes[offset..],
-            w * 4,
-            rect.w as i32,
-            rect.h as i32,
-        );
+        let stride = w as usize * 4;
+        let row = rect.w as usize * 4;
+        if bytes.len() - offset >= stride * rect.h as usize {
+            yuv_helper::i420_to_argb(
+                y,
+                sy,
+                u,
+                su,
+                v,
+                sv,
+                &mut bytes[offset..],
+                w * 4,
+                rect.w as i32,
+                rect.h as i32,
+            );
+        } else {
+            // Bars at the sides and none above or below: the last row ends before a whole
+            // stride does, which libyuv's wrapper rejects. Convert into a tight buffer and copy
+            // the rows across instead.
+            let mut tight = vec![0u8; row * rect.h as usize];
+            yuv_helper::i420_to_argb(
+                y,
+                sy,
+                u,
+                su,
+                v,
+                sv,
+                &mut tight,
+                rect.w * 4,
+                rect.w as i32,
+                rect.h as i32,
+            );
+            for (i, src) in tight.chunks_exact(row).enumerate() {
+                let at = offset + i * stride;
+                bytes[at..at + row].copy_from_slice(src);
+            }
+        }
         if self.hud {
             let voice = hud::Voice {
                 status: self.voice.status(),
                 one_way_ms: self.voice_one_way,
             };
-            let lines = hud::lines(&self.board.lock().unwrap(), self.recent_rtt, &voice);
+            let mut lines = hud::lines(&self.board.lock().unwrap(), self.recent_rtt, &voice);
+            lines.push(hud::shown_line(frame_size, (rect.w, rect.h)));
             hud::draw(&mut buffer, w as usize, h as usize, &lines);
         }
         buffer.present().expect("present");
