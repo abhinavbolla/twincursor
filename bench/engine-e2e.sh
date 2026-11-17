@@ -76,9 +76,12 @@ exec 4>"$OUT/view.in"
 
 check "$OUT/share.jsonl" '.event == "hello" and .role == "sharer" and .version == 1' "sharer says hello"
 check "$OUT/view.jsonl" '.event == "hello" and .role == "guest" and .version == 1' "guest says hello"
-[[ $(head -1 "$OUT/share.jsonl" | jq -r .event) == hello ]] && pass "hello is the sharer's first line" || fail "hello isn't first"
 check "$OUT/share.jsonl" '.event == "connection" and .state == "connected"' "sharer connected"
 check "$OUT/view.jsonl" '.event == "connection" and .state == "connected"' "guest connected"
+for side in share view; do
+  order=$(head -2 "$OUT/$side.jsonl" | jq -r '.event + (if .state then ":" + .state else "" end)' | paste -sd, -)
+  [[ $order == "hello,connection:connecting" ]] && pass "$side: hello first, then connecting" || fail "$side starts with $order"
+done
 check "$OUT/share.jsonl" '.event == "participants" and (.participants | any(.name == "Sam" and .role == "guest" and (.decoders | index("h264")) and (.decoders | index("h265"))))' \
   "sharer sees Sam, a guest who decodes H.264 and H.265"
 check "$OUT/view.jsonl" '.event == "participants" and (.participants | any(.name == "Alex" and .role == "sharer"))' "guest sees Alex, the sharer"

@@ -322,6 +322,9 @@ fn failed_early(events: &Events, error: anyhow::Error) -> anyhow::Error {
 fn share(args: ShareArgs) -> anyhow::Result<()> {
     let events = events(args.call.ipc);
     hello(&events, Role::Sharer);
+    events(Event::Connection {
+        state: ConnectionState::Connecting,
+    });
     let setup = share_config(&args).map_err(|e| failed_early(&events, e))?;
     let (config, voice) = setup;
     let revoke = control::RevokeSwitch::default();
@@ -415,9 +418,6 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
                         _ = leave.notified() => {}
                     }
                 };
-                events(Event::Connection {
-                    state: ConnectionState::Connecting,
-                });
                 let result = publish::run(config, stats, voice, Some(link), shutdown).await;
                 reporter.abort();
                 result.err().map(|e| format!("Sharing failed: {e}."))
