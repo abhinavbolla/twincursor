@@ -19,7 +19,7 @@ use engine::{hotkey, view};
 use ipc::{Command, ConnectionState, EndReason, Event, Role};
 use livekit::options::VideoCodec;
 use media::audio::{AudioMode, DeviceChoice, DeviceRef, VoiceOptions, VoiceState};
-use media::capture::{self, Backend, CaptureConfig, Tier};
+use media::capture::{self, Backend, CaptureConfig, Source, Tier};
 use media::publish::{self, AdaptConfig, ShareConfig, ShareStats};
 use media::subscribe::ViewConfig;
 use media::token;
@@ -462,12 +462,15 @@ fn share_config(args: &ShareArgs) -> anyhow::Result<(ShareConfig, Arc<VoiceState
         token,
         backend,
         capture: CaptureConfig {
+            source: Source::Display,
             width,
             height,
             max_fps: 60,
             // A guest in control needs to see where the pointer is.
             show_cursor: args.allow_control,
             exclude_app_pid: args.exclude_app_pid,
+            leave_out_twincursor: true,
+            follow_tier: None,
         },
         codec: match args.codec {
             Codec::H264 => VideoCodec::H264,

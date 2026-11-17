@@ -177,6 +177,19 @@ impl Adapter {
         self.ladder[self.at]
     }
 
+    /// The captured size changed (a shared window was resized): recompute the ladder for it,
+    /// staying at the current level, or the nearest one below if it no longer exists.
+    pub fn set_display(&mut self, display: (u32, u32)) {
+        let (top, level) = (self.ladder[0], self.level());
+        self.ladder = ladder(top.tier, top.fps, display);
+        self.at = self
+            .ladder
+            .iter()
+            .position(|l| *l == level)
+            .unwrap_or(self.at.min(self.ladder.len() - 1));
+        self.display = display;
+    }
+
     /// Feeds one second of stats: ours (`own`, the publishing connection) and the viewer's,
     /// if it sent any. Returns a change when the level should move.
     pub fn update(
@@ -425,6 +438,16 @@ mod tests {
                 "{display:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_new_display_size_keeps_the_level() {
+        let mut a = Adapter::new(Tier::Native, 60, (1508, 1046), 1.0);
+        a.at = 1;
+        let level = a.level();
+        a.set_display((1800, 1264));
+        assert_eq!(a.level(), level);
+        assert_eq!(a.display, (1800, 1264));
     }
 
     #[test]

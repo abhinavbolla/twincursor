@@ -18,7 +18,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use engine::{hotkey, sharer};
 use livekit::options::VideoCodec;
 use media::audio::AudioMode;
-use media::capture::{self, Backend, CaptureConfig, Tier};
+use media::capture::select::{self, Pick, WindowInfo};
+use media::capture::{self, Backend, CaptureConfig, Source, Tier};
 use media::publish::{self, AdaptConfig, ShareConfig, ShareStats};
 use media::token;
 
@@ -35,8 +36,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Capture the main display and publish it.
+    /// Capture the main display (or one window or app) and publish it.
     Share(ShareArgs),
+    /// List the windows `share --window` can capture: id, size in pixels, app and title.
+    Windows {
+        /// Print JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
     /// Subscribe, render in a window, and measure latency.
     View(view_args::ViewArgs),
     /// Compare two snapshots (PGM) and print SSIM and PSNR, skipping the marker area.
@@ -150,6 +157,13 @@ struct ShareArgs {
     connection: Connection,
     #[arg(long, value_enum, default_value = "sck")]
     capture: CaptureBackend,
+    /// Share one window: its id, or text its title or app name contains (ignoring case; see
+    /// `tc-spike windows`). Sent at the window's own pixel size, within --resolution.
+    #[arg(long, conflicts_with = "app")]
+    window: Option<String>,
+    /// Share one app: the display with only this app's windows on it (name or bundle id).
+    #[arg(long)]
+    app: Option<String>,
     /// Video codec. H.264 is the default (hardware on macOS; see docs/adr/0002). H.265 (HEVC)
     /// is opt-in, for 4K (docs/adr/0008).
     #[arg(long, value_enum, default_value = "h264")]
@@ -227,6 +241,7 @@ fn main() -> anyhow::Result<()> {
     }
     match cli.command {
         Command::Share(args) => share(args),
+        Command::Windows { json } => list_windows(json),
         Command::View(args) => view_args::run(args),
         Command::Compare { sharer, viewer } => compare(&sharer, &viewer),
         Command::Devices => voice::list_devices(),
@@ -246,7 +261,94 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
+/// One line of the window table.
+fn window_row(w: &WindowInfo) -> String {
+    format!(
+        "{:>7}  {:>11}  {:<20}  {}",
+        w.id,
+        format!("{}x{}", w.pixels.0, w.pixels.1),
+        w.app,
+        w.title
+    )
+}
+
+fn window_table<'a>(windows: impl IntoIterator<Item = &'a WindowInfo>) -> String {
+    let mut out = format!("{:>7}  {:>11}  {:<20}  {}", "id", "pixels", "app", "title");
+    for w in windows {
+        out.push('\n');
+        out += &window_row(w);
+    }
+    out
+}
+
+fn list_windows(json: bool) -> anyhow::Result<()> {
+    let (windows, _) = capture::shareable().context("listing windows")?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&windows)?);
+    } else {
+        println!("{}", window_table(&windows));
+    }
+    Ok(())
+}
+
+/// What `--window` or `--app` asks for, and the pixel size the tiers are computed from
+/// (`None`: the display's).
+fn pick_source(args: &ShareArgs) -> anyhow::Result<(Source, Option<(u32, u32)>)> {
+    if args.window.is_none() && args.app.is_none() {
+        return Ok((Source::Display, None));
+    }
+    anyhow::ensure!(
+        matches!(args.capture, CaptureBackend::Sck),
+        "--window and --app need --capture sck"
+    );
+    let (windows, apps) = capture::shareable().context("listing windows")?;
+    if let Some(query) = &args.window {
+        return match select::pick_window(&windows, query) {
+            Pick::One(w) => {
+                tracing::info!("sharing window {} ({}: {:?})", w.id, w.app, w.title);
+                Ok((Source::Window(w.id), Some(w.pixels)))
+            }
+            Pick::None => anyhow::bail!(
+                "no window matches {query:?}. Shareable windows:\n{}",
+                window_table(&windows)
+            ),
+            Pick::Many(found) => anyhow::bail!(
+                "{} windows match {query:?}; give more of the title, or the id:\n{}",
+                found.len(),
+                window_table(found)
+            ),
+        };
+    }
+    let query = args.app.as_deref().unwrap_or_default();
+    let names = |apps: &[&select::AppInfo]| {
+        apps.iter()
+            .map(|a| format!("  {} ({})", a.name, a.bundle_id))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    match select::pick_app(&apps, query) {
+        Pick::One(a) => {
+            tracing::info!("sharing the windows of {} ({})", a.name, a.bundle_id);
+            Ok((Source::App(a.pid), None))
+        }
+        Pick::None => anyhow::bail!(
+            "no app with windows matches {query:?}. Apps with windows:\n{}",
+            names(&apps.iter().collect::<Vec<_>>())
+        ),
+        Pick::Many(found) => anyhow::bail!(
+            "{} apps match {query:?}; give the full name or the bundle id:\n{}",
+            found.len(),
+            names(&found)
+        ),
+    }
+}
+
 fn share(args: ShareArgs) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !(args.allow_control && (args.window.is_some() || args.app.is_some())),
+        "--allow-control can't be combined with --window or --app: remote control maps the guest's pointer onto the whole display, so share the whole display to give control"
+    );
+    let (source, source_pixels) = pick_source(&args)?;
     let backend = match args.capture {
         #[cfg(target_os = "macos")]
         CaptureBackend::Sck => Backend::ScreenCaptureKit,
@@ -258,7 +360,7 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
     let tier = Tier::from(args.resolution);
     let detected = match backend {
         Backend::Pattern => Some(capture::PATTERN_DISPLAY),
-        _ => capture::display_pixels(),
+        _ => source_pixels.or_else(capture::display_pixels),
     };
     let screen = detected.unwrap_or_else(|| {
         tracing::warn!(
@@ -275,7 +377,12 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
         .bitrate_kbps
         .unwrap_or_else(|| tier.default_bitrate_kbps());
     tracing::info!(
-        "display {}x{} → sending {width}x{height}, up to {bitrate_kbps} kbit/s",
+        "{} {}x{} → sending {width}x{height}, up to {bitrate_kbps} kbit/s",
+        if source_pixels.is_some() {
+            "window"
+        } else {
+            "display"
+        },
         screen.0,
         screen.1
     );
@@ -284,12 +391,16 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
         token: args.connection.token("sharer")?,
         backend,
         capture: CaptureConfig {
+            source,
             width,
             height,
             max_fps: args.fps,
             // A guest in control needs to see where the pointer is.
             show_cursor: args.cursor || args.allow_control,
             exclude_app_pid: args.exclude_app_pid,
+            leave_out_twincursor: true,
+            // A shared window's stream follows it when it's resized, unless the size is fixed.
+            follow_tier: args.width.is_none().then_some(tier),
         },
         codec: args.codec.into(),
         max_bitrate: bitrate_kbps * 1000,

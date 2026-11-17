@@ -195,7 +195,12 @@ impl Grab {
             height: size.1,
             max_fps: 30,
             show_cursor: false,
+            source: capture::Source::Display,
             exclude_app_pid,
+            // The check must see the desktop app's windows when it doesn't leave them out, and
+            // the desktop app is TwinCursor: only `exclude_app_pid` decides here.
+            leave_out_twincursor: false,
+            follow_tier: None,
         };
         let handle = capture::start(Backend::ScreenCaptureKit, config, move |frame| {
             let FrameBuffer::Nv12(buffer) = &frame.buffer else {

@@ -62,6 +62,9 @@ pub enum ShareError {
     Capture(#[from] capture::CaptureError),
     #[error("voice: {0}")]
     Voice(VoiceError),
+    /// Capture stopped by itself, for example because the shared window was closed.
+    #[error("{0}")]
+    Ended(String),
 }
 
 /// Counters the sharer reports periodically.
@@ -224,7 +227,7 @@ pub async fn run(
             )
         })
     };
-    let _capture = {
+    let mut capture = {
         let mailbox = mailbox.clone();
         let stats = stats.clone();
         capture::start(config.backend, config.capture, move |frame| {
@@ -242,10 +245,32 @@ pub async fn run(
     let mut poller = Poller::new(Side::Publisher);
     let mut stats_timer = tokio::time::interval(STATS_EVERY);
     let mut device_timer = tokio::time::interval(audio::DEVICE_CHECK_EVERY);
+    let mut ended = None;
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
             _ = &mut shutdown => break,
+            reason = capture.ended.wait() => {
+                ended = Some(reason);
+                break;
+            }
+            resize = capture.resized.next() => {
+                // A shared window changed size and capture already follows it: send the new
+                // size, at the adapter's current tier if it runs, through the same path its
+                // own steps take.
+                let (w, h) = match adapter.as_mut() {
+                    Some((adapter, cfg)) => {
+                        cfg.display = resize.window;
+                        adapter.set_display(resize.window);
+                        adapter.level().tier.size(resize.window)
+                    }
+                    None => resize.output,
+                };
+                let mut size = send_size.lock().unwrap();
+                size.0 = w;
+                size.1 = h;
+                tracing::info!("window now {}x{}: sending {w}x{h}", resize.window.0, resize.window.1);
+            }
             _ = voice_state.changed() => {
                 voice.apply_mute();
                 voice.apply_devices();
@@ -335,11 +360,14 @@ pub async fn run(
 
     pings.abort();
     link_tasks.iter().flatten().for_each(|t| t.abort());
-    drop(_capture);
+    drop(capture);
     mailbox.close();
     let _ = sender.join();
     room.close().await?;
-    Ok(())
+    match ended {
+        Some(reason) => Err(ShareError::Ended(reason)),
+        None => Ok(()),
+    }
 }
 
 /// How much more bitrate than H.264 a codec needs for the same text sharpness, for the
