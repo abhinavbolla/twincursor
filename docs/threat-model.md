@@ -35,7 +35,14 @@ These rules are a [hard rule of the project](../CONTRIBUTING.md#ground-rules), a
 weaken them won't be merged.
 
 - **Control starts off.** The sharer's app doesn't inject anything until the sharer accepts a
-  request from a named person. Sharing a screen doesn't imply control.
+  request from a named person. Sharing a screen doesn't imply control. In the desktop app, only
+  an explicit allow for that very request grants it ([IPC](ipc.md#consent)).
+- **A name is not an identity.** The name in "Sam wants control" and "Sam is controlling" is
+  what that person typed. The server signs it into their token but nothing checks it, so anyone
+  in the call could type any name. Grant control because you recognise the person on the call,
+  not because of the name. Each participant also has an identity the server vouches for, unique
+  in the call, which starts with their role (`sharer-…` or `guest-…`); input is only accepted
+  from the identity that was granted.
 - **The sharer can always see it.** A label stays on screen for as long as control lasts, naming
   the guest and showing the revoke hotkey.
 - **Revoking is instant and doesn't depend on the network.** A global hotkey flips a flag that the
