@@ -46,6 +46,37 @@ The Rust core is split into crates:
   CVPixelBuffer with Metal/wgpu.
 - Capture on macOS uses ScreenCaptureKit directly (ADR 0001).
 
+#### What is captured
+- **The whole display** (the default) leaves out every TwinCursor window: the sharer's own
+  (such as the remote-control label), the desktop app that started it (`--exclude-app-pid`,
+  ADR 0007) and any other TwinCursor process, so a viewer on the same Mac doesn't show the
+  picture inside itself. A process counts as TwinCursor if it is this process, runs the same
+  executable, or has one of our bundle identifiers or executable names
+  (`media::capture::select::is_twincursor`). ScreenCaptureKit can only leave out apps that
+  have a window when the filter is made, so the sharer looks again every second and updates
+  the filter when one appears or quits: a viewer started after the sharer can appear in the
+  stream for up to a second. `tc-spike windows` never lists TwinCursor windows either.
+- **One window** (`share --window`): ScreenCaptureKit's single-window filter, which captures the
+  window whatever covers it, title bar included. The window is sent at its own pixel size
+  (points × the display's scale), through the same tier rules as a display. When it fits the
+  tier, it is captured at exactly that size and cropped to the encoder's size (a few pixels at
+  the right and bottom edges), so every pixel arrives 1:1; scaling by a fraction of a percent
+  would blur all of them. The sharer checks the window's size five times a second; once a new
+  size has held for 0.6 s (so dragging an edge reconfigures once, after the drag), capture is
+  reconfigured for it and the send size changes through the same path the auto-throttle uses.
+  A minimised window leaves the last picture on screen until it comes back, and closing the
+  window (or quitting its app) ends the share with a message. A query that matches no window,
+  or several, lists them and exits rather than guessing.
+- **One app** (`share --app`): the display filter that includes only that app's windows, at the
+  display's size.
+- Remote control needs the whole display: the guest's pointer is mapped onto it, so
+  `--allow-control` is refused with `--window` or `--app`.
+- The viewer asks for a window whose inner size in physical pixels is the frame's, and
+  softbuffer draws into a layer at the screen's scale, so a frame that fits on the monitor is
+  shown one stream pixel per screen pixel. Its HUD says "shown 1:1" or "scaled to N%". When
+  the frame size changes it resizes itself again, unless the guest has resized it by hand
+  (any size it didn't ask for); then frames are scaled into the size they chose.
+
 ### 2. WebRTC through LiveKit (self-hostable SFU)
 - LiveKit's Rust SDK (`livekit` crate, built on libwebrtc) gives us congestion control,
   NAT traversal, simulcast, and data channels without building our own.
@@ -63,8 +94,9 @@ Codecs are configurable (`tc-spike share --codec`). Measurements are in
 - **VP9** was worse on every measure.
 - Simulcast is off for screen share.
 - **Resolution tiers** (`--resolution`): 720, 1080 (default), 1440, 2160 or native lines; the
-  width follows the display's aspect ratio, rounded to a multiple of 16 so encoders don't crop
-  (1662 became 1660), and no tier upscales. On a 3024x1964 MacBook panel: 1104x720, 1664x1080,
+  width follows the display's aspect ratio, rounded to a multiple of 16 and the height to a
+  multiple of 4 so encoders don't crop (1662 became 1660, 1046 became 1044), and no tier
+  upscales. On a 3024x1964 MacBook panel: 1104x720, 1664x1080,
   2224x1440, and 2160 is the panel's own 3024x1964. ScreenCaptureKit scales on the GPU. Default
   max bitrates are 2.5 / 5 / 8 / 15 Mbps, and 12 Mbps for native; the bandwidth estimate
   usually sets the actual target lower.

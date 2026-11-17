@@ -165,6 +165,8 @@ pub fn run(args: ViewOptions) -> Result<(), Error> {
         },
         cursor: None,
         surface_size: (0, 0),
+        requested: None,
+        manual_size: false,
     };
     tracing::info!(
         "press F9 to ask for control, and F9 again to give it back; M mutes your mic (F8 while \
@@ -211,6 +213,10 @@ struct App {
     /// The pointer in window pixels, while it's over the window.
     cursor: Option<(f64, f64)>,
     surface_size: (u32, u32),
+    /// The window size we last asked for, to tell our resizes from the guest's.
+    requested: Option<(u32, u32)>,
+    /// The guest resized the window by hand, so it stays as they left it.
+    manual_size: bool,
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -348,15 +354,16 @@ impl App {
         let frame_size = (frame.i420.width(), frame.i420.height());
         if frame_size != self.frame_size {
             // Show frames 1:1 for the sharpest text, unless they don't fit on this monitor.
-            // After the first frame the window only grows on its own: when the sharer's
-            // auto-throttle drops to a lower tier, frames are scaled up instead of the window
-            // jumping around. The guest can resize it; the frame is then letterboxed.
+            // The window follows the frame size (a shared window resized on the sharer's
+            // side, or the auto-throttle changing tier) unless the guest has resized it by
+            // hand: then frames are scaled into the size they chose.
             let first = self.frame_size == (0, 0);
-            if first || frame_size.0 > self.size.0 || frame_size.1 > self.size.1 {
+            if first || !self.manual_size {
                 let monitor = window
                     .current_monitor()
                     .map(|m| (m.size().width, m.size().height));
                 let (w, h) = monitor.map_or(frame_size, |m| fit_within(frame_size, usable(m)));
+                self.requested = Some((w, h));
                 if let Some(size) = window.request_inner_size(PhysicalSize::new(w, h)) {
                     self.size = (size.width, size.height);
                 }
@@ -377,11 +384,12 @@ impl App {
         let rect = input::letterbox(frame_size, (w, h));
         if rect != self.rect {
             tracing::info!(
-                "drawing {}x{} at ({}, {}) in a {w}x{h} window",
+                "drawing {}x{} at ({}, {}) in a {w}x{h} window: {}",
                 rect.w,
                 rect.h,
                 rect.x,
-                rect.y
+                rect.y,
+                hud::shown_line(frame_size, (rect.w, rect.h)).text
             );
             self.rect = rect;
         }
@@ -412,24 +420,50 @@ impl App {
         let offset = (rect.y * w + rect.x) as usize * 4;
         let (y, u, v) = i420.data();
         let (sy, su, sv) = i420.strides();
-        yuv_helper::i420_to_argb(
-            y,
-            sy,
-            u,
-            su,
-            v,
-            sv,
-            &mut bytes[offset..],
-            w * 4,
-            rect.w as i32,
-            rect.h as i32,
-        );
+        let stride = w as usize * 4;
+        let row = rect.w as usize * 4;
+        if bytes.len() - offset >= stride * rect.h as usize {
+            yuv_helper::i420_to_argb(
+                y,
+                sy,
+                u,
+                su,
+                v,
+                sv,
+                &mut bytes[offset..],
+                w * 4,
+                rect.w as i32,
+                rect.h as i32,
+            );
+        } else {
+            // Bars at the sides and none above or below: the last row ends before a whole
+            // stride does, which libyuv's wrapper rejects. Convert into a tight buffer and copy
+            // the rows across instead.
+            let mut tight = vec![0u8; row * rect.h as usize];
+            yuv_helper::i420_to_argb(
+                y,
+                sy,
+                u,
+                su,
+                v,
+                sv,
+                &mut tight,
+                rect.w * 4,
+                rect.w as i32,
+                rect.h as i32,
+            );
+            for (i, src) in tight.chunks_exact(row).enumerate() {
+                let at = offset + i * stride;
+                bytes[at..at + row].copy_from_slice(src);
+            }
+        }
         if self.hud {
             let voice = hud::Voice {
                 status: self.voice.status(),
                 one_way_ms: self.voice_one_way,
             };
-            let lines = hud::lines(&self.board.lock().unwrap(), self.recent_rtt, &voice);
+            let mut lines = hud::lines(&self.board.lock().unwrap(), self.recent_rtt, &voice);
+            lines.push(hud::shown_line(frame_size, (rect.w, rect.h)));
             hud::draw(&mut buffer, w as usize, h as usize, &lines);
         }
         buffer.present().expect("present");
@@ -450,6 +484,17 @@ impl App {
 
     fn resize(&mut self, size: PhysicalSize<u32>) {
         self.size = (size.width, size.height);
+        // Any size we didn't ask for once frames arrive is the guest's choice: keep it.
+        if self.frame_size != (0, 0) && self.requested != Some(self.size) {
+            if !self.manual_size {
+                tracing::info!(
+                    "viewer resized by hand to {}x{}: it no longer follows the picture's size",
+                    size.width,
+                    size.height
+                );
+            }
+            self.manual_size = true;
+        }
     }
 
     /// Mutes or unmutes this side's mic.

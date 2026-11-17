@@ -185,6 +185,24 @@ pub fn lines(board: &Board, rtt: Option<Summary>, voice: &Voice) -> Vec<Line> {
     out
 }
 
+/// How the picture is drawn: one stream pixel per screen pixel ("1:1"), or scaled, so a
+/// person judging sharpness knows whether they're looking at real pixels. `drawn` is the
+/// size the frame is drawn at in the window, in physical pixels.
+pub fn shown_line(frame: (u32, u32), drawn: (u32, u32)) -> Line {
+    let (w, h) = frame;
+    if frame == drawn {
+        return Line::new(format!("picture {w}x{h} shown 1:1"), WHITE);
+    }
+    let pct = f64::from(drawn.0) * 100.0 / f64::from(w.max(1));
+    Line::new(
+        format!(
+            "picture {w}x{h} scaled to {pct:.0}% ({}x{})",
+            drawn.0, drawn.1
+        ),
+        AMBER,
+    )
+}
+
 fn mbps(kbps: f64) -> String {
     format!("{:.1} Mbps", kbps / 1000.0)
 }
@@ -253,6 +271,18 @@ fn fill(pixels: &mut [u32], width: usize, (x1, y1): (usize, usize), x: usize, y:
 mod tests {
     use super::*;
     use media::netstats::{AudioRecvStats, RecvStats, SendStats};
+
+    #[test]
+    fn says_whether_the_picture_is_shown_1_to_1() {
+        let one = shown_line((1504, 982), (1504, 982));
+        assert_eq!(one.text, "picture 1504x982 shown 1:1");
+        assert_eq!(one.color, WHITE);
+        let scaled = shown_line((3024, 1964), (2152, 1398));
+        assert_eq!(scaled.text, "picture 3024x1964 scaled to 71% (2152x1398)");
+        assert_eq!(scaled.color, AMBER);
+        // Scaled up after the sharer's auto-throttle stepped down.
+        assert!(shown_line((1104, 720), (1664, 1086)).text.contains("151%"));
+    }
 
     #[test]
     fn draws_in_top_right_and_leaves_rest_untouched() {
