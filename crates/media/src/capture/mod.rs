@@ -112,6 +112,51 @@ pub struct CaptureConfig {
     pub height: u32,
     pub max_fps: u32,
     pub show_cursor: bool,
+    /// Another app whose windows stay out of the capture, by process id: the desktop app that
+    /// started this process, so its windows never reach the guest. Only ScreenCaptureKit
+    /// supports it; this process's own windows are always left out there.
+    pub exclude_app_pid: Option<u32>,
+    /// Also leave out every other TwinCursor process (see [`select::is_twincursor`]), such as
+    /// a viewer on the same Mac. Off only for checks that must see the desktop app's windows.
+    pub leave_out_twincursor: bool,
+    /// For [`Source::Window`]: when the window is resized, the output follows its new pixel
+    /// size through this tier ([`Tier::size`]) and [`CaptureHandle::resized`] reports it.
+    /// `None` keeps the output size fixed.
+    pub follow_tier: Option<Tier>,
+}
+
+/// A shared window changed size, and so did the frames captured from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Resize {
+    /// The window's new size in pixels.
+    pub window: (u32, u32),
+    /// The size frames now arrive at: `follow_tier.size(window)`.
+    pub output: (u32, u32),
+}
+
+/// An on-screen window, in points from the top-left corner of the captured display.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowRect {
+    pub id: u32,
+    pub title: String,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// The captured display's size in points and the on-screen windows of the app with process id
+/// `pid` on it, so a check can find where they would appear in a frame.
+pub fn app_windows(pid: u32) -> Option<((f64, f64), Vec<WindowRect>)> {
+    #[cfg(target_os = "macos")]
+    {
+        sck::app_windows(pid)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        None
+    }
 }
 
 /// Pixel data of a captured frame.
@@ -166,22 +211,42 @@ pub enum CaptureError {
 /// Keeps a capture running; capture stops when this is dropped.
 pub struct CaptureHandle {
     _inner: Box<dyn Send>,
-    ended: Option<tokio::sync::oneshot::Receiver<String>>,
+    /// Capture stopping by itself.
+    pub ended: Ended,
+    /// A shared window's new size taking effect.
+    pub resized: Resized,
 }
 
-impl CaptureHandle {
+/// See [`Ended::wait`].
+pub struct Ended(Option<tokio::sync::oneshot::Receiver<String>>);
+
+impl Ended {
     /// Resolves, with the reason, if capture stops on its own: for example when the shared
     /// window is closed. Never resolves for captures that can't end by themselves.
-    pub async fn ended(&mut self) -> String {
-        match self.ended.as_mut() {
+    pub async fn wait(&mut self) -> String {
+        match self.0.as_mut() {
             Some(rx) => {
                 let reason = rx.await;
-                self.ended = None;
+                self.0 = None;
                 match reason {
                     Ok(reason) => reason,
                     Err(_) => std::future::pending().await,
                 }
             }
+            None => std::future::pending().await,
+        }
+    }
+}
+
+/// See [`Resized::next`].
+pub struct Resized(tokio::sync::mpsc::UnboundedReceiver<Resize>);
+
+impl Resized {
+    /// Resolves when a shared window's new size has taken effect (see
+    /// [`CaptureConfig::follow_tier`]). Never resolves for other captures.
+    pub async fn next(&mut self) -> Resize {
+        match self.0.recv().await {
+            Some(resize) => resize,
             None => std::future::pending().await,
         }
     }
@@ -207,18 +272,20 @@ pub fn start(
     sink: impl Fn(Frame) + Send + Sync + 'static,
 ) -> Result<CaptureHandle, CaptureError> {
     let (end_tx, end_rx) = tokio::sync::oneshot::channel();
+    let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel();
     let inner: Box<dyn Send> = match backend {
         #[cfg(target_os = "macos")]
-        Backend::ScreenCaptureKit => Box::new(sck::start(config, sink, end_tx)?),
+        Backend::ScreenCaptureKit => Box::new(sck::start(config, sink, end_tx, resize_tx)?),
         _ if config.source != Source::Display => return Err(CaptureError::Unsupported),
         Backend::LiveKit => Box::new(lk::start(config, sink)?),
         Backend::Pattern => Box::new(synthetic::start(config, sink)),
     };
     #[cfg(not(target_os = "macos"))]
-    drop(end_tx);
+    drop((end_tx, resize_tx));
     Ok(CaptureHandle {
         _inner: inner,
-        ended: Some(end_rx),
+        ended: Ended(Some(end_rx)),
+        resized: Resized(resize_rx),
     })
 }
 

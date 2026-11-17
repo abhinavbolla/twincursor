@@ -40,10 +40,21 @@ Mac. The design is in [ADR 0006](adr/0006-voice.md).
 - [x] Mute on both sides, and devices that can change mid-call
 - [ ] Hands-on: a call over speakers on both ends, between the Mac and the Windows laptop
 
-## Next
+**Desktop app.** A Tauri shell with a tray icon, lobby, call panel and settings, plus onboarding
+for macOS permissions. The shell starts the engine as a second process
+([ADR 0007](adr/0007-shell-and-engine.md)). It's done when two people can start a call, talk and
+hand over control without a terminal.
 
-**Desktop app.** A Tauri shell with a tray icon, lobby, call window and settings, plus onboarding
-for macOS permissions.
+- [x] A shell that starts the engine from inside the app bundle, and an engine that leaves when
+  the shell does
+- [ ] Hands-on: the macOS permission prompts name TwinCursor, and the shell's windows stay out of
+  the shared screen
+- [ ] The engine as a library, and an engine binary the shell drives with messages
+- [ ] Lobby and call panel, with the control request as a window
+- [ ] Permissions onboarding and settings
+- [ ] A bundled app and disk image
+
+## Next
 
 **Self-hosting.** An axum API for sign-in, teams, rooms and LiveKit tokens. Join calls by link, and
 run it all with one `docker compose up`.
@@ -54,6 +65,8 @@ run it all with one `docker compose up`.
 - [ ] Voice mouth to ear under 150 ms (about 180–190 ms today): 10 ms Opus frames and a smaller
   macOS audio device layer, both below the LiveKit SDK ([budget](performance.md#where-the-time-goes))
 - [ ] Live bitrate control without republishing the track, and FEC for lossy links
+- [x] 4K at 60 fps, with HEVC as an opt-in codec ([numbers](performance.md#4k))
+- [ ] 4K between two machines, and on a real 4K display
 - [ ] Encoder tuning, sharpening and a faster Metal or wgpu viewer
 - [ ] Real-world checks: Mac to Mac, Mac on Ethernet, Network Link Conditioner profiles
 - [ ] True glass-to-glass latency with an on-screen marker (`--marker screen`)

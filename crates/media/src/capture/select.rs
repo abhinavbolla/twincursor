@@ -8,10 +8,17 @@ use std::path::Path;
 use serde::Serialize;
 
 /// Bundle identifiers of TwinCursor apps.
-pub const BUNDLE_IDS: &[&str] = &["dev.twincursor.app", "dev.twincursor.TwinCursor"];
+pub const BUNDLE_IDS: &[&str] = &["dev.twincursor.desktop"];
 
-/// Executable names of TwinCursor programs.
-pub const EXECUTABLES: &[&str] = &["tc-spike", "tc-engine", "TwinCursor", "twincursor"];
+/// Executable names of TwinCursor programs. A copy renamed with a suffix (`tc-spike-old`)
+/// counts too.
+pub const EXECUTABLES: &[&str] = &[
+    "tc-spike",
+    "tc-engine",
+    "TwinCursor",
+    "twincursor",
+    "twincursor-desktop",
+];
 
 /// A running process, as far as telling TwinCursor apart needs.
 #[derive(Debug, Clone, Copy)]
@@ -43,7 +50,14 @@ pub fn is_twincursor(candidate: &Process, me: &Process) -> bool {
         .exe
         .and_then(Path::file_name)
         .and_then(|name| name.to_str())
-        .is_some_and(|name| EXECUTABLES.contains(&name))
+        .is_some_and(|name| {
+            EXECUTABLES.iter().any(|exe| {
+                name == *exe
+                    || name
+                        .strip_prefix(exe)
+                        .is_some_and(|rest| rest.starts_with('-'))
+            })
+        })
 }
 
 /// A window that can be shared.
@@ -173,10 +187,11 @@ mod tests {
         };
         let viewer = Process { pid: 200, ..me };
         assert!(is_twincursor(&viewer, &me));
-        // A tc-spike built elsewhere (another checkout), and the engine.
+        // A tc-spike built elsewhere (another checkout), a renamed copy, and the engine.
         let other = PathBuf::from("/tmp/old/tc-spike");
+        let renamed = PathBuf::from("/tmp/bin/tc-spike-before");
         let engine = PathBuf::from("/opt/twincursor/tc-engine");
-        for exe in [&other, &engine] {
+        for exe in [&other, &renamed, &engine] {
             let p = Process {
                 pid: 300,
                 exe: Some(exe),
@@ -203,7 +218,7 @@ mod tests {
         let by_bundle = Process {
             pid: 401,
             exe: None,
-            bundle_id: "dev.twincursor.app",
+            bundle_id: "dev.twincursor.desktop",
         };
         assert!(is_twincursor(&by_name, &me));
         assert!(is_twincursor(&by_bundle, &me));
@@ -219,7 +234,7 @@ mod tests {
         };
         let terminal =
             PathBuf::from("/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal");
-        let spiky = PathBuf::from("/usr/local/bin/tc-spike-helper");
+        let spiky = PathBuf::from("/usr/local/bin/tc-spiked");
         for (exe, bundle) in [
             (Some(terminal.as_path()), "com.apple.Terminal"),
             (Some(spiky.as_path()), ""),

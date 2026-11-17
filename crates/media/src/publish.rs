@@ -250,9 +250,26 @@ pub async fn run(
     loop {
         tokio::select! {
             _ = &mut shutdown => break,
-            reason = capture.ended() => {
+            reason = capture.ended.wait() => {
                 ended = Some(reason);
                 break;
+            }
+            resize = capture.resized.next() => {
+                // A shared window changed size and capture already follows it: send the new
+                // size, at the adapter's current tier if it runs, through the same path its
+                // own steps take.
+                let (w, h) = match adapter.as_mut() {
+                    Some((adapter, cfg)) => {
+                        cfg.display = resize.window;
+                        adapter.set_display(resize.window);
+                        adapter.level().tier.size(resize.window)
+                    }
+                    None => resize.output,
+                };
+                let mut size = send_size.lock().unwrap();
+                size.0 = w;
+                size.1 = h;
+                tracing::info!("window now {}x{}: sending {w}x{h}", resize.window.0, resize.window.1);
             }
             _ = voice_state.changed() => voice.apply_mute(),
             _ = device_timer.tick() => voice.check_devices(),

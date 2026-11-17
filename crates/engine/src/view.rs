@@ -165,6 +165,8 @@ pub fn run(args: ViewOptions) -> Result<(), Error> {
         },
         cursor: None,
         surface_size: (0, 0),
+        requested: None,
+        manual_size: false,
     };
     tracing::info!(
         "press F9 to ask for control, and F9 again to give it back; M mutes your mic (F8 while \
@@ -211,6 +213,10 @@ struct App {
     /// The pointer in window pixels, while it's over the window.
     cursor: Option<(f64, f64)>,
     surface_size: (u32, u32),
+    /// The window size we last asked for, to tell our resizes from the guest's.
+    requested: Option<(u32, u32)>,
+    /// The guest resized the window by hand, so it stays as they left it.
+    manual_size: bool,
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -348,15 +354,16 @@ impl App {
         let frame_size = (frame.i420.width(), frame.i420.height());
         if frame_size != self.frame_size {
             // Show frames 1:1 for the sharpest text, unless they don't fit on this monitor.
-            // After the first frame the window only grows on its own: when the sharer's
-            // auto-throttle drops to a lower tier, frames are scaled up instead of the window
-            // jumping around. The guest can resize it; the frame is then letterboxed.
+            // The window follows the frame size (a shared window resized on the sharer's
+            // side, or the auto-throttle changing tier) unless the guest has resized it by
+            // hand: then frames are scaled into the size they chose.
             let first = self.frame_size == (0, 0);
-            if first || frame_size.0 > self.size.0 || frame_size.1 > self.size.1 {
+            if first || !self.manual_size {
                 let monitor = window
                     .current_monitor()
                     .map(|m| (m.size().width, m.size().height));
                 let (w, h) = monitor.map_or(frame_size, |m| fit_within(frame_size, usable(m)));
+                self.requested = Some((w, h));
                 if let Some(size) = window.request_inner_size(PhysicalSize::new(w, h)) {
                     self.size = (size.width, size.height);
                 }
@@ -477,6 +484,17 @@ impl App {
 
     fn resize(&mut self, size: PhysicalSize<u32>) {
         self.size = (size.width, size.height);
+        // Any size we didn't ask for once frames arrive is the guest's choice: keep it.
+        if self.frame_size != (0, 0) && self.requested != Some(self.size) {
+            if !self.manual_size {
+                tracing::info!(
+                    "viewer resized by hand to {}x{}: it no longer follows the picture's size",
+                    size.width,
+                    size.height
+                );
+            }
+            self.manual_size = true;
+        }
     }
 
     /// Mutes or unmutes this side's mic.

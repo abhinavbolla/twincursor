@@ -9,23 +9,33 @@ use screencapturekit::stream::configuration::{color_matrix, SCCaptureResolutionT
 
 use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
-use std::sync::{mpsc, Mutex};
-use std::time::Duration;
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use screencapturekit::stream::ErrorHandler;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc as tokio_mpsc, oneshot};
 
 use super::select::{self, is_twincursor, AppInfo, Process, WindowInfo};
-use super::{wall_clock_us, CaptureConfig, CaptureError, Frame, FrameBuffer, Source};
+use super::{
+    wall_clock_us, CaptureConfig, CaptureError, Frame, FrameBuffer, Resize, Source, Tier,
+    WindowRect,
+};
 
 /// How often a display capture looks for TwinCursor windows that appeared since it started
 /// (a viewer started after the sharer), to leave them out too.
-const WATCH_EVERY: Duration = Duration::from_secs(1);
+const WATCH_DISPLAY_EVERY: Duration = Duration::from_secs(1);
+
+/// How often a window capture checks the window's size.
+const WATCH_WINDOW_EVERY: Duration = Duration::from_millis(200);
+
+/// A new window size is applied once it has held this long, so dragging a window's edge
+/// reconfigures the stream once, after the drag stops, rather than on every frame.
+const WINDOW_SETTLE: Duration = Duration::from_millis(600);
 
 /// Capture is stopped when the stream is dropped.
 pub struct SckCapture {
     stream: SCStream,
-    /// Dropping it stops the thread that keeps TwinCursor windows out of a display capture.
+    /// Dropping it stops the thread that keeps the filter or the size up to date.
     _watch: Option<mpsc::Sender<()>>,
 }
 
@@ -42,14 +52,6 @@ fn backend_err(e: impl std::fmt::Display) -> CaptureError {
     CaptureError::Backend(e.to_string())
 }
 
-/// This process, for telling TwinCursor's windows apart from everyone else's.
-fn me() -> (i32, Option<PathBuf>) {
-    let exe = std::env::current_exe()
-        .ok()
-        .map(|p| p.canonicalize().unwrap_or(p));
-    (i32::try_from(std::process::id()).unwrap_or(-1), exe)
-}
-
 /// Path of a process's executable.
 fn exe_path(pid: i32) -> Option<PathBuf> {
     let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
@@ -63,28 +65,66 @@ fn exe_path(pid: i32) -> Option<PathBuf> {
     Some(path.canonicalize().unwrap_or(path))
 }
 
-/// The running apps that are TwinCursor: this process and any other copy of it.
-fn twincursor_apps(content: &SCShareableContent) -> Vec<SCRunningApplication> {
-    let (pid, exe) = me();
-    let me = Process {
-        pid,
-        exe: exe.as_deref(),
-        bundle_id: "",
-    };
-    content
-        .applications()
-        .into_iter()
-        .filter(|app| {
-            let path = exe_path(app.process_id());
-            let bundle_id = app.bundle_identifier();
-            let candidate = Process {
-                pid: app.process_id(),
-                exe: path.as_deref(),
-                bundle_id: &bundle_id,
-            };
-            is_twincursor(&candidate, &me)
-        })
-        .collect()
+/// SCK's process ids are `pid_t`. An id that doesn't fit matches no app.
+fn pid_i32(pid: u32) -> i32 {
+    i32::try_from(pid).unwrap_or(-1)
+}
+
+/// Which apps a display capture leaves out: always this process; with `ours`, every
+/// TwinCursor process ([`is_twincursor`]); and `extra`, an app named by process id (the
+/// desktop app that started this one, `--exclude-app-pid`).
+struct Exclusion {
+    pid: i32,
+    exe: Option<PathBuf>,
+    ours: bool,
+    extra: Option<i32>,
+}
+
+impl Exclusion {
+    fn new(ours: bool, extra: Option<u32>) -> Self {
+        let exe = std::env::current_exe()
+            .ok()
+            .map(|p| p.canonicalize().unwrap_or(p));
+        Self {
+            pid: pid_i32(std::process::id()),
+            exe,
+            ours,
+            extra: extra.map(pid_i32),
+        }
+    }
+
+    fn leaves_out(&self, app: &SCRunningApplication) -> bool {
+        let pid = app.process_id();
+        if pid == self.pid || Some(pid) == self.extra {
+            return true;
+        }
+        if !self.ours {
+            return false;
+        }
+        let path = exe_path(pid);
+        let bundle_id = app.bundle_identifier();
+        let candidate = Process {
+            pid,
+            exe: path.as_deref(),
+            bundle_id: &bundle_id,
+        };
+        let me = Process {
+            pid: self.pid,
+            exe: self.exe.as_deref(),
+            bundle_id: "",
+        };
+        is_twincursor(&candidate, &me)
+    }
+
+    /// The running apps to leave out. An app is only listed while it has a window: a
+    /// command-line program without one needs nothing left out.
+    fn apps(&self, content: &SCShareableContent) -> Vec<SCRunningApplication> {
+        content
+            .applications()
+            .into_iter()
+            .filter(|app| self.leaves_out(app))
+            .collect()
+    }
 }
 
 /// Windows a person would pick from: on screen, at the normal level, with an owner and big
@@ -119,12 +159,17 @@ pub fn shareable() -> Result<(Vec<WindowInfo>, Vec<AppInfo>), CaptureError> {
         .with_exclude_desktop_windows(true)
         .get()
         .map_err(|_| CaptureError::NoDisplay)?;
+    // Never offer TwinCursor's own windows (a viewer): sharing one is the mirror again.
+    let ours = pids_of(&Exclusion::new(true, None).apps(&content));
     let windows = content
         .windows()
         .iter()
         .filter(|w| is_shareable(w))
         .filter_map(|w| {
             let app = w.owning_application()?;
+            if ours.contains(&app.process_id()) {
+                return None;
+            }
             Some(WindowInfo {
                 id: w.window_id(),
                 app: app.application_name(),
@@ -148,27 +193,28 @@ pub fn shareable() -> Result<(Vec<WindowInfo>, Vec<AppInfo>), CaptureError> {
     Ok((windows, apps))
 }
 
-/// The whole display without any TwinCursor window: this app's own, such as the
-/// remote-control overlay, and a viewer running on this Mac, which would otherwise show the
-/// picture inside itself. Also returns the process ids left out. A command-line program
-/// without windows isn't listed, so it needs nothing left out.
+/// The whole display without the apps `exclusion` leaves out: this app's own windows, such
+/// as the remote-control overlay, a viewer running on this Mac, which would otherwise show
+/// the picture inside itself, and the desktop app that started this one. Also returns the
+/// process ids left out.
 fn display_filter(
     content: &SCShareableContent,
     display: &SCDisplay,
+    exclusion: &Exclusion,
 ) -> (SCResult<SCContentFilter>, Vec<i32>) {
-    let ours = twincursor_apps(content);
-    let pids = pids_of(&ours);
-    if !ours.is_empty() {
-        let names: Vec<String> = ours
+    let left_out = exclusion.apps(content);
+    let pids = pids_of(&left_out);
+    if !left_out.is_empty() {
+        let names: Vec<String> = left_out
             .iter()
             .map(|a| format!("{} ({})", a.application_name(), a.process_id()))
             .collect();
-        tracing::info!(
-            "leaving TwinCursor windows out of the capture: {}",
-            names.join(", ")
-        );
+        tracing::info!("leaving out of the capture: {}", names.join(", "));
     }
-    let refs: Vec<&SCRunningApplication> = ours.iter().collect();
+    if let Some(pid) = exclusion.extra.filter(|pid| !pids.contains(pid)) {
+        tracing::info!("app {pid} has no windows yet; it's left out once it has one");
+    }
+    let refs: Vec<&SCRunningApplication> = left_out.iter().collect();
     let builder = SCContentFilter::create().with_display(display);
     let builder = if refs.is_empty() {
         builder.with_excluding_windows(&[])
@@ -178,26 +224,149 @@ fn display_filter(
     (builder.build(), pids)
 }
 
-/// Keeps a display capture's filter up to date as TwinCursor apps start and quit, until
-/// `stop` is dropped. Runs off the frame path: SCK applies a new filter between frames.
-fn watch_ours(stream: SCStream, mut pids: Vec<i32>) -> mpsc::Sender<()> {
+/// Keeps a display capture's filter up to date as apps to leave out start and quit:
+/// ScreenCaptureKit can only leave out an app that has a window when the filter is made.
+fn watch_display(stream: SCStream, exclusion: Exclusion, mut pids: Vec<i32>) -> mpsc::Sender<()> {
     let (stop, stopped) = mpsc::channel::<()>();
     std::thread::spawn(move || {
-        while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(WATCH_EVERY) {
+        while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(WATCH_DISPLAY_EVERY) {
             let Ok(content) = SCShareableContent::get() else {
                 continue;
             };
             let Some(display) = content.displays().into_iter().next() else {
                 continue;
             };
-            if pids_of(&twincursor_apps(&content)) == pids {
+            if pids_of(&exclusion.apps(&content)) == pids {
                 continue;
             }
-            let (filter, now) = display_filter(&content, &display);
+            let (filter, now) = display_filter(&content, &display, &exclusion);
             match filter.map(|f| stream.update_content_filter(&f)) {
                 Ok(Ok(())) => pids = now,
                 Ok(Err(e)) => tracing::warn!("couldn't update the capture filter: {e}"),
                 Err(e) => tracing::warn!("couldn't build the capture filter: {e}"),
+            }
+        }
+    });
+    stop
+}
+
+/// The size to capture a window at and the size to send, for a window of `window` pixels:
+/// `tier.size(window)`, captured 1:1 and cropped when that's within `Tier::size`'s rounding
+/// (a few pixels), scaled by ScreenCaptureKit otherwise.
+struct WindowSize {
+    capture: (u32, u32),
+    crop: Option<(usize, usize)>,
+}
+
+fn window_size(window: (u32, u32), output: (u32, u32)) -> WindowSize {
+    let fits = (output.0..output.0 + 16).contains(&window.0)
+        && (output.1..output.1 + 4).contains(&window.1);
+    if fits {
+        WindowSize {
+            capture: window,
+            crop: Some((output.0 as usize, output.1 as usize)),
+        }
+    } else {
+        WindowSize {
+            capture: output,
+            crop: None,
+        }
+    }
+}
+
+fn stream_config(
+    config: &CaptureConfig,
+    size: &WindowSize,
+) -> Result<SCStreamConfiguration, CaptureError> {
+    let stream_config = SCStreamConfiguration::new()
+        .with_width(size.capture.0)
+        .with_height(size.capture.1)
+        // Video-range NV12 matches what WebRTC's I420 pipeline expects; BT.601 matches
+        // libyuv's default conversion on the viewer.
+        .with_pixel_format(PixelFormat::YCbCr_420v)
+        .with_color_matrix(color_matrix::ITU_R_601_4)
+        .map_err(backend_err)?
+        .with_minimum_frame_interval(&CMTime::new(1, config.max_fps as i32))
+        .with_shows_cursor(config.show_cursor)
+        .with_queue_depth(3);
+    if size.crop.is_some() {
+        stream_config
+            .with_capture_resolution_type(SCCaptureResolutionType::Best)
+            .map_err(backend_err)
+    } else {
+        Ok(stream_config)
+    }
+}
+
+/// Makes a window capture follow the window's size: once a new size has held for
+/// [`WINDOW_SETTLE`], reconfigures the stream for `tier.size(new)` and reports it on `resized`.
+#[allow(clippy::too_many_arguments)]
+fn watch_window(
+    stream: SCStream,
+    config: CaptureConfig,
+    id: u32,
+    tier: Tier,
+    mut current: (u32, u32),
+    crop: Arc<Mutex<Option<(usize, usize)>>>,
+    resized: tokio_mpsc::UnboundedSender<Resize>,
+) -> mpsc::Sender<()> {
+    let (stop, stopped) = mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let mut pending: Option<((u32, u32), Instant)> = None;
+        while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(WATCH_WINDOW_EVERY) {
+            // A closed window ends the capture through the stream's delegate; nothing to do.
+            let Some(window) = SCShareableContent::get()
+                .ok()
+                .and_then(|c| c.windows().into_iter().find(|w| w.window_id() == id))
+            else {
+                continue;
+            };
+            let Ok(filter) = SCContentFilter::create().with_window(&window).build() else {
+                continue;
+            };
+            let now = filter_pixels(&filter);
+            if now == current || now.0 < 16 || now.1 < 4 {
+                pending = None;
+                continue;
+            }
+            match pending {
+                Some((size, since)) if size == now => {
+                    if since.elapsed() < WINDOW_SETTLE {
+                        continue;
+                    }
+                }
+                _ => {
+                    pending = Some((now, Instant::now()));
+                    continue;
+                }
+            }
+            pending = None;
+            let output = tier.size(now);
+            let size = window_size(now, output);
+            let applied = stream_config(&config, &size)
+                .and_then(|c| stream.update_configuration(&c).map_err(backend_err));
+            match applied {
+                Ok(()) => {
+                    *crop.lock().unwrap() = size.crop;
+                    current = now;
+                    tracing::info!(
+                        "window resized to {}x{} px, sending {}x{} ({})",
+                        now.0,
+                        now.1,
+                        output.0,
+                        output.1,
+                        if size.crop.is_some() {
+                            "1:1, cropped"
+                        } else {
+                            "scaled"
+                        }
+                    );
+                    let _ = resized.send(Resize {
+                        window: now,
+                        output,
+                    });
+                }
+                Err(e) => tracing::warn!("couldn't follow the window's new size: {e}"),
             }
         }
     });
@@ -215,10 +384,11 @@ fn filter_for(
     source: Source,
     content: &SCShareableContent,
     display: &SCDisplay,
+    exclusion: &Exclusion,
 ) -> Result<(SCContentFilter, String), CaptureError> {
     let (filter, name) = match source {
         Source::Display => {
-            let (filter, _) = display_filter(content, display);
+            let (filter, _) = display_filter(content, display, exclusion);
             (filter, "the display".to_owned())
         }
         Source::Window(id) => {
@@ -247,10 +417,40 @@ fn filter_for(
     Ok((filter.map_err(backend_err)?, name))
 }
 
+/// The first display's size in points, and the on-screen windows of app `pid` on it.
+pub fn app_windows(pid: u32) -> Option<((f64, f64), Vec<WindowRect>)> {
+    let content = SCShareableContent::get().ok()?;
+    let display = content.displays().into_iter().next()?;
+    let screen = display.frame();
+    let pid = pid_i32(pid);
+    let windows = content
+        .windows()
+        .into_iter()
+        .filter(|w| w.is_on_screen())
+        .filter(|w| {
+            w.owning_application()
+                .is_some_and(|app| app.process_id() == pid)
+        })
+        .map(|w| {
+            let frame = w.frame();
+            WindowRect {
+                id: w.window_id(),
+                title: w.title().unwrap_or_default(),
+                x: frame.origin.x - screen.origin.x,
+                y: frame.origin.y - screen.origin.y,
+                width: frame.size.width,
+                height: frame.size.height,
+            }
+        })
+        .collect();
+    Some(((screen.size.width, screen.size.height), windows))
+}
+
 pub fn start(
     config: CaptureConfig,
     sink: impl Fn(Frame) + Send + Sync + 'static,
     ended: oneshot::Sender<String>,
+    resized: tokio_mpsc::UnboundedSender<Resize>,
 ) -> Result<SckCapture, CaptureError> {
     let content = SCShareableContent::get().map_err(|_| CaptureError::NoDisplay)?;
     let display = content
@@ -259,43 +459,31 @@ pub fn start(
         .next()
         .ok_or(CaptureError::NoDisplay)?;
     connect_window_server();
-    let (filter, name) = filter_for(config.source, &content, &display)?;
+    let exclusion = Exclusion::new(config.leave_out_twincursor, config.exclude_app_pid);
+    let (filter, name) = filter_for(config.source, &content, &display, &exclusion)?;
 
     // A window that fits in the chosen tier is captured at its own pixel size and cropped
     // to the encoder's (`Tier::size` rounds the width down to a multiple of 16 and the height
     // to 4), rather than scaled by a fraction of a percent, which would blur every pixel.
+    let output = (config.width, config.height);
     let window_px = match config.source {
         Source::Window(_) => Some(filter_pixels(&filter)),
         _ => None,
     };
-    let crop = window_px.filter(|&(w, h)| {
-        (config.width..config.width + 16).contains(&w)
-            && (config.height..config.height + 4).contains(&h)
-    });
-    let (width, height) = crop.unwrap_or((config.width, config.height));
-    let mut stream_config = SCStreamConfiguration::new()
-        .with_width(width)
-        .with_height(height)
-        // Video-range NV12 matches what WebRTC's I420 pipeline expects; BT.601 matches
-        // libyuv's default conversion on the viewer.
-        .with_pixel_format(PixelFormat::YCbCr_420v)
-        .with_color_matrix(color_matrix::ITU_R_601_4)
-        .map_err(backend_err)?
-        .with_minimum_frame_interval(&CMTime::new(1, config.max_fps as i32))
-        .with_shows_cursor(config.show_cursor)
-        .with_queue_depth(3);
-    if crop.is_some() {
-        stream_config = stream_config
-            .with_capture_resolution_type(SCCaptureResolutionType::Best)
-            .map_err(backend_err)?;
-    }
-    let crop = crop.map(|_| (config.width as usize, config.height as usize));
+    let size = match window_px {
+        Some(px) => window_size(px, output),
+        None => WindowSize {
+            capture: output,
+            crop: None,
+        },
+    };
+    let stream_config = stream_config(&config, &size)?;
     match window_px {
         Some((w, h)) => tracing::info!(
             "capturing {name}: {w}x{h} px, sent as {}x{} ({})",
-            config.width,
-            config.height,
-            if crop.is_some() {
+            output.0,
+            output.1,
+            if size.crop.is_some() {
                 "1:1, cropped"
             } else {
                 "scaled"
@@ -303,6 +491,7 @@ pub fn start(
         ),
         None => tracing::info!("capturing {name}"),
     }
+    let crop = Arc::new(Mutex::new(size.crop));
 
     // Capture ends by itself when the window or app goes away.
     let ended = Mutex::new(Some(ended));
@@ -315,9 +504,11 @@ pub fn start(
     });
     let mut stream =
         SCStream::new_with_delegate(&filter, &stream_config, delegate).map_err(backend_err)?;
+    let frame_crop = crop.clone();
     stream
         .add_output_handler(
             move |sample: CMSampleBuffer, _: SCStreamOutputType| {
+                let crop = *frame_crop.lock().unwrap();
                 if let Some(frame) = to_frame(&sample, crop) {
                     sink(frame);
                 }
@@ -326,8 +517,22 @@ pub fn start(
         )
         .map_err(backend_err)?;
     stream.start_capture().map_err(backend_err)?;
-    let watch = (config.source == Source::Display)
-        .then(|| watch_ours(stream.clone(), pids_of(&twincursor_apps(&content))));
+    let watch = match (config.source, window_px, config.follow_tier) {
+        (Source::Display, _, _) => {
+            let pids = pids_of(&exclusion.apps(&content));
+            Some(watch_display(stream.clone(), exclusion, pids))
+        }
+        (Source::Window(id), Some(px), Some(tier)) => Some(watch_window(
+            stream.clone(),
+            config,
+            id,
+            tier,
+            px,
+            crop,
+            resized,
+        )),
+        _ => None,
+    };
     Ok(SckCapture {
         stream,
         _watch: watch,
@@ -428,5 +633,24 @@ fn capture_time_us(sample: &CMSampleBuffer) -> u64 {
         now_wall - age_us as u64
     } else {
         now_wall
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_window_within_the_rounding_is_captured_1_to_1_and_cropped() {
+        let size = window_size((1508, 1046), (1504, 1044));
+        assert_eq!(size.capture, (1508, 1046));
+        assert_eq!(size.crop, Some((1504, 1044)));
+    }
+
+    #[test]
+    fn a_window_bigger_than_its_tier_is_scaled() {
+        let size = window_size((3000, 1900), (1664, 1052));
+        assert_eq!(size.capture, (1664, 1052));
+        assert_eq!(size.crop, None);
     }
 }

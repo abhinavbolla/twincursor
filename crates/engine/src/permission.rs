@@ -68,6 +68,39 @@ pub fn mic_permission() -> Option<MicPermission> {
     None
 }
 
+/// Asks macOS for microphone access and waits for the answer, up to `timeout`. Shows the system
+/// prompt only while the permission is [`MicPermission::NotAsked`]; otherwise it returns at once.
+#[cfg(target_os = "macos")]
+pub fn request_mic_permission(timeout: std::time::Duration) {
+    use block2::RcBlock;
+    use objc2::runtime::{AnyClass, AnyObject, Bool};
+    use objc2::{class, msg_send};
+
+    #[link(name = "AVFoundation", kind = "framework")]
+    extern "C" {
+        static AVMediaTypeAudio: &'static AnyObject;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let done = RcBlock::new(move |_granted: Bool| {
+        let _ = tx.send(());
+    });
+    let _: Option<&AnyClass> = AnyClass::get(c"AVCaptureDevice");
+    // SAFETY: `requestAccessForMediaType:completionHandler:` takes an AVMediaType and a
+    // block taking a BOOL; AVFoundation copies the block before returning.
+    unsafe {
+        let _: () = msg_send![
+            class!(AVCaptureDevice),
+            requestAccessForMediaType: AVMediaTypeAudio,
+            completionHandler: &*done
+        ];
+    }
+    let _ = rx.recv_timeout(timeout);
+}
+
+/// Asks macOS for microphone access: nothing to ask where the platform has no such permission.
+#[cfg(not(target_os = "macos"))]
+pub fn request_mic_permission(_timeout: std::time::Duration) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
