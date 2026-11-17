@@ -19,7 +19,7 @@ use engine::{hotkey, view};
 use ipc::{Command, ConnectionState, EndReason, Event, Role};
 use livekit::options::VideoCodec;
 use media::audio::{AudioMode, DeviceChoice, DeviceRef, VoiceOptions, VoiceState};
-use media::capture::{self, Backend, CaptureConfig, Source, Tier};
+use media::capture::{self, select, Backend, CaptureConfig, Source, Tier};
 use media::publish::{self, AdaptConfig, ShareConfig, ShareStats};
 use media::subscribe::ViewConfig;
 use media::token;
@@ -49,6 +49,8 @@ enum Cmd {
     },
     /// Print the microphones and speakers as JSON.
     Devices,
+    /// Print the windows `share --window` can share as JSON: id, app, pid, title, pixels.
+    Windows,
 }
 
 /// Where the call is, and who this person says they are.
@@ -168,6 +170,12 @@ struct ShareArgs {
     resolution: Resolution,
     #[arg(long, value_enum, default_value = "h264")]
     codec: Codec,
+    /// Share one window: its id, or text its title or app name contains (see `windows`).
+    #[arg(long, conflicts_with = "app")]
+    window: Option<String>,
+    /// Share one app: the display with only this app's windows on it (name or bundle id).
+    #[arg(long)]
+    app: Option<String>,
     /// Let guests ask for control. Each request goes to the app as `control_asked`, and nothing
     /// is granted until it answers `allow_control`. Without this, requests are turned down.
     #[arg(long)]
@@ -223,6 +231,11 @@ fn main() -> anyhow::Result<()> {
                 engine::permission::request_missing(&engine::permission::status());
             }
             print_line(&serde_json::to_string(&engine::permission::status())?);
+            Ok(())
+        }
+        Cmd::Windows => {
+            let (windows, _) = capture::shareable().context("listing windows")?;
+            print_line(&serde_json::to_string(&windows)?);
             Ok(())
         }
         Cmd::Devices => {
@@ -436,6 +449,22 @@ fn device_ref(name: String) -> DeviceRef {
 }
 
 fn share_config(args: &ShareArgs) -> anyhow::Result<(ShareConfig, Arc<VoiceState>)> {
+    anyhow::ensure!(
+        !(args.allow_control && (args.window.is_some() || args.app.is_some())),
+        "{}",
+        select::CONTROL_NEEDS_DISPLAY
+    );
+    let (source, source_pixels) = if args.window.is_none() && args.app.is_none() {
+        (Source::Display, None)
+    } else {
+        anyhow::ensure!(
+            matches!(args.capture, CaptureSource::Screen),
+            "--window and --app need screen capture"
+        );
+        let (windows, apps) = capture::shareable().context("listing windows")?;
+        select::resolve(&windows, &apps, args.window.as_deref(), args.app.as_deref())
+            .map_err(anyhow::Error::msg)?
+    };
     let backend = match args.capture {
         CaptureSource::Pattern => Backend::Pattern,
         #[cfg(target_os = "macos")]
@@ -452,7 +481,7 @@ fn share_config(args: &ShareArgs) -> anyhow::Result<(ShareConfig, Arc<VoiceState
     };
     let screen = match backend {
         Backend::Pattern => Some(capture::PATTERN_DISPLAY),
-        _ => capture::display_pixels(),
+        _ => source_pixels.or_else(capture::display_pixels),
     }
     .unwrap_or(capture::FALLBACK_DISPLAY);
     let (width, height) = tier.size(screen);
@@ -462,7 +491,7 @@ fn share_config(args: &ShareArgs) -> anyhow::Result<(ShareConfig, Arc<VoiceState
         token,
         backend,
         capture: CaptureConfig {
-            source: Source::Display,
+            source,
             width,
             height,
             max_fps: 60,
@@ -470,7 +499,8 @@ fn share_config(args: &ShareArgs) -> anyhow::Result<(ShareConfig, Arc<VoiceState
             show_cursor: args.allow_control,
             exclude_app_pid: args.exclude_app_pid,
             leave_out_twincursor: true,
-            follow_tier: None,
+            // A shared window's stream follows it when it's resized.
+            follow_tier: Some(tier),
         },
         codec: match args.codec {
             Codec::H264 => VideoCodec::H264,

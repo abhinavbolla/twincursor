@@ -106,7 +106,7 @@ Fill these in as code lands; keep them accurate.
   alongside unless `AUDIO=off`; `SHARE_FLAGS="--voice-kbps 24 --no-red"` changes its encoding
 - Engine for the desktop app: `target/release/tc-engine share|view --ipc --room R --name N`
   (JSON lines on stdin and stdout, logs on stderr, exits when stdin closes; see `docs/ipc.md`),
-  `tc-engine permissions`, `tc-engine devices`. Build: `cargo build --release -p twincursor-engine-cli`
+  `tc-engine permissions`, `tc-engine devices`, `tc-engine windows`. Build: `cargo build --release -p twincursor-engine-cli`
 - IPC end to end: `bench/engine-e2e.sh` (a scripted app drives a sharer and a headless guest:
   request, allow, typing recorded not injected, revoke, leave, and the engine exiting when its
   stdin closes; pattern capture and `--audio off`, so no permissions or unlocked screen needed)

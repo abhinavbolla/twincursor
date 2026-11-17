@@ -11,11 +11,15 @@ every command and event, which the Rust tests read back and the app's tests can 
 ```
 tc-engine share --ipc --room ROOM --name "Alex" [--resolution 720|1080|1440|2160|native]
                 [--codec h264|h265] [--audio mic|off] [--mic DEVICE] [--speaker DEVICE]
-                [--allow-control] [--exclude-app-pid PID]
+                [--window ID|TEXT | --app NAME] [--allow-control] [--exclude-app-pid PID]
 tc-engine view  --ipc --room ROOM --name "Sam" [--audio mic|off] [--mic DEVICE] [--speaker DEVICE]
 tc-engine permissions [--request]     # one JSON object: Screen Recording, Accessibility, Microphone
 tc-engine devices                     # {"mics": [...], "speakers": [...]}
+tc-engine windows                     # [{"id", "app", "pid", "title", "pixels"}, ...]
 ```
+
+`--window` and `--app` share one window or one app instead of the display, and are refused with
+`--allow-control`: control maps the guest's pointer onto the whole display.
 
 The server comes from `--url`, `--api-key` and `--api-secret`, or from `TWINCURSOR_SERVER_URL`,
 `TWINCURSOR_API_KEY` and `TWINCURSOR_API_SECRET`; without either, the local dev server. Prefer
