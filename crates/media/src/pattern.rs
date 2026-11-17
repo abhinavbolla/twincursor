@@ -94,9 +94,10 @@ const CODE: &[&str] = &[
 /// was rendered at, so a viewer can regenerate it even after the sharer scaled it down.
 pub const COUNTER_BITS: usize = marker::ID_BITS - 2;
 pub const COUNTER_MASK: u32 = (1 << COUNTER_BITS) - 1;
-/// Render sizes a viewer can tell apart: the 16:9 tiers. Anything else is "other" (class 3),
-/// which can only be checked when it arrives unscaled.
-const SIZES: [(u32, u32); 3] = [(1920, 1080), (2560, 1440), (1280, 720)];
+/// Render sizes a viewer can tell apart: the 16:9 tiers the auto-throttle can scale down from.
+/// Anything else is "other" (class 3), which can only be checked when it arrives unscaled. 720p
+/// is the bottom of the ladder, so it always arrives unscaled and needs no class.
+const SIZES: [(u32, u32); 3] = [(1920, 1080), (2560, 1440), (3840, 2160)];
 
 /// Marker id for frame `n` rendered at `size`.
 pub fn frame_id(n: u32, size: (u32, u32)) -> u32 {
@@ -378,9 +379,10 @@ mod tests {
             (5, Some((2560, 1440)))
         );
         assert_eq!(
-            decode_frame_id(frame_id(5, (1280, 720))),
-            (5, Some((1280, 720)))
+            decode_frame_id(frame_id(5, (3840, 2160))),
+            (5, Some((3840, 2160)))
         );
+        assert_eq!(decode_frame_id(frame_id(5, (1280, 720))), (5, None));
         assert_eq!(
             decode_frame_id(frame_id(COUNTER_MASK + 9, (1920, 1080))).0,
             8

@@ -80,6 +80,10 @@ pub struct Inbound {
     pub height: u32,
     pub fps: f64,
     pub decoder: String,
+    /// Time spent decoding `frames_decoded`, in seconds.
+    pub decode_s: f64,
+    /// MIME type of the codec, e.g. "video/H264".
+    pub codec: String,
 }
 
 /// Sending side of the video stream, plus what the SFU reports back about it.
@@ -94,6 +98,11 @@ pub struct Outbound {
     pub fps: f64,
     pub limit: Limit,
     pub encoder: String,
+    pub frames_encoded: u32,
+    /// Time spent encoding `frames_encoded`, in seconds.
+    pub encode_s: f64,
+    /// MIME type of the codec, e.g. "video/H265".
+    pub codec: String,
     pub nack_count: u32,
     pub pli_count: u32,
     /// Fraction (0..1) of our packets the SFU lost, from its last receiver report.
@@ -187,6 +196,12 @@ pub struct SendStats {
     pub retransmit_pct: f64,
     pub nacks: u32,
     pub plis: u32,
+    /// Average encode time per frame over the interval, in ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encode_ms: Option<f64>,
+    /// Codec actually negotiated, e.g. "video/H264".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub codec: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -205,6 +220,11 @@ pub struct RecvStats {
     pub nacks: u32,
     pub plis: u32,
     pub decoder: String,
+    /// Average decode time per frame over the interval, in ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decode_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub codec: String,
 }
 
 /// Picks the video stream and active candidate pair out of a stats report.
@@ -280,6 +300,8 @@ pub fn collect(stats: &[RtcStats]) -> Counters {
             height: s.inbound.frame_height,
             fps: s.inbound.frames_per_second,
             decoder: s.inbound.decoder_implementation.clone(),
+            decode_s: s.inbound.total_decode_time,
+            codec: codec_name(stats, &s.stream.codec_id),
         }),
         outbound: outbound.map(|s| Outbound {
             packets_sent: s.sent.packets_sent,
@@ -291,6 +313,9 @@ pub fn collect(stats: &[RtcStats]) -> Counters {
             fps: s.outbound.frames_per_second,
             limit: s.outbound.quality_limitation_reason.into(),
             encoder: s.outbound.encoder_implementation.clone(),
+            frames_encoded: s.outbound.frames_encoded,
+            encode_s: s.outbound.total_encode_time,
+            codec: codec_name(stats, &s.stream.codec_id),
             nack_count: s.outbound.nack_count,
             pli_count: s.outbound.pli_count,
             remote_fraction_lost: stats.iter().find_map(|r| match r {
@@ -308,6 +333,23 @@ pub fn collect(stats: &[RtcStats]) -> Counters {
             kind: local_candidate_kind(stats, &pair.local_candidate_id),
         }),
     }
+}
+
+/// MIME type of the codec a stream uses, from its codec stats.
+fn codec_name(stats: &[RtcStats], codec_id: &str) -> String {
+    stats
+        .iter()
+        .find_map(|s| match s {
+            RtcStats::Codec(c) if c.rtc.id == codec_id => Some(c.codec.mime_type.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// Average milliseconds per frame between two (time, frames) counter pairs.
+fn per_frame_ms(time_s: f64, prev_time_s: f64, frames: u32, prev_frames: u32) -> Option<f64> {
+    let frames = frames.checked_sub(prev_frames).filter(|&n| n > 0)?;
+    Some((time_s - prev_time_s).max(0.0) * 1000.0 / f64::from(frames))
 }
 
 /// The transport's selected pair, or else the nominated pair carrying the most traffic.
@@ -375,6 +417,8 @@ pub fn snapshot(prev: &Counters, cur: &Counters, secs: f64) -> NetSnapshot {
             nacks: c.nack_count.saturating_sub(p.nack_count),
             plis: c.pli_count.saturating_sub(p.pli_count),
             decoder: c.decoder.clone(),
+            decode_ms: per_frame_ms(c.decode_s, p.decode_s, c.frames_decoded, p.frames_decoded),
+            codec: c.codec.clone(),
         }
     });
 
@@ -396,6 +440,8 @@ pub fn snapshot(prev: &Counters, cur: &Counters, secs: f64) -> NetSnapshot {
             retransmit_pct: percent(resent, sent),
             nacks: c.nack_count.saturating_sub(p.nack_count),
             plis: c.pli_count.saturating_sub(p.pli_count),
+            encode_ms: per_frame_ms(c.encode_s, p.encode_s, c.frames_encoded, p.frames_encoded),
+            codec: c.codec.clone(),
         }
     });
 
@@ -533,6 +579,72 @@ impl Board {
         let sides: Vec<&NetSnapshot> = [&self.local, &self.remote].into_iter().flatten().collect();
         (!sides.is_empty()).then(|| connection_quality(&sides))
     }
+}
+
+/// What the video stream ran as over a call, from the viewer's history of both ends.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct MediaSummary {
+    /// Codec the sharer encoded and the viewer decoded, e.g. "video/H265".
+    pub send_codec: String,
+    pub recv_codec: String,
+    pub encoder: String,
+    pub decoder: String,
+    /// Every size sent and received, in order; more than one means the size changed.
+    pub sent_sizes: Vec<(u32, u32)>,
+    pub received_sizes: Vec<(u32, u32)>,
+    /// Median over the call's seconds of the average time per frame.
+    pub encode_ms_p50: Option<f64>,
+    pub decode_ms_p50: Option<f64>,
+    /// Mean bitrate the viewer received.
+    pub recv_kbps_mean: Option<f64>,
+    /// Seconds the sharer reported each quality limitation.
+    pub limit_s: Vec<(Limit, u32)>,
+}
+
+pub fn media_summary(history: &[BoardEntry]) -> MediaSummary {
+    let sends: Vec<&SendStats> = history
+        .iter()
+        .filter_map(|e| e.remote.as_ref()?.send.as_ref())
+        .collect();
+    let recvs: Vec<&RecvStats> = history
+        .iter()
+        .filter_map(|e| e.local.as_ref()?.recv.as_ref())
+        .collect();
+    let last = |v: Vec<&String>| v.into_iter().rev().find(|s| !s.is_empty()).cloned();
+    let sizes = |v: Vec<(u32, u32)>| {
+        let mut out: Vec<(u32, u32)> = Vec::new();
+        for size in v.into_iter().filter(|&(w, h)| w > 0 && h > 0) {
+            if out.last() != Some(&size) {
+                out.push(size);
+            }
+        }
+        out
+    };
+    let mut limit_s: Vec<(Limit, u32)> = Vec::new();
+    for s in &sends {
+        match limit_s.iter_mut().find(|(l, _)| *l == s.limit) {
+            Some((_, n)) => *n += 1,
+            None => limit_s.push((s.limit, 1)),
+        }
+    }
+    MediaSummary {
+        send_codec: last(sends.iter().map(|s| &s.codec).collect()).unwrap_or_default(),
+        recv_codec: last(recvs.iter().map(|r| &r.codec).collect()).unwrap_or_default(),
+        encoder: last(sends.iter().map(|s| &s.encoder).collect()).unwrap_or_default(),
+        decoder: last(recvs.iter().map(|r| &r.decoder).collect()).unwrap_or_default(),
+        sent_sizes: sizes(sends.iter().map(|s| (s.width, s.height)).collect()),
+        received_sizes: sizes(recvs.iter().map(|r| (r.width, r.height)).collect()),
+        encode_ms_p50: median(sends.iter().filter_map(|s| s.encode_ms).collect()),
+        decode_ms_p50: median(recvs.iter().filter_map(|r| r.decode_ms).collect()),
+        recv_kbps_mean: (!recvs.is_empty())
+            .then(|| recvs.iter().map(|r| r.kbps).sum::<f64>() / recvs.len() as f64),
+        limit_s,
+    }
+}
+
+fn median(mut v: Vec<f64>) -> Option<f64> {
+    v.sort_by(f64::total_cmp);
+    v.get(v.len() / 2).copied()
 }
 
 /// Leaves out the time the other side's voice was muted when counting made-up audio.
@@ -946,6 +1058,139 @@ mod tests {
         assert_eq!(voice.loudness.duration_s, 4.0);
         let mic = c.audio_source.unwrap();
         assert_eq!((mic.energy, mic.duration_s), (0.5, 2.0));
+    }
+
+    #[test]
+    fn encode_and_decode_time_per_frame() {
+        let out = |frames, encode_s| Outbound {
+            frames_encoded: frames,
+            encode_s,
+            codec: "video/H265".into(),
+            ..Default::default()
+        };
+        let inb = |frames, decode_s| Inbound {
+            frames_decoded: frames,
+            decode_s,
+            codec: "video/H265".into(),
+            ..Default::default()
+        };
+        let prev = Counters {
+            outbound: Some(out(600, 3.0)),
+            inbound: Some(inb(590, 2.0)),
+            ..Default::default()
+        };
+        let cur = Counters {
+            outbound: Some(out(660, 3.3)),
+            inbound: Some(inb(650, 2.12)),
+            ..Default::default()
+        };
+        let s = snapshot(&prev, &cur, 1.0);
+        let (send, recv) = (s.send.unwrap(), s.recv.unwrap());
+        assert!(
+            (send.encode_ms.unwrap() - 5.0).abs() < 1e-9,
+            "0.3 s over 60 frames"
+        );
+        assert!(
+            (recv.decode_ms.unwrap() - 2.0).abs() < 1e-9,
+            "0.12 s over 60 frames"
+        );
+        assert_eq!(
+            (send.codec.as_str(), recv.codec.as_str()),
+            ("video/H265", "video/H265")
+        );
+        // No new frames (a static screen, or a counter reset): no time per frame.
+        let idle = snapshot(&cur, &cur, 1.0);
+        assert_eq!(idle.send.unwrap().encode_ms, None);
+        assert_eq!(snapshot(&cur, &prev, 1.0).recv.unwrap().decode_ms, None);
+    }
+
+    #[test]
+    fn collect_names_the_codec_in_use() {
+        let mut out = rtc::OutboundRtpStats::default();
+        out.stream.kind = "video".into();
+        out.stream.codec_id = "C2".into();
+        out.outbound.frames_encoded = 7;
+        out.outbound.total_encode_time = 0.05;
+        let codec = |id: &str, mime: &str| {
+            let mut c = rtc::CodecStats::default();
+            c.rtc.id = id.into();
+            c.codec.mime_type = mime.into();
+            RtcStats::Codec(c)
+        };
+        let c = collect(&[
+            codec("C1", "video/H264"),
+            codec("C2", "video/H265"),
+            RtcStats::OutboundRtp(out),
+        ]);
+        let out = c.outbound.unwrap();
+        assert_eq!(out.codec, "video/H265");
+        assert_eq!((out.frames_encoded, out.encode_s), (7, 0.05));
+    }
+
+    #[test]
+    fn snapshots_without_the_new_fields_still_parse() {
+        // What a sharer or viewer from before encode/decode times sends.
+        let old = r#"{"rtt_ms":1.0,"bwe_kbps":null,"path":null,"recv":null,
+            "send":{"kbps":1.0,"target_kbps":2.0,"fps":60.0,"width":1920,"height":1080,
+            "limit":"none","encoder":"VideoToolbox","loss_pct":null,"retransmit_pct":0.0,
+            "nacks":0,"plis":0}}"#;
+        let s: NetSnapshot = serde_json::from_str(old).unwrap();
+        let send = s.send.unwrap();
+        assert_eq!((send.encode_ms, send.codec.as_str()), (None, ""));
+    }
+
+    #[test]
+    fn media_summary_over_a_call() {
+        let entry = |t_s, size: (u32, u32), encode_ms, limit| {
+            let send = SendStats {
+                width: size.0,
+                height: size.1,
+                encode_ms,
+                limit,
+                codec: "video/H265".into(),
+                encoder: "VideoToolbox".into(),
+                ..Default::default()
+            };
+            let recv = RecvStats {
+                width: size.0,
+                height: size.1,
+                kbps: 1000.0 * t_s,
+                decode_ms: encode_ms.map(|e| e / 2.0),
+                codec: "video/H265".into(),
+                ..Default::default()
+            };
+            BoardEntry {
+                t_s,
+                local: Some(NetSnapshot {
+                    recv: Some(recv),
+                    ..Default::default()
+                }),
+                remote: Some(NetSnapshot {
+                    send: Some(send),
+                    ..Default::default()
+                }),
+            }
+        };
+        let uhd = (3840, 2160);
+        let history = [
+            entry(1.0, (0, 0), None, Limit::None),
+            entry(2.0, uhd, Some(4.0), Limit::None),
+            entry(3.0, uhd, Some(6.0), Limit::Cpu),
+            entry(4.0, (2560, 1440), Some(5.0), Limit::Cpu),
+        ];
+        let m = media_summary(&history);
+        assert_eq!(
+            (m.send_codec.as_str(), m.recv_codec.as_str()),
+            ("video/H265", "video/H265")
+        );
+        assert_eq!(m.encoder, "VideoToolbox");
+        assert_eq!(m.sent_sizes, vec![uhd, (2560, 1440)]);
+        assert_eq!(m.received_sizes, m.sent_sizes);
+        assert_eq!(m.encode_ms_p50, Some(5.0));
+        assert_eq!(m.decode_ms_p50, Some(2.5));
+        assert_eq!(m.recv_kbps_mean, Some(2500.0));
+        assert_eq!(m.limit_s, vec![(Limit::None, 2), (Limit::Cpu, 2)]);
+        assert_eq!(media_summary(&[]), MediaSummary::default());
     }
 
     #[test]

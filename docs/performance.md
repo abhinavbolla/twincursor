@@ -12,6 +12,7 @@ Wi-Fi 6 AX201. LiveKit runs on the Mac. TwinCursor is pre-release, so expect the
 |---|---|
 | 1080p between two machines on home Wi-Fi | 60 fps, round trip 29 ms typical, 105 ms at p95 |
 | Same, on one Mac with no network | 59 fps, round trip 16 ms typical, 24 ms at p95 |
+| 4K (3840x2160) on one Mac, HEVC | 59 fps, round trip 26 ms typical, 36 ms at p95 |
 | Text quality, H.264 | SSIM 0.9996 at about 0.8 Mbps, even while scrolling fast |
 | Sharer CPU, H.264 at 1080p | 14% of one core |
 | Delay the input path adds | Under 1 ms on top of the network |
@@ -45,6 +46,29 @@ H.264 is sharper, steadier and about 4x lighter on the network, at under a quart
 CPU, which is why it's the default ([ADR 0002](adr/0002-default-video-codec.md)). Compare p95 here.
 A single p50 is unreliable, for the reason under [things that fooled us](#things-that-fooled-us).
 VP9 was worse than both on every measure in earlier runs.
+
+### 4K
+
+One Mac (M4), the same synthetic code editor at 3840x2160, 30 s each, headless viewer, both
+codecs through VideoToolbox:
+
+| Config | fps | Round trip p50 | p95 | SSIM p5 | Bitrate | Encode per frame | Decode per frame | Sharer CPU | Viewer CPU |
+|---|---|---|---|---|---|---|---|---|---|
+| H.264 2160p | 59 | 43 ms | 57 ms | 0.9997 | 1.0 Mbps | 31 ms | 1.9 ms | 30% | 66% |
+| HEVC 2160p | 59 | 26 ms | 36 ms | 0.9996 | 2.6 Mbps | 10 ms | 4.6 ms | 29% | 66% |
+| HEVC 1440p | 59 | 14 ms | 30 ms | 0.9995 | 1.4 Mbps | 10 ms | 2.6 ms | 17% | 34% |
+
+Both codecs hold 60 fps at 4K, and the picture is as sharp as at 1080p. The difference is the
+encoder: H.264 needs 31 ms for a 4K frame and HEVC needs 10 ms, and that gap goes straight into the
+round trip. So 4K is where `--codec h265` earns its place
+([ADR 0008](adr/0008-hevc-for-4k.md)). At 1440p it has no advantage over H.264 and sends more
+bits for the same picture, so H.264 stays the default.
+
+The viewer's CPU doubles between 1440p and 4K. That is the frame conversion, which runs on the CPU
+today.
+
+The H.264 rows above were re-run alongside these and came out the same: 16 ms and 27 ms at 1080p,
+14 ms and 31 ms at 1440p.
 
 ## Real Wi-Fi
 
@@ -515,6 +539,7 @@ Screen Recording permission.
 ```bash
 cargo build --release -p twincursor-media-spike
 DURATION=30 bench/run-matrix.sh q-h264-1080 q-vp8-1080 q-h264-1440 q-vp8-1440 input-h264
+DURATION=30 bench/run-matrix.sh q-h264-2160 q-h265-2160 q-h265-1440   # 4K, and HEVC
 DURATION=60 bench/run-matrix.sh av-off av-on av-mic   # the screen without voice, with it, with the mic
 ```
 
@@ -570,6 +595,8 @@ then run the viewer with `--headless --measure-input`.
 
 - True glass-to-glass latency, including the app's redraw
 - Mac to Mac, and either end on Ethernet
+- 4K between two machines, and on a real 4K display
+- HEVC on an M1 Mac, and on a Windows viewer
 - With AWDL off, or the router on channel 44 or 149
 - Text quality on real anti-aliased screens over a real network
 - Voice mouth to ear between two machines, and through headphones

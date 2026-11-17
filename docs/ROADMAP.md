@@ -65,6 +65,8 @@ run it all with one `docker compose up`.
 - [ ] Voice mouth to ear under 150 ms (about 180–190 ms today): 10 ms Opus frames and a smaller
   macOS audio device layer, both below the LiveKit SDK ([budget](performance.md#where-the-time-goes))
 - [ ] Live bitrate control without republishing the track, and FEC for lossy links
+- [x] 4K at 60 fps, with HEVC as an opt-in codec ([numbers](performance.md#4k))
+- [ ] 4K between two machines, and on a real 4K display
 - [ ] Encoder tuning, sharpening and a faster Metal or wgpu viewer
 - [ ] Real-world checks: Mac to Mac, Mac on Ethernet, Network Link Conditioner profiles
 - [ ] True glass-to-glass latency with an on-screen marker (`--marker screen`)

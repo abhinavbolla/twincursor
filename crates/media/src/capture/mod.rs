@@ -27,6 +27,8 @@ pub enum Tier {
     P720,
     P1080,
     P1440,
+    /// 4K: 3840x2160 on a 16:9 display, the display's own size on a shorter one.
+    P2160,
     /// The display's own pixel size.
     Native,
 }
@@ -37,17 +39,20 @@ impl Tier {
             Self::P720 => Some(720),
             Self::P1080 => Some(1080),
             Self::P1440 => Some(1440),
+            Self::P2160 => Some(2160),
             Self::Native => None,
         }
     }
 
     /// Default maximum bitrate. Screen content is mostly static, so this is a ceiling for
-    /// scrolling and typing bursts, not a steady rate.
+    /// scrolling and typing bursts, not a steady rate. `Native` is a fixed ceiling, whatever
+    /// the display's size.
     pub fn default_bitrate_kbps(self) -> u64 {
         match self {
             Self::P720 => 2_500,
             Self::P1080 => 5_000,
             Self::P1440 => 8_000,
+            Self::P2160 => 15_000,
             Self::Native => 12_000,
         }
     }
@@ -68,9 +73,9 @@ impl Tier {
 /// Assumed when the display size can't be read (non-macOS, or a locked or sleeping screen).
 pub const FALLBACK_DISPLAY: (u32, u32) = (1920, 1080);
 
-/// The "display" the synthetic pattern pretends to have: 16:9, so its tiers are 1920x1080
-/// and 2560x1440 on every machine and results compare across machines.
-pub const PATTERN_DISPLAY: (u32, u32) = (2560, 1440);
+/// The "display" the synthetic pattern pretends to have: 16:9 4K, so its tiers are 1280x720,
+/// 1920x1080, 2560x1440 and 3840x2160 on every machine and results compare across machines.
+pub const PATTERN_DISPLAY: (u32, u32) = (3840, 2160);
 
 /// Pixel size of the display we capture (the first one), if the platform can tell us.
 pub fn display_pixels() -> Option<(u32, u32)> {
@@ -209,6 +214,40 @@ mod tests {
     }
 
     #[test]
+    fn tier_2160() {
+        assert_eq!(Tier::P2160.size((3840, 2160)), (3840, 2160));
+        // Shorter than 2160 lines: the display's own size, never upscaled.
+        assert_eq!(Tier::P2160.size(RETINA_14), (3024, 1964));
+        assert_eq!(Tier::P2160.size(RETINA_14), Tier::Native.size(RETINA_14));
+        // 5K: scaled down to 4K.
+        assert_eq!(Tier::P2160.size((5120, 2880)), (3840, 2160));
+        assert_eq!(Tier::P1440.size((5120, 2880)), (2560, 1440));
+        assert_eq!(Tier::Native.size((5120, 2880)), (5120, 2880));
+    }
+
+    #[test]
+    fn pattern_tiers_are_16_by_9() {
+        let sizes = [
+            Tier::P720,
+            Tier::P1080,
+            Tier::P1440,
+            Tier::P2160,
+            Tier::Native,
+        ]
+        .map(|t| t.size(PATTERN_DISPLAY));
+        assert_eq!(
+            sizes,
+            [
+                (1280, 720),
+                (1920, 1080),
+                (2560, 1440),
+                (3840, 2160),
+                (3840, 2160)
+            ]
+        );
+    }
+
+    #[test]
     fn tiers_on_16_by_9() {
         assert_eq!(Tier::P1080.size((1920, 1080)), (1920, 1080));
         assert_eq!(Tier::P1440.size((2560, 1440)), (2560, 1440));
@@ -229,8 +268,17 @@ mod tests {
             (1440, 900),
             (1366, 768),
             (1001, 777),
+            (3840, 2160),
+            (5120, 2880),
+            (3440, 1440),
         ] {
-            for tier in [Tier::P720, Tier::P1080, Tier::P1440, Tier::Native] {
+            for tier in [
+                Tier::P720,
+                Tier::P1080,
+                Tier::P1440,
+                Tier::P2160,
+                Tier::Native,
+            ] {
                 let (w, h) = tier.size(native);
                 assert_eq!(w % 16, 0, "{tier:?} on {native:?}");
                 assert_eq!(h % 2, 0, "{tier:?} on {native:?}");
@@ -241,9 +289,10 @@ mod tests {
 
     #[test]
     fn bitrate_grows_with_tier() {
-        let rates: Vec<_> = [Tier::P720, Tier::P1080, Tier::P1440, Tier::Native]
+        let rates: Vec<_> = [Tier::P720, Tier::P1080, Tier::P1440, Tier::P2160]
             .map(Tier::default_bitrate_kbps)
             .to_vec();
         assert!(rates.windows(2).all(|w| w[0] < w[1]));
+        assert!(Tier::Native.default_bitrate_kbps() > Tier::P1440.default_bitrate_kbps());
     }
 }
