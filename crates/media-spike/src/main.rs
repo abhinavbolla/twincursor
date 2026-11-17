@@ -343,13 +343,19 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
             !matches!(args.inject, sharer::Inject::Real),
             "--headless only works with --inject log or record: real control needs the label"
         );
-        let (sharer, link) = sharer::Sharer::start(&args.inject, revoke, None)?;
+        let (sharer, link) =
+            sharer::Sharer::start(&args.inject, revoke, None, sharer::Consent::Terminal)?;
         let result = network(Some(link));
         sharer.stop();
         return result;
     }
     let ui = hotkey::SharerUi::new()?;
-    let (sharer, link) = sharer::Sharer::start(&args.inject, revoke.clone(), Some(ui.overlay()))?;
+    let (sharer, link) = sharer::Sharer::start(
+        &args.inject,
+        revoke.clone(),
+        Some(ui.overlay()),
+        sharer::Consent::Terminal,
+    )?;
     let result = ui.run(Some(revoke), mute, move || network(Some(link)));
     // Release anything a guest still holds before exiting.
     sharer.stop();

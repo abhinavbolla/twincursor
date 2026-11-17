@@ -507,6 +507,7 @@ mod tests {
             Message::Hello {
                 name: "g".into(),
                 platform: protocol::Platform::Macos,
+                decoders: vec![],
             },
             Message::RequestControl,
             input(1, InputEvent::Move { x: 0.5, y: 0.5 }),

@@ -40,7 +40,12 @@ pub struct SharerUi {
     event_loop: EventLoop<UiEvent>,
     handle: OverlayHandle,
     state: Arc<Mutex<OverlayState>>,
+    /// Told when the mute hotkey flips mute, instead of printing to the terminal.
+    on_mute: Option<MuteNotice>,
 }
+
+/// Called with whether the mic is now muted.
+pub type MuteNotice = Arc<dyn Fn(bool) + Send + Sync>;
 
 impl SharerUi {
     /// Makes the event loop. Call it on the main thread.
@@ -61,7 +66,14 @@ impl SharerUi {
             event_loop,
             handle,
             state,
+            on_mute: None,
         })
+    }
+
+    /// Reports the mute hotkey's presses to `notice` instead of the terminal, for an engine
+    /// whose stdout belongs to the desktop app.
+    pub fn on_mute(&mut self, notice: MuteNotice) {
+        self.on_mute = Some(notice);
     }
 
     /// For the control thread, to show who is asking or controlling.
@@ -105,12 +117,15 @@ impl SharerUi {
                     Ok(()) => {
                         mute_id = Some(key.id());
                         registered.push(key);
-                        println!("{MUTE} mutes and unmutes your microphone.");
+                        if self.on_mute.is_none() {
+                            println!("{MUTE} mutes and unmutes your microphone.");
+                        }
                     }
                     Err(e) => tracing::warn!("{MUTE} is taken, so it won't mute: {e}"),
                 }
             }
         }
+        let on_mute = self.on_mute.clone();
         GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
             if event.state != HotKeyState::Pressed {
                 return;
@@ -122,10 +137,11 @@ impl SharerUi {
                 }
             } else if Some(event.id) == mute_id {
                 if let Some(voice) = &mute {
-                    if voice.toggle_mute() {
-                        println!("Your microphone is muted. {MUTE} unmutes it.");
-                    } else {
-                        println!("Your microphone is on.");
+                    let muted = voice.toggle_mute();
+                    match &on_mute {
+                        Some(notice) => notice(muted),
+                        None if muted => println!("Your microphone is muted. {MUTE} unmutes it."),
+                        None => println!("Your microphone is on."),
                     }
                 }
             }

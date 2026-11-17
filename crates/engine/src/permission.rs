@@ -1,4 +1,8 @@
-//! The macOS microphone permission check.
+//! What macOS lets this process do: the microphone check a call makes before it starts, and the
+//! Screen Recording, Accessibility and Microphone report that `tc-spike permissions` and
+//! `tc-engine permissions` print.
+
+use serde::Serialize;
 
 use crate::Error;
 
@@ -101,6 +105,181 @@ pub fn request_mic_permission(timeout: std::time::Duration) {
 #[cfg(not(target_os = "macos"))]
 pub fn request_mic_permission(_timeout: std::time::Duration) {}
 
+/// One permission, as macOS reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Access {
+    Granted,
+    /// Not allowed, or not asked yet: macOS doesn't tell the two apart for this one.
+    NotGranted,
+    NotAsked,
+    Denied,
+    Restricted,
+    /// Nothing to allow on this platform.
+    NotApplicable,
+}
+
+impl From<Option<MicPermission>> for Access {
+    fn from(mic: Option<MicPermission>) -> Self {
+        match mic {
+            Some(MicPermission::Granted) => Self::Granted,
+            Some(MicPermission::NotAsked) => Self::NotAsked,
+            Some(MicPermission::Denied) => Self::Denied,
+            Some(MicPermission::Restricted) => Self::Restricted,
+            None => Self::NotApplicable,
+        }
+    }
+}
+
+/// Screen Recording, Accessibility and Microphone access, as `tc-spike permissions` and
+/// `tc-engine permissions` print them, with who is asking.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Status {
+    pub screen_recording: Access,
+    pub accessibility: Access,
+    pub microphone: Access,
+    pub pid: u32,
+    pub parent_pid: u32,
+    pub executable: String,
+}
+
+/// What macOS lets this process do right now. Never prompts.
+pub fn status() -> Status {
+    Status {
+        screen_recording: sys::screen_recording(),
+        accessibility: sys::accessibility(),
+        microphone: mic_permission().into(),
+        pid: std::process::id(),
+        parent_pid: parent_pid(),
+        executable: std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
+    }
+}
+
+fn parent_pid() -> u32 {
+    #[cfg(unix)]
+    {
+        std::os::unix::process::parent_id()
+    }
+    #[cfg(not(unix))]
+    {
+        0
+    }
+}
+
+/// Asks macOS for what `before` shows is missing. Screen Recording and Accessibility show their
+/// prompts and return at once; the microphone waits for its answer, up to two minutes.
+pub fn request_missing(before: &Status) {
+    if before.screen_recording != Access::Granted {
+        sys::request_screen_recording();
+    }
+    if before.accessibility != Access::Granted {
+        sys::request_accessibility();
+    }
+    if before.microphone == Access::NotAsked {
+        request_mic_permission(std::time::Duration::from_secs(120));
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod sys {
+    use std::ffi::c_void;
+
+    use super::Access;
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGPreflightScreenCaptureAccess() -> bool;
+        fn CGRequestScreenCaptureAccess() -> bool;
+    }
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+        fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+        static kAXTrustedCheckOptionPrompt: *const c_void;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        static kCFBooleanTrue: *const c_void;
+        static kCFTypeDictionaryKeyCallBacks: u8;
+        static kCFTypeDictionaryValueCallBacks: u8;
+        fn CFDictionaryCreate(
+            allocator: *const c_void,
+            keys: *const *const c_void,
+            values: *const *const c_void,
+            count: isize,
+            key_callbacks: *const u8,
+            value_callbacks: *const u8,
+        ) -> *const c_void;
+        fn CFRelease(cf: *const c_void);
+    }
+
+    fn granted(yes: bool) -> Access {
+        if yes {
+            Access::Granted
+        } else {
+            Access::NotGranted
+        }
+    }
+
+    pub fn screen_recording() -> Access {
+        // SAFETY: plain CoreGraphics call without arguments; it never prompts.
+        granted(unsafe { CGPreflightScreenCaptureAccess() })
+    }
+
+    pub fn accessibility() -> Access {
+        // SAFETY: plain call without arguments; it never prompts.
+        granted(unsafe { AXIsProcessTrusted() })
+    }
+
+    pub fn request_screen_recording() {
+        // SAFETY: as above. Shows the system prompt once per app; the answer only takes effect
+        // in processes started after it.
+        unsafe { CGRequestScreenCaptureAccess() };
+    }
+
+    pub fn request_accessibility() {
+        // SAFETY: a one-entry CFDictionary of CF constants, released after the call.
+        unsafe {
+            let keys = [kAXTrustedCheckOptionPrompt];
+            let values = [kCFBooleanTrue];
+            let options = CFDictionaryCreate(
+                std::ptr::null(),
+                keys.as_ptr(),
+                values.as_ptr(),
+                1,
+                &raw const kCFTypeDictionaryKeyCallBacks,
+                &raw const kCFTypeDictionaryValueCallBacks,
+            );
+            if options.is_null() {
+                return;
+            }
+            AXIsProcessTrustedWithOptions(options);
+            CFRelease(options);
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod sys {
+    use super::Access;
+
+    pub fn screen_recording() -> Access {
+        Access::NotApplicable
+    }
+
+    pub fn accessibility() -> Access {
+        Access::NotApplicable
+    }
+
+    pub fn request_screen_recording() {}
+
+    pub fn request_accessibility() {}
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,5 +297,21 @@ mod tests {
     fn permission_can_be_read() {
         // Reading the status never prompts; it only has to come back as a known value.
         assert!(mic_permission().is_some());
+    }
+
+    #[test]
+    fn status_serializes_as_snake_case() {
+        let json = serde_json::to_value(Status {
+            screen_recording: Access::Granted,
+            accessibility: Access::NotGranted,
+            microphone: Access::NotAsked,
+            pid: 1,
+            parent_pid: 2,
+            executable: "x".into(),
+        })
+        .unwrap();
+        assert_eq!(json["screen_recording"], "granted");
+        assert_eq!(json["accessibility"], "not_granted");
+        assert_eq!(json["microphone"], "not_asked");
     }
 }

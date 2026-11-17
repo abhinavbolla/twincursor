@@ -246,7 +246,10 @@ pub async fn run(
     loop {
         tokio::select! {
             _ = &mut shutdown => break,
-            _ = voice_state.changed() => voice.apply_mute(),
+            _ = voice_state.changed() => {
+                voice.apply_mute();
+                voice.apply_devices();
+            }
             _ = device_timer.tick() => voice.check_devices(),
             _ = stats_timer.tick(), if config.net_stats => {
                 if let Some(mut snap) = poller.poll(&room).await {
