@@ -70,6 +70,24 @@ today.
 The H.264 rows above were re-run alongside these and came out the same: 16 ms and 27 ms at 1080p,
 14 ms and 31 ms at 1440p.
 
+### A 4K sharer and a smaller viewer
+
+The sharer sends the size its viewers can show ([ADR 0009](adr/0009-size-to-the-viewer.md)). The
+same 4K H.264 sharer, with a headless viewer that reports a 1920x1080 window, 30 s each. The first
+row is `share --ignore-viewport`, which is how every call behaved before:
+
+| Sharer | Sent | One way p50 | Round trip p50 | Encode per frame | Bitrate | Sharer CPU |
+|---|---|---|---|---|---|---|
+| Ignores the viewer's size | 3840x2160 | 42.5 ms | 44.7 ms | 31.6 ms | 1.0 Mbps | 53% |
+| Sized to the viewer | 1920x1080 | 16.8 ms | 17.1 ms | 6.0 ms | 0.74 Mbps | 57% |
+
+Text at the fitted size scores SSIM 0.9993 at p50 and 0.9990 at p5 against the pattern drawn at
+1920x1080. With no viewport reported, the 1080p and 4K rows above are unchanged within noise.
+
+The sharer's CPU doesn't fall: the frame is still captured at 4K and scaled down on the CPU before
+the encoder sees it. These two rows ran on battery in Low Power Mode, so compare them with each
+other, not with the table above.
+
 ## Real Wi-Fi
 
 Mac sharer to Windows viewer on one 5 GHz access point, so packets take two wireless hops. H.264
@@ -512,6 +530,16 @@ Measuring this is easy to get wrong, so these are worth knowing before you compa
   247 ms. p50 is still noisy because the spread has two humps, so also look at p95.
 - **Machine load matters.** With other apps busy on battery, p95 rose to 50–190 ms in every config.
   Compare numbers only within one session.
+- **One run's round trip p50 can't compare two builds.** Across 28 runs of the 1080p H.264 row on
+  builds that measure the same, round trip p50 came out anywhere from 8 to 20 ms, bunched near 9
+  and near 18. One-way p50 moved less, 9 to 14 ms. To compare builds, run them in interleaved pairs
+  (old, new, new, old), several pairs, and compare one-way p50 and the means across the pairs.
+  Drop a pair if the load jumped during it, and say so.
+- **Scaled frames used to go unscored.** The pattern's frame number sits in the picture, and
+  scaling made it unreadable, so a viewer scored only frames that arrived at the sharer's full
+  size. Results files now score each size on its own (`ssim_by_size`). Any SSIM figure in this
+  document from a run where the sharer stepped the size down predates that and covers the
+  full-size frames only. The network lab's constrained profiles haven't been re-run since.
 - **A sleeping display looks like a broken build.** ScreenCaptureKit lists no displays while the
   screen is asleep or locked, so unattended runs need `--capture pattern`.
 - **The latency marker hides the app menus.** While a viewer sends ticks, the sharer paints a
