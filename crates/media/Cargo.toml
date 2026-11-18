@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "Screen capture, WebRTC transport and latency measurement for TwinCursor"
+publish = false
 
 [lib]
 name = "media"
