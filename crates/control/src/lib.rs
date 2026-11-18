@@ -160,6 +160,8 @@ impl<I: Injector> Controller<I> {
                 self.on_input(from, seq, sent_at_us, after, event, now);
                 vec![]
             }
+            // Sizing, not control: the sharer's media loop reads it from the room itself.
+            Message::Viewport { .. } => vec![],
             // Only the sharer sends these.
             Message::Grant | Message::Deny | Message::Revoke | Message::Released => vec![],
         }
