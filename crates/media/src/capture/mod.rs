@@ -63,12 +63,47 @@ impl Tier {
     /// of 4 (the encoder crops other sizes: a width of 1662 became 1660, a height of 1046
     /// became 1044) and never upscales.
     pub fn size(self, native: (u32, u32)) -> (u32, u32) {
-        let (nw, nh) = (native.0.max(16), native.1.max(4));
-        let max_w = nw / 16 * 16;
-        let lines = self.lines().unwrap_or(nh).min(nh) & !3;
-        let width = (u64::from(lines) * u64::from(nw) + u64::from(nh) / 2) / u64::from(nh);
-        let width = ((width as u32 + 8) / 16 * 16).clamp(16, max_w);
-        (width, lines)
+        let nh = native.1.max(4);
+        sized(native, self.lines().unwrap_or(nh), u32::MAX)
+    }
+}
+
+/// `native` scaled to `lines` (at most its own), rounded as [`Tier::size`] rounds, and no
+/// wider than `max_w`.
+fn sized(native: (u32, u32), lines: u32, max_w: u32) -> (u32, u32) {
+    let (nw, nh) = (native.0.max(16), native.1.max(4));
+    let max_w = (nw.min(max_w) / 16 * 16).max(16);
+    let lines = (lines.min(nh) & !3).max(4);
+    let width = (u64::from(lines) * u64::from(nw) + u64::from(nh) / 2) / u64::from(nh);
+    let width = ((width as u32 + 8) / 16 * 16).clamp(16, max_w);
+    (width, lines)
+}
+
+/// The largest picture of a `native`-sized source that fits inside `viewport`: the aspect
+/// ratio kept, rounded as [`Tier::size`] rounds (so never larger than the viewport), and never
+/// larger than the source.
+pub fn fit_within(native: (u32, u32), viewport: (u32, u32)) -> (u32, u32) {
+    let (nw, nh) = (u64::from(native.0.max(16)), u64::from(native.1.max(4)));
+    let max_w = (viewport.0.min(native.0.max(16)) / 16 * 16).max(16);
+    // A width rounds to `max_w` or less up to about this many lines: start there and step
+    // down (two or three steps at most) until it does.
+    let most = (u64::from(max_w) + 8) * nh / nw + 4;
+    let mut lines = most.min(u64::from(viewport.1)).min(nh) as u32 & !3;
+    loop {
+        let size = sized(native, lines, u32::MAX);
+        if size.0 <= max_w || lines <= 4 {
+            return (size.0.min(max_w), size.1);
+        }
+        lines -= 4;
+    }
+}
+
+/// `size` limited to `limit` on each side (a picture fitted to a viewer, with the same aspect
+/// ratio up to rounding).
+pub fn capped(size: (u32, u32), limit: Option<(u32, u32)>) -> (u32, u32) {
+    match limit {
+        Some(l) => (size.0.min(l.0), size.1.min(l.1)),
+        None => size,
     }
 }
 
@@ -391,6 +426,72 @@ mod tests {
                 assert!(w <= native.0 && h <= native.1, "{tier:?} on {native:?}");
             }
         }
+    }
+
+    #[test]
+    fn fits_a_viewport_without_upscaling() {
+        // The pattern's 4K display into common viewports: exactly the tier sizes.
+        assert_eq!(fit_within(PATTERN_DISPLAY, (1920, 1080)), (1920, 1080));
+        assert_eq!(fit_within(PATTERN_DISPLAY, (2560, 1440)), (2560, 1440));
+        // Bigger than the source: the source's own size.
+        assert_eq!(fit_within(PATTERN_DISPLAY, (7680, 4320)), (3840, 2160));
+        assert_eq!(fit_within(RETINA_14, (5120, 2880)), (3024, 1964));
+        // A maximised viewer on a Retina MacBook (95% x 88% of 3024x1964), sharer on the same
+        // kind of Mac: limited by the height.
+        assert_eq!(fit_within(RETINA_14, (2872, 1728)), (2656, 1728));
+        // A viewer window of 1508x1046 pixels: limited by the width, rounding stays inside.
+        assert_eq!(fit_within(RETINA_14, (1508, 1046)), (1504, 980));
+        // A tall, narrow viewport: limited by the width.
+        assert_eq!(fit_within(PATTERN_DISPLAY, (1000, 2000)), (992, 560));
+    }
+
+    #[test]
+    fn fitted_sizes_stay_inside_the_viewport_and_the_rounding() {
+        for native in [
+            RETINA_14,
+            PATTERN_DISPLAY,
+            (1508, 1046),
+            (3440, 1440),
+            (1366, 768),
+        ] {
+            for w in (64..=4000).step_by(97) {
+                for h in (64..=2400).step_by(89) {
+                    let (fw, fh) = fit_within(native, (w, h));
+                    assert!(
+                        fw <= w.max(16) && fh <= h,
+                        "{native:?} into {w}x{h}: {fw}x{fh}"
+                    );
+                    assert!(fw <= native.0 && fh <= native.1, "{native:?}: {fw}x{fh}");
+                    assert_eq!((fw % 16, fh % 4), (0, 0), "{native:?} into {w}x{h}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fitting_a_tier_size_again_changes_nothing() {
+        // Convergence: a viewer whose viewport is exactly what it receives asks for the same.
+        for native in [RETINA_14, PATTERN_DISPLAY, (1508, 1046), (5120, 2880)] {
+            for tier in [
+                Tier::P720,
+                Tier::P1080,
+                Tier::P1440,
+                Tier::P2160,
+                Tier::Native,
+            ] {
+                let size = tier.size(native);
+                assert_eq!(fit_within(native, size), size, "{tier:?} on {native:?}");
+                let fitted = fit_within(native, (size.0 + 7, size.1 + 3));
+                assert_eq!(fit_within(native, fitted), fitted, "{tier:?} on {native:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn caps_each_side() {
+        assert_eq!(capped((3840, 2160), Some((1920, 1080))), (1920, 1080));
+        assert_eq!(capped((1280, 720), Some((1920, 1080))), (1280, 720));
+        assert_eq!(capped((1280, 720), None), (1280, 720));
     }
 
     #[test]

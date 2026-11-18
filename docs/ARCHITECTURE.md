@@ -78,7 +78,11 @@ The Rust core is split into crates:
   softbuffer draws into a layer at the screen's scale, so a frame that fits on the monitor is
   shown one stream pixel per screen pixel. Its HUD says "shown 1:1" or "scaled to N%". When
   the frame size changes it resizes itself again, unless the guest has resized it by hand
-  (any size it didn't ask for); then frames are scaled into the size they chose.
+  (any size it didn't ask for); then frames are drawn into the size they chose. The sharer
+  sends no more than the window can show (see [Sizing to the viewer](#sizing-to-the-viewer)),
+  so a frame a few pixels smaller than the window, from rounding, is drawn 1:1 and centred
+  with thin black bars rather than stretched by a fraction of a percent, which would blur every
+  line of text. Frames are scaled only when larger than the window, or at least 5% smaller.
 
 ### 2. WebRTC through LiveKit (self-hostable SFU)
 - LiveKit's Rust SDK (`livekit` crate, built on libwebrtc) gives us congestion control,
@@ -105,8 +109,9 @@ Codecs are configurable (`tc-spike share --codec`). Measurements are in
   usually sets the actual target lower.
 - **HEVC** (`--codec h265`) is opt-in for 4K, through VideoToolbox like H.264
   ([ADR 0008](adr/0008-hevc-for-4k.md)). H.264 stays the default.
-- The viewer shows frames 1:1 (sharpest text) and only downscales when a frame doesn't fit
-  on its monitor (e.g. 1440p onto a 1080p screen).
+- The tier is a ceiling: the sharer sends no more than the largest viewer can show, so the
+  viewer shows frames 1:1 (sharpest text) wherever the source has the pixels (see
+  [Sizing to the viewer](#sizing-to-the-viewer)).
 - `is_screencast` showed no frame-rate cap and no latency difference.
 
 Encoder tuning (Hopp's rate-control and buffer settings, [research note](research/hopp-lessons.md)) needs a
@@ -289,14 +294,17 @@ Latency alone doesn't tell us whether text is readable, so we measure picture qu
   - the left pane alternates 10 s of gentle scrolling with 10 s of fast scrolling (one line
     per frame, the hardest case for screen codecs);
   - a line being typed and a blinking cursor.
-  The frame number travels in a second marker slot next to the latency marker.
+  The frame number travels in a second marker slot next to the latency marker. When the sharer
+  scales a frame (to a viewer's viewport or an auto-throttle level), it stamps the number into
+  the scaled frame again at the slot's normal size, as it does the latency marker, so scaled
+  frames are scored too; real screen captures never get the slot.
 - `tc-spike view --measure-quality` regenerates the expected frame and compares the decoded
   luma with it on a background thread (`crates/media/src/quality.rs`, frames are skipped
   while it's busy):
   - **SSIM** (8x8 blocks; drops with blur and blocking, which is what makes text unreadable);
   - **PSNR**.
   Both skip the marker area. Results report p50, p5 and min, plus SSIM during fast scrolling
-  only.
+  only, and SSIM per frame size received (`ssim_by_size`).
 - `--headless` runs the viewer without a window. Latency is then measured at decode. Use it
   for benchmarks and the network lab.
 - For a real screen, `--snapshot-every N` on both ends saves the frame carrying every Nth tick
@@ -360,6 +368,51 @@ These are product targets, set from the Mac (48 ms one way on one machine) and I
 150 ms comfort limit for mouth to ear. The lab's own CPU stalls push its voice delay past them
 (see docs/performance.md, Network lab).
 
+## Sizing to the viewer
+
+The tier (`--resolution`) says the most a sharer will send. What a viewer can show depends on
+its screen and window, so each viewer tells the sharer, and the sharer sends no more than that
+([ADR 0009](adr/0009-size-to-the-viewer.md)).
+Pixels nobody sees aren't encoded, sent or decoded, and the picture is drawn 1:1 instead of
+being scaled up (blurry text) or down (wasted pixels).
+- **The viewer reports a viewport**: the largest area, in physical pixels, the picture can take
+  there (`protocol::Message::Viewport`, on the control topic, validated to 64..16384 pixels a
+  side). While the window follows the picture's size, that's the monitor's usable area (what the
+  window could grow to); once the guest has resized the window by hand, it's the window's size.
+  Neither depends on the picture received, so the size the sharer picks never makes the viewer
+  report something else: it settles in one step. A viewport is sent once it has held for 0.3 s
+  (dragging an edge sends one report, after the drag), at once to a sharer just found, and again
+  every 2 s, since nothing confirms it arrived. A viewer's first data packets are lost until its
+  data channel opens (2 to 4 s on a local server), so for its first five seconds with a sharer
+  it repeats the viewport every half second: a joining viewer gets its own size about 2 s after
+  its first frame, and the tier's size until then.
+- **The sharer fits the source into it**: the display (or shared window) scaled to fit inside the
+  viewport with its aspect ratio, never upscaled, rounded as the tiers are (width to 16, height
+  to 4, so never larger than the viewport); then limited by the tier and by the auto-throttle's
+  current level. On a 3024x1964 Retina sharer, a maximised viewer on the same kind of Mac
+  (viewport 2872x1728) gets 2656x1728 at `--resolution native`, and a 1920x1080 viewport gets 1664x1080
+  whatever the tier above it.
+- **Several viewers**: the one that can show the largest picture decides, and one that leaves
+  stops counting. A viewer that hasn't reported within 2 s of joining (a viewer from before
+  viewports, or a headless one run without `--viewport`) gets the tier's size, as before, so
+  it's never sent less than it would have been.
+- **Rate limit**: the viewport the size follows changes at most once a second, so a guest
+  sending a stream of viewports changes nothing faster, and can only pick a size at or below
+  the sharer's tier.
+- The new size goes through the same path the auto-throttle's steps and a shared window's
+  resize take: the send loop scales frames to it (libyuv) and libwebrtc reconfigures the
+  encoder. Capture stays at the tier's size.
+- The auto-throttle works out each level's bitrate floor from the size actually sent: floors
+  grow with the pixel count to the power 0.8, so a 2160p setting sending a 1080p picture needs
+  1080p's floor, not 2160p's. Levels that send the same picture (2160p, 1440p and 1080p all
+  send 1280x720 to a 720p viewport) are one step, not several.
+- The sharer's log and its stats (`sized_by` in the snapshot it sends) say what decided the
+  size: the setting, the auto-throttle or a viewer. `share --ignore-viewport` sends the tier's
+  size whatever viewers show, for A/B runs; an exact `--width`/`--height` is never changed.
+- `bench/viewport-e2e.sh` checks it end to end with headless viewers (`view --viewport WxH`,
+  and `--viewport-at SECS:WxH` to change it mid-run): sizes for one and two viewers, a viewport
+  above the tier, none at all, a change mid-call, and text quality at the fitted size.
+
 ## Auto-throttle (adaptive frame rate and resolution)
 
 libwebrtc adapts the bitrate to the bandwidth estimate, and for screen share it keeps the
@@ -392,6 +445,8 @@ shorter one 2160p would be the same size, so it goes straight to 1440p.
 - The sharer captures at the chosen tier. The send loop scales frames to the level's size
   (libyuv) and paces them to its frame rate; libwebrtc reconfigures the encoder by itself. The
   viewer's window keeps its size, and lower tiers are scaled up to it.
+- Levels larger than the viewers' viewport send the viewport's size, and their floors are that
+  size's ([Sizing to the viewer](#sizing-to-the-viewer)).
 - On a big drop it jumps straight to the first level the budget can carry, instead of
   walking down one level every few seconds while the picture stalls.
 - **Bitrate cap for the viewer's downlink** (`BitrateCap`). Frame rate and resolution don't

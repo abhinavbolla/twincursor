@@ -490,6 +490,8 @@ fn share_config(args: &ShareArgs) -> anyhow::Result<(ShareConfig, Arc<VoiceState
         url: args.call.url(),
         token,
         backend,
+        source: screen,
+        fit_viewport: true,
         capture: CaptureConfig {
             source,
             width,
@@ -510,10 +512,7 @@ fn share_config(args: &ShareArgs) -> anyhow::Result<(ShareConfig, Arc<VoiceState
         is_screencast: true,
         stamp_markers: args.markers,
         net_stats: true,
-        adapt: Some(AdaptConfig {
-            max: tier,
-            display: screen,
-        }),
+        adapt: Some(AdaptConfig { max: tier }),
         audio: args.call.audio()?,
         voice: VoiceOptions::default(),
         snapshots: None,
@@ -623,6 +622,7 @@ fn watch(args: ViewArgs) -> anyhow::Result<()> {
             events: events.clone(),
             commands: rx,
         }),
+        viewports: Vec::new(),
     });
     // The viewer has already told the app how the call ended.
     if result.is_err() {

@@ -19,6 +19,10 @@ pub const MAX_TEXT_CHARS: usize = 32;
 pub const MAX_KEY_CODE_LEN: usize = 32;
 /// Largest scroll step accepted, in either unit.
 pub const MAX_SCROLL: f64 = 10_000.0;
+/// Smallest and largest viewport side accepted, in pixels. 16384 is past any display made,
+/// and the sharer never sends more than its own setting anyway.
+pub const MIN_VIEWPORT: u32 = 64;
+pub const MAX_VIEWPORT: u32 = 16_384;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -51,6 +55,14 @@ pub enum Message {
         #[serde(default)]
         after: u64,
         event: InputEvent,
+    },
+    /// The largest area, in physical pixels, the picture can occupy on this viewer, so the
+    /// sharer sends no more than that. Sent on joining and when it changes. A sharer that
+    /// predates it turns it away as a message it doesn't know, and a viewer that never sends it
+    /// gets the sharer's own size.
+    Viewport {
+        width: u32,
+        height: u32,
     },
 
     // Sharer to guest.
@@ -186,6 +198,13 @@ impl Message {
                 Err("too many codecs")
             }
             Message::Input { event, .. } => event.validate(),
+            Message::Viewport { width, height }
+                if ![width, height]
+                    .iter()
+                    .all(|v| (MIN_VIEWPORT..=MAX_VIEWPORT).contains(*v)) =>
+            {
+                Err("viewport out of range")
+            }
             _ => Ok(()),
         }
     }
@@ -318,6 +337,10 @@ mod tests {
                 text: None,
             }),
             input(InputEvent::ReleaseAll),
+            Message::Viewport {
+                width: 2872,
+                height: 1728,
+            },
             Message::Grant,
             Message::Deny,
             Message::Revoke,
@@ -397,6 +420,22 @@ mod tests {
                 platform: Platform::Macos,
                 decoders: vec![Codec::H264; MAX_DECODERS + 1],
             },
+            Message::Viewport {
+                width: 0,
+                height: 1080,
+            },
+            Message::Viewport {
+                width: 1920,
+                height: MIN_VIEWPORT - 1,
+            },
+            Message::Viewport {
+                width: MAX_VIEWPORT + 1,
+                height: 1080,
+            },
+            Message::Viewport {
+                width: u32::MAX,
+                height: u32::MAX,
+            },
         ];
         for message in bad {
             let err = decode(&encode(&message)).unwrap_err();
@@ -440,6 +479,41 @@ mod tests {
             new.unwrap(),
             Message::Hello { decoders, .. } if decoders == [Codec::H265, Codec::Unknown]
         ));
+    }
+
+    #[test]
+    fn viewports_read_both_ways() {
+        // The wire format, which a sharer of this version reads.
+        let bytes = encode(&Message::Viewport {
+            width: 1920,
+            height: 1080,
+        });
+        assert_eq!(
+            std::str::from_utf8(&bytes).unwrap(),
+            r#"{"v":1,"msg":{"type":"viewport","width":1920,"height":1080}}"#
+        );
+        // Fields a newer viewer might add are ignored.
+        let newer =
+            decode(br#"{"v":1,"msg":{"type":"viewport","width":1920,"height":1080,"scale":2.0}}"#);
+        assert_eq!(
+            newer.unwrap(),
+            Message::Viewport {
+                width: 1920,
+                height: 1080
+            }
+        );
+        // Negative or missing sizes don't parse at all.
+        for bad in [
+            &br#"{"v":1,"msg":{"type":"viewport","width":-1,"height":1080}}"#[..],
+            br#"{"v":1,"msg":{"type":"viewport","width":1920}}"#,
+        ] {
+            assert!(matches!(decode(bad), Err(DecodeError::Malformed(_))));
+        }
+        // The edges of the range are accepted.
+        for (width, height) in [(MIN_VIEWPORT, MIN_VIEWPORT), (MAX_VIEWPORT, MAX_VIEWPORT)] {
+            let m = Message::Viewport { width, height };
+            assert_eq!(decode(&encode(&m)).unwrap(), m);
+        }
     }
 
     #[test]

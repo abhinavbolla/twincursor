@@ -41,6 +41,11 @@ CONFIGS=(
   "q-h264-2160-4000k|--capture pattern --codec h264 --resolution 2160 --bitrate-kbps 4000|--headless --measure-quality"
   "q-h265-2160-4000k|--capture pattern --codec h265 --resolution 2160 --bitrate-kbps 4000|--headless --measure-quality"
   "q-vp8-1440-2500k|--capture pattern --codec vp8 --resolution 1440 --bitrate-kbps 2500|--headless --measure-quality"
+  # Sizing to the viewer: a 4K sharer and a viewer that shows 1080p. The first sends 1920x1080,
+  # the second (--ignore-viewport) 3840x2160 as before; compare the sharer's CPU and encode time.
+  # q-h264-2160 (no viewport) must look as it did before viewports existed.
+  "q-h264-2160-vp1080|--capture pattern --codec h264 --resolution 2160|--headless --measure-quality --viewport 1920x1080"
+  "q-h264-2160-vp1080-ignored|--capture pattern --codec h264 --resolution 2160 --ignore-viewport|--headless --measure-quality --viewport 1920x1080"
   # The data-packet path remote-control input takes, during normal video.
   "input-h264|--capture pattern --codec h264 --resolution 1080|--headless --measure-input"
   "input-sck-h264|--capture sck --codec h264 --resolution 1080|--headless --measure-input"

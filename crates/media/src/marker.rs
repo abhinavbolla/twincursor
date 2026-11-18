@@ -47,11 +47,23 @@ pub const LEVELS: (u8, u8) = (WHITE, BLACK);
 
 /// Paints `id` into an 8-bit luma plane. Returns `false` if the frame is too small.
 pub fn stamp_luma(y: &mut [u8], stride: usize, width: usize, height: usize, id: u32) -> bool {
-    if !fits(width, height, 0) {
+    stamp_luma_at(y, stride, width, height, 0, id)
+}
+
+/// Like [`stamp_luma`], for a marker whose left edge is at `x0` (e.g. [`FRAME_SLOT_X`]).
+pub fn stamp_luma_at(
+    y: &mut [u8],
+    stride: usize,
+    width: usize,
+    height: usize,
+    x0: usize,
+    id: u32,
+) -> bool {
+    if !fits(width, height, x0) {
         return false;
     }
     for (i, bit) in bits(id).enumerate() {
-        let (bx, by) = ((i % COLS) * BLOCK, (i / COLS) * BLOCK);
+        let (bx, by) = (x0 + (i % COLS) * BLOCK, (i / COLS) * BLOCK);
         let value = if bit { WHITE } else { BLACK };
         for row in by..by + BLOCK {
             y[row * stride + bx..row * stride + bx + BLOCK].fill(value);

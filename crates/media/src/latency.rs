@@ -28,6 +28,8 @@ pub struct Recorder {
     pub frames: u64,
     /// Decoded vs expected picture, for the synthetic pattern.
     pub quality: Vec<Scores>,
+    /// The size of the frame behind each of `quality`, in the same order.
+    pub quality_sizes: Vec<(u32, u32)>,
     /// The subset taken while the pattern was scrolling fast.
     pub quality_fast: Vec<Scores>,
     /// Input-path measurements, when `--measure-input` is on.
@@ -48,13 +50,58 @@ pub struct Report {
     pub ssim: Option<LowSummary>,
     pub psnr_db: Option<LowSummary>,
     pub ssim_fast_scroll: Option<LowSummary>,
+    /// SSIM for each frame size scored, in the order sizes were first seen: shows which sizes
+    /// the scores above came from.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ssim_by_size: Vec<SizeQuality>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub input: Vec<StreamReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio: Option<AudioReport>,
 }
 
+/// The quality scores of the frames of one size.
+#[derive(Debug, Clone, Serialize)]
+pub struct SizeQuality {
+    pub size: (u32, u32),
+    pub ssim: Option<LowSummary>,
+}
+
 impl Recorder {
+    /// Records the scores of one frame of `size`.
+    pub fn quality_scored(&mut self, size: (u32, u32), scores: Scores, fast: bool) {
+        self.quality.push(scores);
+        self.quality_sizes.push(size);
+        if fast {
+            self.quality_fast.push(scores);
+        }
+    }
+
+    fn ssim_by_size(&self) -> Vec<SizeQuality> {
+        let mut sizes: Vec<(u32, u32)> = Vec::new();
+        for size in &self.quality_sizes {
+            if !sizes.contains(size) {
+                sizes.push(*size);
+            }
+        }
+        sizes
+            .into_iter()
+            .map(|size| {
+                let ssim: Vec<f64> = self
+                    .quality
+                    .iter()
+                    .zip(&self.quality_sizes)
+                    .filter(|(_, s)| **s == size)
+                    .map(|(q, _)| q.ssim)
+                    .collect();
+                SizeQuality {
+                    size,
+                    ssim: summarize_low(&ssim),
+                }
+            })
+            .collect()
+    }
+
     pub fn tick_sent(&mut self, id: u32, at: Instant) {
         self.sent
             .retain(|_, t| at.duration_since(*t).as_secs_f64() < TICK_TTL_SECS);
@@ -104,6 +151,7 @@ impl Recorder {
             ssim_fast_scroll: summarize_low(
                 &self.quality_fast.iter().map(|q| q.ssim).collect::<Vec<_>>(),
             ),
+            ssim_by_size: self.ssim_by_size(),
             input: self.input.report(),
             audio: self.audio.report(),
         }
@@ -114,6 +162,27 @@ impl Recorder {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn quality_is_also_reported_per_size() {
+        let mut r = Recorder::default();
+        let s = |ssim| Scores {
+            ssim,
+            psnr_db: 40.0,
+        };
+        r.quality_scored((3840, 2160), s(0.99), false);
+        r.quality_scored((1920, 1080), s(0.98), true);
+        r.quality_scored((1920, 1080), s(0.97), false);
+        let report = r.report();
+        assert_eq!(report.ssim.unwrap().count, 3);
+        assert_eq!(report.ssim_fast_scroll.unwrap().count, 1);
+        let by: Vec<_> = report
+            .ssim_by_size
+            .iter()
+            .map(|q| (q.size, q.ssim.as_ref().unwrap().count))
+            .collect();
+        assert_eq!(by, [((3840, 2160), 1), ((1920, 1080), 2)]);
+    }
 
     #[test]
     fn measures_first_sighting_only() {
