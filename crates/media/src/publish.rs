@@ -12,11 +12,14 @@ use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 
 use crate::adapt::{Adapter, BitrateCap};
 use crate::audio::{self, AudioMode, TickSlot, VoiceError, VoiceOptions, VoiceState};
-use crate::capture::{self, wall_clock_us, Backend, CaptureConfig, Frame, FrameBuffer, Tier};
+use crate::capture::{
+    self, capped, wall_clock_us, Backend, CaptureConfig, Frame, FrameBuffer, Tier,
+};
 use crate::link::{self, ControlLink};
 use crate::netstats::{NetSnapshot, Poller, Side};
 use crate::ping::{self, Route};
 use crate::quality::Snapshots;
+use crate::viewport::{self, SizedBy, Viewports};
 use crate::{marker, wire};
 
 /// SCK only delivers frames when the screen changes. Re-sending the last frame keeps the
@@ -24,6 +27,8 @@ use crate::{marker, wire};
 const IDLE_RESEND: Duration = Duration::from_millis(250);
 const NO_TICK: u32 = u32::MAX;
 const STATS_EVERY: Duration = Duration::from_secs(1);
+/// How often a viewport change held back by the rate limit is looked at again.
+const VIEWPORT_CHECK_EVERY: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone)]
 pub struct ShareConfig {
@@ -31,6 +36,12 @@ pub struct ShareConfig {
     pub token: String,
     pub backend: Backend,
     pub capture: CaptureConfig,
+    /// Pixel size of what is captured (the display, or the shared window), which sizes are
+    /// worked out from.
+    pub source: (u32, u32),
+    /// Send no more than the largest viewer's viewport allows (`crate::viewport`). Off, the
+    /// size is the setting's (or the auto-throttle's) whatever viewers show.
+    pub fit_viewport: bool,
     pub codec: VideoCodec,
     pub max_bitrate: u64,
     pub is_screencast: bool,
@@ -50,8 +61,6 @@ pub struct ShareConfig {
 pub struct AdaptConfig {
     /// The tier being captured: the most the adapter will send.
     pub max: Tier,
-    /// Display size the tiers are computed from.
-    pub display: (u32, u32),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -186,18 +195,28 @@ pub async fn run(
 
     let mailbox = Arc::new(Mailbox::default());
     let latest_tick = Arc::new(AtomicU32::new(NO_TICK));
-    // Size and frame-rate cap frames are sent at; the adapter lowers them, the send loop
-    // scales and paces to them.
+    // Size and frame-rate cap frames are sent at; the adapter and the viewers' viewports
+    // lower them, the send loop scales and paces to them.
     let send_size = Arc::new(Mutex::new((
         config.capture.width,
         config.capture.height,
         config.capture.max_fps,
     )));
     let codec_factor = codec_factor(config.codec);
-    let mut adapter = config.adapt.map(|a| {
-        let adapter = Adapter::new(a.max, config.capture.max_fps, a.display, codec_factor);
-        (adapter, a)
-    });
+    let mut adapter = config
+        .adapt
+        .map(|a| Adapter::new(a.max, config.capture.max_fps, config.source, codec_factor));
+    let mut sizing = Sizing {
+        source: config.source,
+        fixed: (config.capture.width, config.capture.height),
+        max_fps: config.capture.max_fps,
+        fit_viewport: config.fit_viewport,
+        viewports: Viewports::default(),
+        sized_by: SizedBy::Setting,
+    };
+    for identity in room.remote_participants().keys() {
+        sizing.viewports.joined(&identity.to_string(), 0.0);
+    }
     let mut adapt_note: Option<String> = None;
     let mut cap = config
         .adapt
@@ -244,6 +263,7 @@ pub async fn run(
 
     let mut poller = Poller::new(Side::Publisher);
     let mut stats_timer = tokio::time::interval(STATS_EVERY);
+    let mut viewport_timer = tokio::time::interval(VIEWPORT_CHECK_EVERY);
     let mut device_timer = tokio::time::interval(audio::DEVICE_CHECK_EVERY);
     let mut ended = None;
     tokio::pin!(shutdown);
@@ -256,20 +276,23 @@ pub async fn run(
             }
             resize = capture.resized.next() => {
                 // A shared window changed size and capture already follows it: send the new
-                // size, at the adapter's current tier if it runs, through the same path its
-                // own steps take.
-                let (w, h) = match adapter.as_mut() {
-                    Some((adapter, cfg)) => {
-                        cfg.display = resize.window;
-                        adapter.set_display(resize.window);
-                        adapter.level().tier.size(resize.window)
-                    }
-                    None => resize.output,
-                };
-                let mut size = send_size.lock().unwrap();
-                size.0 = w;
-                size.1 = h;
-                tracing::info!("window now {}x{}: sending {w}x{h}", resize.window.0, resize.window.1);
+                // size, at the adapter's current tier if it runs and within the viewers'
+                // viewports, through the same path the adapter's own steps take.
+                tracing::info!("window now {}x{}", resize.window.0, resize.window.1);
+                sizing.source = resize.window;
+                sizing.fixed = resize.output;
+                if let Some(adapter) = adapter.as_mut() {
+                    adapter.set_display(resize.window);
+                }
+                let t = started.elapsed().as_secs_f64();
+                sizing.viewports.update(sizing.source, t);
+                sizing.apply(adapter.as_mut(), &send_size);
+            }
+            _ = viewport_timer.tick() => {
+                // A change the rate limit held back, or a viewer whose grace ran out.
+                if sizing.viewports.update(sizing.source, started.elapsed().as_secs_f64()) {
+                    sizing.apply(adapter.as_mut(), &send_size);
+                }
             }
             _ = voice_state.changed() => {
                 voice.apply_mute();
@@ -278,18 +301,16 @@ pub async fn run(
             _ = device_timer.tick() => voice.check_devices(),
             _ = stats_timer.tick(), if config.net_stats => {
                 if let Some(mut snap) = poller.poll(&room).await {
-                    if let Some((adapter, cfg)) = adapter.as_mut() {
+                    if let Some(a) = adapter.as_mut() {
                         let t = started.elapsed().as_secs_f64();
-                        if let Some(change) = adapter.update(t, &snap, viewer_net.as_ref()) {
-                            let (w, h) = change.to.tier.size(cfg.display);
-                            *send_size.lock().unwrap() = (w, h, change.to.fps);
+                        if let Some(change) = a.update(t, &snap, viewer_net.as_ref()) {
                             tracing::info!(
-                                "adapt: {} → {} ({w}x{h}): {}",
+                                "adapt: {} → {}: {}",
                                 change.from, change.to, change.reason
                             );
-                            let best = (cfg.max, config.capture.max_fps);
-                            adapt_note = ((change.to.tier, change.to.fps) != best)
+                            adapt_note = (change.to != a.top())
                                 .then(|| format!("{}: {}", change.to, change.reason));
+                            sizing.apply(adapter.as_mut(), &send_size);
                         }
                     }
                     if let Some(cap) = cap.as_mut() {
@@ -313,6 +334,7 @@ pub async fn run(
                         (Some(a), Some(c)) => Some(format!("{a}; {c}")),
                         (a, c) => a.clone().or_else(|| c.clone()),
                     };
+                    snap.sized_by = Some(sizing.sized_by.to_string());
                     send_stats(&room, &snap).await;
                     *stats.net.lock().unwrap() = Some(snap);
                 }
@@ -327,8 +349,34 @@ pub async fn run(
                         poller.remote_muted(muted);
                     }
                 }
+                Some(RoomEvent::ParticipantConnected(p)) => {
+                    let t = started.elapsed().as_secs_f64();
+                    sizing.viewports.joined(&p.identity().to_string(), t);
+                    if sizing.viewports.update(sizing.source, t) {
+                        sizing.apply(adapter.as_mut(), &send_size);
+                    }
+                }
+                Some(RoomEvent::ParticipantDisconnected(p)) => {
+                    sizing.viewports.left(&p.identity().to_string());
+                    if sizing.viewports.update(sizing.source, started.elapsed().as_secs_f64()) {
+                        sizing.apply(adapter.as_mut(), &send_size);
+                    }
+                }
                 Some(RoomEvent::DataReceived { payload, topic, participant, .. }) => {
-                    if topic.as_deref() == Some(wire::STATS_TOPIC) {
+                    if topic.as_deref() == Some(protocol::TOPIC) {
+                        // Control messages are the control session's (`link`), except the
+                        // viewport, which is about the video and needs no control.
+                        if let (Ok(protocol::Message::Viewport { width, height }), Some(from)) =
+                            (protocol::decode(&payload), participant.as_ref())
+                        {
+                            let t = started.elapsed().as_secs_f64();
+                            tracing::debug!(from = %from.identity(), "viewport {width}x{height}");
+                            sizing.viewports.reported(&from.identity().to_string(), (width, height), t);
+                            if sizing.viewports.update(sizing.source, t) {
+                                sizing.apply(adapter.as_mut(), &send_size);
+                            }
+                        }
+                    } else if topic.as_deref() == Some(wire::STATS_TOPIC) {
                         viewer_net = wire::decode_stats(&payload);
                     } else if topic.as_deref() == Some(wire::TICK_TOPIC) {
                         if let Some(id) = wire::decode_tick(&payload) {
@@ -367,6 +415,51 @@ pub async fn run(
     match ended {
         Some(reason) => Err(ShareError::Ended(reason)),
         None => Ok(()),
+    }
+}
+
+/// What the size sent is worked out from, and what decided it last.
+struct Sizing {
+    /// Pixel size of the display or shared window.
+    source: (u32, u32),
+    /// The size captured frames arrive at: the most there is to send.
+    fixed: (u32, u32),
+    max_fps: u32,
+    fit_viewport: bool,
+    viewports: Viewports,
+    sized_by: SizedBy,
+}
+
+impl Sizing {
+    /// Works out the size and frame rate to send from the adapter's level (or the captured
+    /// size) and the viewers' viewports, and hands them to the send loop.
+    fn apply(&mut self, adapter: Option<&mut Adapter>, send_size: &Mutex<(u32, u32, u32)>) {
+        let (limit, viewport) = if self.fit_viewport {
+            (self.viewports.limit(self.source), self.viewports.chosen())
+        } else {
+            (None, None)
+        };
+        let (level, fps, top) = match adapter {
+            Some(a) => {
+                a.set_limit(limit);
+                let level = a.level();
+                let size = capped(level.tier.size(self.source), Some(self.fixed));
+                (size, level.fps, level.tier == a.top().tier)
+            }
+            None => (self.fixed, self.max_fps, true),
+        };
+        let (size, by) = viewport::send_size(level, top, limit, viewport);
+        let new = (size.0, size.1, fps);
+        let mut current = send_size.lock().unwrap();
+        if *current != new || by != self.sized_by {
+            tracing::info!(
+                "sending {}x{} at up to {fps} fps, sized by {by}",
+                size.0,
+                size.1
+            );
+        }
+        *current = new;
+        self.sized_by = by;
     }
 }
 

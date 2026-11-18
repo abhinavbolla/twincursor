@@ -1,6 +1,8 @@
 //! A byte channel for remote control between the sharer and viewers.
 //!
-//! Media doesn't know what the bytes mean: `crates/protocol` and `crates/control` do. The link
+//! The link doesn't know what the bytes mean: `crates/protocol` and `crates/control` do. (The
+//! sharer's media loop reads one message on the same topic itself, the viewer's viewport, which
+//! is about the video and matters with or without remote control: see `crate::viewport`.) The link
 //! runs on tasks of its own, with its own copy of the room's events, so input never waits behind
 //! stats polls or republishing in the main loop (see `ping.rs` for the measurement).
 

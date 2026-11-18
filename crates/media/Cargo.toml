@@ -11,6 +11,7 @@ description = "Screen capture, WebRTC transport and latency measurement for Twin
 name = "media"
 
 [dependencies]
+twincursor-protocol = { path = "../protocol" }
 livekit.workspace = true
 livekit-api.workspace = true
 tokio.workspace = true

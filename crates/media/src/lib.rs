@@ -16,4 +16,5 @@ pub mod quality;
 pub mod stats;
 pub mod subscribe;
 pub mod token;
+pub mod viewport;
 pub mod wire;

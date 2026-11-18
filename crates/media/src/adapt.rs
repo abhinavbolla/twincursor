@@ -14,7 +14,7 @@
 //! It steps down after 3 s of trouble and back up after a stretch of calm with headroom. It's a
 //! pure state machine fed once a second, so it's tested on traces.
 
-use crate::capture::Tier;
+use crate::capture::{capped, Tier};
 use crate::netstats::{Limit, NetSnapshot};
 
 /// A budget just under a level's floor (e.g. a cap set exactly at it) isn't trouble.
@@ -150,6 +150,8 @@ pub struct Adapter {
     at: usize,
     codec_factor: f64,
     display: (u32, u32),
+    /// The picture size viewers allow (`crate::viewport`): levels larger than this send this.
+    limit: Option<(u32, u32)>,
     trouble_since: Option<f64>,
     calm_since: Option<f64>,
     last_up: Option<f64>,
@@ -166,6 +168,7 @@ impl Adapter {
             at: 0,
             codec_factor,
             display,
+            limit: None,
             trouble_since: None,
             calm_since: None,
             last_up: None,
@@ -175,6 +178,11 @@ impl Adapter {
 
     pub fn level(&self) -> Level {
         self.ladder[self.at]
+    }
+
+    /// The best level: what the user asked for.
+    pub fn top(&self) -> Level {
+        self.ladder[0]
     }
 
     /// The captured size changed (a shared window was resized): recompute the ladder for it,
@@ -188,6 +196,42 @@ impl Adapter {
             .position(|l| *l == level)
             .unwrap_or(self.at.min(self.ladder.len() - 1));
         self.display = display;
+    }
+
+    /// Viewers allow at most `limit` pixels (`None`: no limit). Levels larger than that send
+    /// that size, so they need only the bitrate of that size, and stepping between two levels
+    /// that send the same picture would gain nothing: those steps are skipped.
+    pub fn set_limit(&mut self, limit: Option<(u32, u32)>) {
+        self.limit = limit;
+    }
+
+    /// The picture level `i` sends, and its frame rate.
+    fn sent(&self, i: usize) -> ((u32, u32), u32) {
+        let level = self.ladder[i];
+        (capped(level.tier.size(self.display), self.limit), level.fps)
+    }
+
+    /// Level `i`'s bitrate floor for the picture it actually sends. Floors grow with the pixel
+    /// count to the power 0.8 (the curve the tier floors follow), so a level sent smaller needs
+    /// that much less.
+    fn floor(&self, i: usize) -> f64 {
+        let level = self.ladder[i];
+        let full = level.tier.size(self.display);
+        let (sent, _) = self.sent(i);
+        let pixels = |(w, h): (u32, u32)| f64::from(w) * f64::from(h);
+        let share = (pixels(sent) / pixels(full).max(1.0)).min(1.0);
+        level.floor_kbps(self.codec_factor, self.display) * share.powf(0.8)
+    }
+
+    /// The best level above `self.at` that sends a different picture from it, or `None`.
+    fn better(&self) -> Option<usize> {
+        let now = self.sent(self.at);
+        let mut i = (0..self.at).rev().find(|&i| self.sent(i) != now)?;
+        // Of the levels sending that picture, the best.
+        while i > 0 && self.sent(i - 1) == self.sent(i) {
+            i -= 1;
+        }
+        Some(i)
     }
 
     /// Feeds one second of stats: ours (`own`, the publishing connection) and the viewer's,
@@ -206,15 +250,17 @@ impl Adapter {
             (false, bwe) => bwe?,
         };
         let level = self.level();
-        let floor = level.floor_kbps(self.codec_factor, self.display);
+        let floor = self.floor(self.at);
         let recv = viewer.and_then(|v| v.recv.as_ref());
 
         // On a big drop, go straight to the first level the budget can carry rather than
         // walking down one level every few seconds while the picture stalls.
-        let fits = |i: usize| {
-            self.ladder[i].floor_kbps(self.codec_factor, self.display) * FLOOR_TOLERANCE <= budget
-        };
-        let mut step_to = self.at + 1;
+        let fits = |i: usize| self.floor(i) * FLOOR_TOLERANCE <= budget;
+        // One step down is to the next level that sends a different picture.
+        let now = self.sent(self.at);
+        let mut step_to = (self.at + 1..self.ladder.len())
+            .find(|&i| self.sent(i) != now)
+            .unwrap_or(self.ladder.len() - 1);
         let severe = budget < floor * SEVERE_SHARE;
         let trouble = if send.limit == Limit::Cpu {
             Some("encoder is CPU-limited".to_owned())
@@ -252,12 +298,12 @@ impl Adapter {
         }
 
         self.trouble_since = None;
-        if self.at == 0 {
+        let Some(up) = self.better() else {
+            self.calm_since = None;
             return None;
-        }
+        };
         let viewer_clean = recv.is_none_or(|r| r.loss_pct < 1.0 && r.freezes == 0);
-        let needed =
-            self.ladder[self.at - 1].floor_kbps(self.codec_factor, self.display) * UP_HEADROOM;
+        let needed = self.floor(up) * UP_HEADROOM;
         // The budget only grows to what the encoder asks for; on a mostly static screen it
         // asks for little, so also accept a bandwidth estimate with headroom.
         let available = budget.max(own.bwe_kbps.unwrap_or(0.0));
@@ -269,10 +315,7 @@ impl Adapter {
         if t_s - since >= self.up_after {
             self.calm_since = None;
             self.last_up = Some(t_s);
-            return Some(self.move_to(
-                self.at - 1,
-                format!("{:.1} Mbps available", available / 1000.0),
-            ));
+            return Some(self.move_to(up, format!("{:.1} Mbps available", available / 1000.0)));
         }
         None
     }
@@ -682,6 +725,60 @@ mod tests {
             run(&mut a, 19, 30, &good(), None),
             vec![(39, up)],
             "20 s, not 10"
+        );
+    }
+
+    #[test]
+    fn a_smaller_picture_needs_less_bitrate() {
+        // 4K setting, 1.2 Mbps: not enough for 2160p, plenty for the 1080p picture a viewer
+        // with a 1080p viewport takes.
+        let squeezed = own(1200.0, 1300.0, 40.0, Limit::Bandwidth);
+        let mut full = Adapter::new(Tier::P2160, 60, UHD, 1.0);
+        assert!(!run(&mut full, 0, 10, &squeezed, None).is_empty());
+        let mut fitted = Adapter::new(Tier::P2160, 60, UHD, 1.0);
+        fitted.set_limit(Some((1920, 1080)));
+        assert!(run(&mut fitted, 0, 10, &squeezed, None).is_empty());
+        // The floor is 1080p's, give or take the curve.
+        let floor = fitted.floor(0);
+        assert!((950.0..1050.0).contains(&floor), "{floor}");
+    }
+
+    #[test]
+    fn steps_that_send_the_same_picture_are_skipped() {
+        // 4K setting, 720p viewport: 2160p 30, 1440p 30, 1080p 30 and 720p 30 all send
+        // 1280x720 at 30 fps. CPU trouble goes from 60 fps straight to 15, not through three
+        // steps that change nothing.
+        let mut a = Adapter::new(Tier::P2160, 60, UHD, 1.0);
+        a.set_limit(Some((1280, 720)));
+        let cpu = own(9000.0, 9000.0, 25.0, Limit::Cpu);
+        assert_eq!(
+            run(&mut a, 0, 8, &cpu, None),
+            vec![(3, l(Tier::P2160, 30)), (7, l(Tier::P720, 15))]
+        );
+        // And back up: to the best level sending 1280x720 at 30 fps, then to 60 fps.
+        assert_eq!(
+            run(&mut a, 8, 30, &good(), None),
+            vec![(18, l(Tier::P2160, 30)), (29, l(Tier::P2160, 60))]
+        );
+    }
+
+    #[test]
+    fn no_limit_changes_nothing() {
+        let mut with = adapter(Tier::P1440, 60, 1.0);
+        with.set_limit(None);
+        let mut without = adapter(Tier::P1440, 60, 1.0);
+        let squeezed = own(1200.0, 1300.0, 40.0, Limit::Bandwidth);
+        assert_eq!(
+            run(&mut with, 0, 30, &squeezed, None),
+            run(&mut without, 0, 30, &squeezed, None)
+        );
+        // A limit at or above the setting's size changes nothing either.
+        let mut above = adapter(Tier::P1440, 60, 1.0);
+        above.set_limit(Some(RETINA_14));
+        let mut plain = adapter(Tier::P1440, 60, 1.0);
+        assert_eq!(
+            run(&mut above, 0, 30, &squeezed, None),
+            run(&mut plain, 0, 30, &squeezed, None)
         );
     }
 

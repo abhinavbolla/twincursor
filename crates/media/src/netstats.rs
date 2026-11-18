@@ -152,6 +152,9 @@ pub struct NetSnapshot {
     /// Sharer only: the auto-throttle's current tier and why.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapt: Option<String>,
+    /// Sharer only: what decided the size sent (the setting, the auto-throttle or a viewer).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sized_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_send_kbps: Option<f64>,
     /// How loud the mic was over this interval, in dBFS (RMS), after processing.
@@ -456,6 +459,7 @@ pub fn snapshot(prev: &Counters, cur: &Counters, secs: f64) -> NetSnapshot {
         send,
         recv,
         adapt: None,
+        sized_by: None,
         audio_send_kbps: cur
             .audio_bytes_sent
             .map(|b| kbps(b.saturating_sub(prev.audio_bytes_sent.unwrap_or(0)))),

@@ -196,6 +196,10 @@ struct ShareArgs {
     /// Keep the resolution fixed instead of stepping it down when the call can't sustain it.
     #[arg(long)]
     no_adapt: bool,
+    /// Send the --resolution size whatever the viewers show, instead of no more than the
+    /// largest viewer's viewport allows (for A/B runs).
+    #[arg(long)]
+    ignore_viewport: bool,
     /// Save the frame stamped with every Nth latency tick as a PGM (see `tc-spike compare`).
     #[arg(long, default_value_t = 0)]
     snapshot_every: u32,
@@ -334,6 +338,9 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
         url: args.connection.url.clone(),
         token: args.connection.token("sharer")?,
         backend,
+        source: screen,
+        // An exact --width/--height stays exact.
+        fit_viewport: !args.ignore_viewport && args.width.is_none(),
         capture: CaptureConfig {
             source,
             width,
@@ -352,10 +359,8 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
         stamp_markers: !args.no_markers,
         net_stats: !args.no_stats,
         // The adapter needs stats, and works in tiers (not with an explicit --width/--height).
-        adapt: (!args.no_adapt && !args.no_stats && args.width.is_none()).then_some(AdaptConfig {
-            max: tier,
-            display: screen,
-        }),
+        adapt: (!args.no_adapt && !args.no_stats && args.width.is_none())
+            .then_some(AdaptConfig { max: tier }),
         audio: args.voice.mode(true)?,
         voice: args.voice.options(),
         snapshots: (args.snapshot_every > 0).then(|| media::quality::Snapshots {
