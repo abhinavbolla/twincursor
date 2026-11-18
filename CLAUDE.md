@@ -68,6 +68,11 @@ Fill these in as code lands; keep them accurate.
   --audio off` and `tc-spike view --audio off` (the HUD says "shown 1:1" or "scaled to N%")
 - Quality without windows or screen capture: `tc-spike share --capture pattern` +
   `tc-spike view --headless --measure-quality` (SSIM/PSNR vs the synthetic pattern)
+- Sizing to the viewer: `--resolution` is a ceiling; each viewer reports its viewport and the
+  sharer sends no more (`share --ignore-viewport` sends the tier's size anyway, for A/B runs).
+  Headless: `tc-spike view --headless --viewport 1920x1080 [--viewport-at SECS:WxH]
+  [--identity NAME]` (two viewers in one room need different identities). End to end, no
+  windows: `bench/viewport-e2e.sh` (sizes for one and two viewers, a change mid-call, SSIM)
 - Input path: `tc-spike view --headless --measure-input` (reliable vs lossy data channels)
 - Voice latency without a mic: `tc-spike share --audio pattern` + `tc-spike view --headless
   --measure-audio` (marker tones; `bench/run-matrix.sh av-off av-on` compares the video with and
