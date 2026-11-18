@@ -21,6 +21,17 @@ use crate::app::{Events, People};
 use crate::{Error, ScriptError};
 
 const TICK: Duration = Duration::from_millis(4);
+/// A viewport has to hold this long before it's reported, so dragging a window's edge sends
+/// one report after the drag rather than one per step.
+pub const VIEWPORT_SETTLE: Duration = Duration::from_millis(300);
+/// The viewport is sent again this often. Nothing confirms it arrived; a repeat is a few dozen
+/// bytes.
+pub const VIEWPORT_REPEAT: Duration = Duration::from_secs(2);
+/// Data a viewer sends in its first seconds in the room is lost until its data channel is open
+/// (2 to 4 s on a local server), so the viewport sent the moment the sharer is found never
+/// arrives. For the first five seconds it's repeated this often instead.
+const VIEWPORT_EARLY_REPEAT: Duration = Duration::from_millis(500);
+const VIEWPORT_EARLY_REPEATS: u8 = 10;
 
 /// What the window or a script asks of the guest session.
 #[derive(Debug, Clone)]
@@ -30,6 +41,71 @@ pub enum Ui {
     Toggle,
     Request,
     Release,
+    /// The largest area, in physical pixels, the picture can take here. Reported to the sharer
+    /// once it has held for [`VIEWPORT_SETTLE`], and at once to a sharer just found.
+    Viewport((u32, u32)),
+}
+
+/// What this viewer has told the sharer about its viewport, and what it will tell next.
+#[derive(Debug, Default)]
+struct ViewportReport {
+    /// The newest viewport, and since when.
+    latest: Option<((u32, u32), Instant)>,
+    /// The last one sent to the current sharer, and when.
+    sent: Option<((u32, u32), Instant)>,
+    /// Repeats still to come at [`VIEWPORT_EARLY_REPEAT`] rather than [`VIEWPORT_REPEAT`].
+    early: u8,
+}
+
+impl ViewportReport {
+    fn set(&mut self, viewport: (u32, u32), now: Instant) {
+        let clamp = |v: u32| v.clamp(protocol::MIN_VIEWPORT, protocol::MAX_VIEWPORT);
+        let viewport = (clamp(viewport.0), clamp(viewport.1));
+        if self.latest.map(|(v, _)| v) != Some(viewport) {
+            self.latest = Some((viewport, now));
+        }
+    }
+
+    /// A viewport to send now: a new one that has held long enough, or the same one again
+    /// after [`VIEWPORT_REPEAT`].
+    fn due(&mut self, now: Instant) -> Option<Message> {
+        let (viewport, since) = self.latest?;
+        let repeat = match self.sent {
+            Some((sent, at)) if sent == viewport => {
+                let gap = if self.early > 0 {
+                    VIEWPORT_EARLY_REPEAT
+                } else {
+                    VIEWPORT_REPEAT
+                };
+                now.duration_since(at) >= gap
+            }
+            _ => now.duration_since(since) >= VIEWPORT_SETTLE,
+        };
+        repeat.then(|| self.send(viewport, now))
+    }
+
+    /// A sharer was just found: tell it the newest viewport without waiting.
+    fn fresh(&mut self, now: Instant) -> Option<Message> {
+        let (viewport, _) = self.latest?;
+        let message = self.send(viewport, now);
+        self.early = VIEWPORT_EARLY_REPEATS;
+        Some(message)
+    }
+
+    fn send(&mut self, viewport: (u32, u32), now: Instant) -> Message {
+        self.early = self.early.saturating_sub(1);
+        self.sent = Some((viewport, now));
+        viewport_message(viewport)
+    }
+
+    /// The sharer left: whoever shares next is told again.
+    fn lost(&mut self) {
+        self.sent = None;
+    }
+}
+
+fn viewport_message((width, height): (u32, u32)) -> Message {
+    Message::Viewport { width, height }
 }
 
 enum In {
@@ -202,6 +278,7 @@ fn run(
 ) {
     let mut session = GuestSession::new(Instant::now());
     let mut sharer: Option<String> = None;
+    let mut viewport = ViewportReport::default();
     // A release the sharer hasn't confirmed yet, and when we must leave anyway.
     let mut awaiting_release = false;
     let mut leave_by: Option<Instant> = None;
@@ -232,6 +309,7 @@ fn run(
                 tracing::info!(%identity, "sharer found");
                 sharer = Some(identity);
                 out.push(hello(&name));
+                out.extend(viewport.fresh(now));
                 // A request made before the sharer was found went nowhere: make it now.
                 if session.state() == GuestState::Requested {
                     out.push(Message::RequestControl);
@@ -253,6 +331,7 @@ fn run(
             Ok(In::Link(LinkEvent::Left(identity))) if Some(&identity) == sharer.as_ref() => {
                 session.on_message(&Message::Revoke);
                 sharer = None;
+                viewport.lost();
                 awaiting_release = false;
             }
             Ok(In::Link(_)) => {}
@@ -260,6 +339,7 @@ fn run(
                 Ui::Input(event) => out.extend(session.input(event, now)),
                 Ui::Request => out.extend(session.request(now)),
                 Ui::Release => out.extend(session.release()),
+                Ui::Viewport(v) => viewport.set(v, now),
                 Ui::Toggle => out.extend(match session.state() {
                     GuestState::Idle => session.request(now),
                     _ => session.release(),
@@ -280,6 +360,9 @@ fn run(
                 return;
             }
             Err(RecvTimeoutError::Timeout) => {}
+        }
+        if sharer.is_some() {
+            out.extend(viewport.due(now));
         }
         for message in session.tick(now) {
             // A repeated request goes with a repeated hello, in case that was lost too.
@@ -463,6 +546,50 @@ mod tests {
         )
         .unwrap();
         assert_eq!(steps.len(), 7);
+    }
+
+    #[test]
+    fn viewports_are_reported_once_settled() {
+        let t0 = Instant::now();
+        let at = |ms| t0 + Duration::from_millis(ms);
+        let mut r = ViewportReport::default();
+        assert_eq!(r.due(t0), None, "nothing known yet");
+        assert_eq!(r.fresh(t0), None);
+        // A drag: a new size every 20 ms for a second, then still.
+        for i in 0..50 {
+            r.set((1000 + i * 10, 800), at(u64::from(i) * 20));
+            assert_eq!(r.due(at(u64::from(i) * 20 + 10)), None, "mid-drag");
+        }
+        assert_eq!(r.due(at(980 + 299)), None);
+        assert_eq!(r.due(at(1280)), Some(viewport_message((1490, 800))));
+        assert_eq!(r.due(at(1290)), None, "sent once");
+        // The same size again is no news, but it's repeated now and then.
+        r.set((1490, 800), at(2000));
+        assert_eq!(r.due(at(3000)), None);
+        assert_eq!(r.due(at(3280)), Some(viewport_message((1490, 800))));
+        assert_eq!(r.due(at(3290)), None);
+        // A new sharer hears it at once, then a few times soon after, then every 2 s.
+        r.lost();
+        assert_eq!(r.fresh(at(4000)), Some(viewport_message((1490, 800))));
+        let sent: Vec<u64> = (4001..12_000)
+            .step_by(10)
+            .filter(|&ms| r.due(at(ms)).is_some())
+            .collect();
+        let early: Vec<u64> = (1..=10).map(|i| 4001 + i * 500).collect();
+        assert_eq!(sent[..10], early[..]);
+        assert_eq!(sent[10..], [11_001]);
+    }
+
+    #[test]
+    fn viewports_are_kept_in_the_range_the_sharer_accepts() {
+        let mut r = ViewportReport::default();
+        r.set((10, 100_000), Instant::now());
+        let message = r.fresh(Instant::now()).unwrap();
+        assert_eq!(
+            message,
+            viewport_message((protocol::MIN_VIEWPORT, protocol::MAX_VIEWPORT))
+        );
+        protocol::decode(&protocol::encode(&message)).expect("valid");
     }
 
     #[test]

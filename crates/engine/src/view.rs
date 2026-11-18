@@ -59,6 +59,10 @@ pub struct ViewOptions {
     pub name: String,
     /// The desktop app, when it drives this viewer.
     pub app: Option<ViewApp>,
+    /// Headless only: viewports to report to the sharer, each this long after starting, as a
+    /// window would report its own. Empty, a headless viewer reports none, and the sharer
+    /// sends its own size.
+    pub viewports: Vec<(Duration, (u32, u32))>,
 }
 
 /// How the desktop app drives a viewer: commands in, events out.
@@ -306,6 +310,7 @@ pub fn run(mut args: ViewOptions) -> Result<(), Error> {
         surface: None,
         size: (0, 0),
         frame_size: (0, 0),
+        sizes: Sizes::new(started),
         last_report: Instant::now(),
         frames_since_report: 0,
         guest: guest.clone(),
@@ -321,6 +326,7 @@ pub fn run(mut args: ViewOptions) -> Result<(), Error> {
         shown_pct: shown_pct.clone(),
         requested: None,
         manual_size: false,
+        viewport: None,
     };
     tracing::info!(
         "press F9 to ask for control, and F9 again to give it back; M mutes your mic (F8 while \
@@ -340,7 +346,7 @@ pub fn run(mut args: ViewOptions) -> Result<(), Error> {
     }
     let recorder = recorder.lock().unwrap();
     let board = board.lock().unwrap();
-    write_results(&args, &recorder, &board, started.elapsed(), app.frame_size)
+    write_results(&args, &recorder, &board, started.elapsed(), &app.sizes)
 }
 
 struct App {
@@ -363,6 +369,8 @@ struct App {
     size: (u32, u32),
     /// Size of the frames we receive.
     frame_size: (u32, u32),
+    /// Every size received, and when, for the results file.
+    sizes: Sizes,
     last_report: Instant,
     frames_since_report: u64,
     guest: Guest,
@@ -380,6 +388,8 @@ struct App {
     requested: Option<(u32, u32)>,
     /// The guest resized the window by hand, so it stays as they left it.
     manual_size: bool,
+    /// The viewport last handed to the guest session for the sharer.
+    viewport: Option<(u32, u32)>,
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -394,6 +404,7 @@ impl ApplicationHandler<UserEvent> for App {
         let context = softbuffer::Context::new(window.clone()).expect("softbuffer context");
         self.surface = Some(softbuffer::Surface::new(&context, window.clone()).expect("surface"));
         self.window = Some(window);
+        self.report_viewport();
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
@@ -410,7 +421,14 @@ impl ApplicationHandler<UserEvent> for App {
         let controlling = self.guest.status.get() == GuestState::InControl;
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => self.resize(size),
+            WindowEvent::Resized(size) => {
+                self.resize(size);
+                self.report_viewport();
+            }
+            WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                // Possibly onto another monitor, with room for a different size.
+                self.report_viewport();
+            }
             WindowEvent::Focused(false) => {
                 // Keys held when the window loses focus would never see their key-up here.
                 self.guest.send(Ui::Input(InputEvent::ReleaseAll));
@@ -532,6 +550,7 @@ impl App {
                 }
             }
             self.frame_size = frame_size;
+            self.sizes.saw(frame_size);
             tracing::info!(
                 "receiving {}x{}, window {}x{}",
                 frame_size.0,
@@ -662,6 +681,28 @@ impl App {
         }
     }
 
+    /// Tells the sharer, through the guest session, the largest picture this window can show
+    /// 1:1. While the window follows the picture's size, that's the room on the monitor (what
+    /// the window could grow to); once the guest has sized it by hand, it's the window's own
+    /// size. Neither depends on the picture received, so the sharer's answer never changes it.
+    fn report_viewport(&mut self) {
+        let Some(window) = &self.window else { return };
+        let inner = window.inner_size();
+        let monitor = window
+            .current_monitor()
+            .map(|m| (m.size().width, m.size().height));
+        let viewport = match monitor {
+            Some(m) if !self.manual_size => usable(m),
+            _ => (inner.width, inner.height),
+        };
+        if viewport.0 < 2 || viewport.1 < 2 || self.viewport == Some(viewport) {
+            return;
+        }
+        self.viewport = Some(viewport);
+        tracing::info!("viewport {}x{}", viewport.0, viewport.1);
+        self.guest.send(Ui::Viewport(viewport));
+    }
+
     /// Mutes or unmutes this side's mic.
     fn toggle_mute(&mut self) {
         if !self.voice.status().sending {
@@ -786,16 +827,19 @@ fn log_report(
 fn run_headless(mut args: ViewOptions) -> Result<(), Error> {
     let recorder = Arc::new(Mutex::new(Recorder::default()));
     let board = Arc::new(Mutex::new(Board::default()));
-    let frame_size = Arc::new(Mutex::new((0u32, 0u32)));
+    let started = Instant::now();
+    let sizes = Arc::new(Mutex::new(Sizes::new(started)));
     let config = args.config.clone();
     let voice = args.voice.clone();
-    let started = Instant::now();
 
     let on_frame = {
         let recorder = recorder.clone();
-        let frame_size = frame_size.clone();
+        let sizes = sizes.clone();
         move |frame: DecodedFrame| {
-            *frame_size.lock().unwrap() = (frame.i420.width(), frame.i420.height());
+            let size = (frame.i420.width(), frame.i420.height());
+            if sizes.lock().unwrap().saw(size) {
+                tracing::info!("receiving {}x{}", size.0, size.1);
+            }
             recorder.lock().unwrap().frame_presented(
                 frame.marker,
                 frame.decoded_at,
@@ -820,7 +864,8 @@ fn run_headless(mut args: ViewOptions) -> Result<(), Error> {
     let mut player = None;
     let mut guest_for_app = None;
     let mut guest_thread = None;
-    if script.is_some() || app_link.is_some() {
+    let mut viewport_guest = None;
+    if script.is_some() || app_link.is_some() || !args.viewports.is_empty() {
         let (guest, control, thread) = crate::guest::Guest::start(
             args.name.clone(),
             args.sent_log.as_deref(),
@@ -828,6 +873,7 @@ fn run_headless(mut args: ViewOptions) -> Result<(), Error> {
         )?;
         link = Some(control);
         guest_for_app = Some(guest.clone());
+        viewport_guest = Some(guest.clone());
         if let Some(steps) = script {
             player = Some(std::thread::spawn(move || {
                 let result = crate::guest::play(&guest, &steps);
@@ -862,6 +908,18 @@ fn run_headless(mut args: ViewOptions) -> Result<(), Error> {
             Arc::new(AtomicU32::new(0)),
             reporting.clone(),
         );
+    }
+    if let Some(guest) = viewport_guest.filter(|_| !args.viewports.is_empty()) {
+        let schedule = args.viewports.clone();
+        std::thread::spawn(move || {
+            for (at, viewport) in schedule {
+                if let Some(rest) = at.checked_sub(started.elapsed()) {
+                    std::thread::sleep(rest);
+                }
+                tracing::info!("viewport {}x{}", viewport.0, viewport.1);
+                guest.send(Ui::Viewport(viewport));
+            }
+        });
     }
     // With the app, the call lasts until it says to leave, even after a script ends.
     let ends_with_script = player.is_some() && events.is_none();
@@ -933,8 +991,8 @@ fn run_headless(mut args: ViewOptions) -> Result<(), Error> {
 
     let recorder = recorder.lock().unwrap();
     let board = board.lock().unwrap();
-    let size = *frame_size.lock().unwrap();
-    write_results(&args, &recorder, &board, started.elapsed(), size)?;
+    let sizes = sizes.lock().unwrap();
+    write_results(&args, &recorder, &board, started.elapsed(), &sizes)?;
     if let Some(player) = player {
         player
             .join()
@@ -967,13 +1025,46 @@ fn fit_within(frame: (u32, u32), max: (u32, u32)) -> (u32, u32) {
     )
 }
 
+/// The sizes frames arrived at, each with when it began, in seconds since the viewer started:
+/// on the same clock as `ViewOptions::viewports`, so a check can time how long a new viewport
+/// took to show.
+struct Sizes {
+    started: Instant,
+    changes: Vec<(f64, (u32, u32))>,
+}
+
+impl Sizes {
+    fn new(started: Instant) -> Self {
+        Self {
+            started,
+            changes: Vec::new(),
+        }
+    }
+
+    /// Notes the size of a frame. Returns whether it's a new one.
+    fn saw(&mut self, size: (u32, u32)) -> bool {
+        if self.changes.last().map(|&(_, s)| s) == Some(size) {
+            return false;
+        }
+        let t = self.started.elapsed().as_secs_f64();
+        self.changes.push((t, size));
+        true
+    }
+
+    /// The size frames arrive at now.
+    fn last(&self) -> (u32, u32) {
+        self.changes.last().map_or((0, 0), |&(_, s)| s)
+    }
+}
+
 fn write_results(
     args: &ViewOptions,
     recorder: &Recorder,
     board: &Board,
     elapsed: Duration,
-    size: (u32, u32),
+    sizes: &Sizes,
 ) -> Result<(), Error> {
+    let size = sizes.last();
     let mut report = recorder.report();
     if let Some(audio) = report.audio.as_mut() {
         audio.concealed_pct = board
@@ -991,6 +1082,16 @@ fn write_results(
         "finished_at_unix_ms": wall_clock_us() / 1000,
         "duration_s": secs,
         "resolution": [size.0, size.1],
+        "sizes": sizes
+            .changes
+            .iter()
+            .map(|(t, (w, h))| json!({ "t_s": t, "size": [w, h] }))
+            .collect::<Vec<_>>(),
+        "viewports": args
+            .viewports
+            .iter()
+            .map(|(t, (w, h))| json!({ "t_s": t.as_secs_f64(), "size": [w, h] }))
+            .collect::<Vec<_>>(),
         "avg_fps": report.frames as f64 / secs,
         "tick_ms": args.config.tick_interval.as_millis() as u64,
         "report": report,

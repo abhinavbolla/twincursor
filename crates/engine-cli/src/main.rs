@@ -622,6 +622,7 @@ fn watch(args: ViewArgs) -> anyhow::Result<()> {
             events: events.clone(),
             commands: rx,
         }),
+        viewports: Vec::new(),
     });
     // The viewer has already told the app how the call ended.
     if result.is_err() {
