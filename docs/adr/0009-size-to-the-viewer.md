@@ -43,6 +43,7 @@ pick a layer per viewer, so the sharer has to choose one size for everyone.
   on the GPU) would save that, and is left for later.
 - With several viewers, smaller ones receive more than they show and scale it down, as all
   viewers did before.
-- A viewer's first data packets are lost until its data channel opens (2 to 4 s on a local
-  server), so it repeats its viewport every half second for the first five seconds and every
-  2 s after that; a joining viewer gets its own size about 2 s after its first frame.
+- A joining viewer's first data packets are dropped until the sharer's room has heard it
+  joined (2 to 3 s on a local server). The viewport goes with each offer of the viewer's hello,
+  which repeats every 250 ms until the sharer acknowledges it, and every 2 s after that; a
+  joining viewer gets its own size as soon as the sharer can attribute its packets.

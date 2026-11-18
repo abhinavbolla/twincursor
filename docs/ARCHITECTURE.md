@@ -134,9 +134,22 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
   on tasks of its own, with its own copy of the room's events, so input never waits behind stats
   polls or republishing. The guest's side, `control::guest`, asks for control, sends moves at
   most 120 times a second (the newest position always goes out), heartbeats every 250 ms, and
-  repeats an unanswered request every second, because packets sent just after joining can be
-  lost. The link counts messages not yet sent, and the guest waits for them before leaving the
-  room, so the end of a fast burst isn't cut off.
+  repeats an unanswered request every second. The link counts messages not yet sent, and the
+  guest waits for them before leaving the room, so the end of a fast burst isn't cut off.
+- **A joining viewer's first packets don't count.** LiveKit relays a viewer's data at once, but
+  the sharer's room hears that the viewer joined only later (about 2 to 3 s on a local server,
+  measured with both sides' logs). Until then the SDK hands each packet over without a sender,
+  and the link drops it, because the sender's identity is what consent is checked against. It
+  happens on both channels, reliable and lossy. It is one-way: a viewer always knows the sharer
+  before it sees the screen, so the sharer's answers arrive. Nothing on the viewer's side shows
+  when the window closes, so the viewer's hello (name, platform, decoders) is offered every
+  250 ms until the sharer answers with `HelloAck`, then not again; every 2 s after 15 s
+  unanswered, for a sharer from before `HelloAck`. The answer is about the hello only: it
+  grants nothing and says nothing about control. The viewer offers the hello again after a full
+  reconnect (the sharer forgot it when the old connection left) and to each new sharer. A
+  request for control that may arrive before the hello goes after one, so the sharer is asked
+  by name. `bench/engine-e2e.sh` joins a viewer to a call under way and checks that the
+  sharer's app has its decoders within 1 s of showing the viewer, without a request.
 - The viewer maps window positions through the letterbox the frame is drawn in, so clicks land
   right at any window size, and ignores presses on the black bars (releases always go, clamped
   to the edge). Losing focus sends `ReleaseAll`. F9 asks for control and gives it back; the
@@ -382,10 +395,11 @@ being scaled up (blurry text) or down (wasted pixels).
   Neither depends on the picture received, so the size the sharer picks never makes the viewer
   report something else: it settles in one step. A viewport is sent once it has held for 0.3 s
   (dragging an edge sends one report, after the drag), at once to a sharer just found, and again
-  every 2 s, since nothing confirms it arrived. A viewer's first data packets are lost until its
-  data channel opens (2 to 4 s on a local server), so for its first five seconds with a sharer
-  it repeats the viewport every half second: a joining viewer gets its own size about 2 s after
-  its first frame, and the tier's size until then.
+  every 2 s, since nothing confirms it arrived. A joining viewer's first packets are dropped
+  until the sharer's room has heard it joined (see "Remote control over a data channel"),
+  so the viewport also goes with every offer of the hello, and once more when the sharer
+  answers it: the sharer has a joining viewer's viewport within about 0.25 s of being able to
+  read it, and the viewer gets the tier's size until then.
 - **The sharer fits the source into it**: the display (or shared window) scaled to fit inside the
   viewport with its aspect ratio, never upscaled, rounded as the tiers are (width to 16, height
   to 4, so never larger than the viewport); then limited by the tier and by the auto-throttle's
