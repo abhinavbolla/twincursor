@@ -38,4 +38,5 @@ unknown-git = "deny"
 ignore = [
   { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained, not vulnerable. It comes from winit's Linux window decorations, and we don't ship Linux yet." },
   { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is unmaintained, not vulnerable. A build-time macro of the GTK bindings Tauri uses on Linux, which we don't ship yet." },
+  { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, not vulnerable. It comes from the LiveKit SDK (livekit, livekit-data-stream, pbjson-types), and no version without it exists yet. Drop this when LiveKit moves off chrono." },
 ]
