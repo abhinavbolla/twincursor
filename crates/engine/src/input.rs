@@ -19,12 +19,28 @@ pub struct Rect {
     pub h: u32,
 }
 
-/// The largest rectangle with the frame's aspect ratio that fits in the window, centred.
-/// Dimensions stay even, as I420 scaling needs.
+/// A frame that fits in the window would have to grow by at least this much before it's
+/// scaled up to fill it. Below that, it's drawn 1:1 with thin black bars: a frame a few pixels
+/// smaller than the window (the sharer rounds sizes to multiples of 16 and 4) stretched by a
+/// fraction of a percent would blur every line of text.
+pub const MIN_UPSCALE: f64 = 1.05;
+
+/// Where to draw the frame in the window, centred: 1:1 when it fits and nearly fills the
+/// window (see [`MIN_UPSCALE`]), otherwise the largest rectangle with its aspect ratio that
+/// fits. Scaled dimensions stay even, as I420 scaling needs.
 pub fn letterbox(frame: (u32, u32), window: (u32, u32)) -> Rect {
     let (fw, fh) = (f64::from(frame.0.max(1)), f64::from(frame.1.max(1)));
     let (ww, wh) = (window.0.max(2), window.1.max(2));
     let scale = f64::min(f64::from(ww) / fw, f64::from(wh) / fh);
+    if (1.0..MIN_UPSCALE).contains(&scale) {
+        let (w, h) = (frame.0.max(1), frame.1.max(1));
+        return Rect {
+            x: (ww - w) / 2,
+            y: (wh - h) / 2,
+            w,
+            h,
+        };
+    }
     let even = |v: f64, max: u32| ((v.round() as u32) & !1).clamp(2, max & !1);
     let (w, h) = (even(fw * scale, ww), even(fh * scale, wh));
     Rect {
@@ -125,6 +141,46 @@ mod tests {
         );
         let r = letterbox((1280, 720), (3000, 1000));
         assert_eq!((r.h, r.w % 2, r.x), (1000, 0, (3000 - r.w) / 2));
+    }
+
+    #[test]
+    fn a_near_miss_is_drawn_1_to_1_and_centred() {
+        // The sharer rounded a 1508x1046 viewport to 1504x1044.
+        let r = letterbox((1504, 1044), (1508, 1046));
+        assert_eq!(
+            r,
+            Rect {
+                x: 2,
+                y: 1,
+                w: 1504,
+                h: 1044
+            }
+        );
+        // The shared surface's corners are the frame's, not the window's.
+        assert_eq!(to_surface(r, (2.0, 1.0)), Some((0.0, 0.0)));
+        assert_eq!(to_surface(r, (1506.0, 1045.0)), Some((1.0, 1.0)));
+        assert_eq!(to_surface(r, (754.0, 523.0)), Some((0.5, 0.5)));
+        assert_eq!(to_surface(r, (1.0, 500.0)), None, "in the bar");
+        assert_eq!(to_surface_clamped(r, (1507.0, 0.0)), (1.0, 0.0));
+        // Up to just under the threshold, still 1:1.
+        let r = letterbox((1920, 1080), (2000, 1120));
+        assert_eq!((r.x, r.y, r.w, r.h), (40, 20, 1920, 1080));
+        // A frame of odd size that fits exactly isn't touched either.
+        let r = letterbox((1501, 1001), (1501, 1001));
+        assert_eq!((r.w, r.h), (1501, 1001));
+    }
+
+    #[test]
+    fn only_clearly_smaller_or_larger_frames_are_scaled() {
+        // 720p in a 1080p window: half as big again, scaled up to fill it.
+        let r = letterbox((1280, 720), (1920, 1080));
+        assert_eq!((r.x, r.y, r.w, r.h), (0, 0, 1920, 1080));
+        // Larger than the window, by any amount: scaled down.
+        let r = letterbox((1924, 1080), (1920, 1080));
+        assert!(r.w <= 1920 && r.h < 1080, "{r:?}");
+        // At the threshold: scaled.
+        let w = (1000.0 * MIN_UPSCALE) as u32;
+        assert_eq!(letterbox((1000, 500), (w, 2000)).w, w & !1);
     }
 
     #[test]
