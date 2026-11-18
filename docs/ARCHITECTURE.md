@@ -132,7 +132,8 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
   It has no network or platform code, so its tests are scripted traces on a fake clock.
 - Media doesn't know what the bytes mean. `media::link` carries the `tc.control` topic both ways
   on tasks of its own, with its own copy of the room's events, so input never waits behind stats
-  polls or republishing. The guest's side, `control::guest`, asks for control, sends moves at
+  polls or republishing. It starts after the room is joined, so it reports the participants and
+  a screen already there as if they had just arrived. The guest's side, `control::guest`, asks for control, sends moves at
   most 120 times a second (the newest position always goes out), heartbeats every 250 ms, and
   repeats an unanswered request every second. The link counts messages not yet sent, and the
   guest waits for them before leaving the room, so the end of a fast burst isn't cut off.

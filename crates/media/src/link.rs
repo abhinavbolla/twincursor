@@ -125,12 +125,21 @@ pub(crate) fn start(room: &Room, link: ControlLink) -> [JoinHandle<()>; 2] {
     on_event(LinkEvent::Connected {
         identity: room.local_participant().identity().to_string(),
     });
-    // Participants already in the room produce no connect event.
+    // Participants already in the room produce no connect event, and a screen subscribed before
+    // `events` existed (the viewer starts the link after setting up its voice) no subscribed
+    // event. One subscribed meanwhile may be reported twice, which only means a second hello.
     for (identity, participant) in room.remote_participants() {
         on_event(LinkEvent::Joined {
             identity: identity.to_string(),
             name: participant.name(),
         });
+        let sharing = participant
+            .track_publications()
+            .values()
+            .any(|p| matches!(p.track(), Some(RemoteTrack::Video(_))));
+        if sharing {
+            on_event(LinkEvent::Sharing(identity.to_string()));
+        }
     }
     [
         tokio::spawn(receive(events, topic.clone(), on_event)),
