@@ -66,6 +66,12 @@ pub enum Message {
     },
 
     // Sharer to guest.
+    /// Answers every `Hello`: the sharer has it. Information only: it grants nothing and says
+    /// nothing about control. A viewer offers its hello until this arrives, because a sharer
+    /// drops what a viewer sends before the sharer's room has heard that viewer joined. Viewers
+    /// that predate it turn it away as a message they don't know, and a sharer that never sends
+    /// it gets the hello offered again every few seconds.
+    HelloAck,
     Grant,
     Deny,
     Revoke,
@@ -341,6 +347,7 @@ mod tests {
                 width: 2872,
                 height: 1728,
             },
+            Message::HelloAck,
             Message::Grant,
             Message::Deny,
             Message::Revoke,
@@ -514,6 +521,23 @@ mod tests {
             let m = Message::Viewport { width, height };
             assert_eq!(decode(&encode(&m)).unwrap(), m);
         }
+    }
+
+    #[test]
+    fn hello_acks_read_both_ways() {
+        // The wire format, which a viewer of this version reads.
+        assert_eq!(
+            std::str::from_utf8(&encode(&Message::HelloAck)).unwrap(),
+            r#"{"v":1,"msg":{"type":"hello_ack"}}"#
+        );
+        // Fields a newer sharer might add are ignored.
+        let newer = decode(br#"{"v":1,"msg":{"type":"hello_ack","codec":"h265"}}"#);
+        assert_eq!(newer.unwrap(), Message::HelloAck);
+        // A viewer that predates it reads it as a message it doesn't know, as it would any
+        // other, and goes on.
+        let older = decode(br#"{"v":1,"msg":{"type":"from_a_newer_sharer"}}"#);
+        assert!(matches!(older, Err(DecodeError::Malformed(_))));
+        assert!(Message::HelloAck.reliable());
     }
 
     #[test]

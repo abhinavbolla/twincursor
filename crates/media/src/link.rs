@@ -125,12 +125,21 @@ pub(crate) fn start(room: &Room, link: ControlLink) -> [JoinHandle<()>; 2] {
     on_event(LinkEvent::Connected {
         identity: room.local_participant().identity().to_string(),
     });
-    // Participants already in the room produce no connect event.
+    // Participants already in the room produce no connect event, and a screen subscribed before
+    // `events` existed (the viewer starts the link after setting up its voice) no subscribed
+    // event. One subscribed meanwhile may be reported twice, which only means a second hello.
     for (identity, participant) in room.remote_participants() {
         on_event(LinkEvent::Joined {
             identity: identity.to_string(),
             name: participant.name(),
         });
+        let sharing = participant
+            .track_publications()
+            .values()
+            .any(|p| matches!(p.track(), Some(RemoteTrack::Video(_))));
+        if sharing {
+            on_event(LinkEvent::Sharing(identity.to_string()));
+        }
     }
     [
         tokio::spawn(receive(events, topic.clone(), on_event)),
@@ -147,6 +156,9 @@ async fn receive(mut events: UnboundedReceiver<RoomEvent>, topic: String, on_eve
         } = &event
         {
             tracing::trace!(topic = ?t, from = ?participant.as_ref().map(|p| p.identity()), "data");
+            if t.as_deref() == Some(topic.as_str()) && participant.is_none() {
+                tracing::debug!("control data from a participant this room doesn't know; dropped");
+            }
         }
         let report = match event {
             RoomEvent::DataReceived {
@@ -189,8 +201,11 @@ async fn send(
             reliable: out.reliable,
             destination_identities: out.to.map(|to| to.into()).into_iter().collect(),
         };
+        let start = Instant::now();
         if let Err(e) = local.publish_data(packet).await {
             tracing::warn!("control message not sent: {e}");
+        } else {
+            tracing::trace!(took = ?start.elapsed(), "control message sent");
         }
         pending.fetch_sub(1, Ordering::AcqRel);
     }

@@ -5,7 +5,8 @@
 # recording every action it would inject) and a headless `tc-engine view --ipc`, writes commands
 # to their stdin and checks the events on their stdout:
 #
-#   both say hello and connect, and each sees the other by name; the guest asks (request_control);
+#   both say hello and connect, and each sees the other by name; the sharer's app learns the
+#   guest's decoders within HELLO_BOUND_S of the guest appearing, unasked; the guest asks (request_control);
 #   nothing is granted while the app hasn't answered; the app allows that request; the guest types;
 #   the app takes control back (revoke_control); a stale allow is refused; both leave.
 #
@@ -24,6 +25,8 @@ cd "$(dirname "$0")/.."
 BIN=${BIN:-target/release/tc-engine}
 SPIKE=${SPIKE:-target/release/tc-spike}
 OUT=${OUT:-bench/results/engine-e2e-$(date +%s)}
+# How long after the guest appears in the sharer's app its decoders may take to follow.
+HELLO_BOUND_S=${HELLO_BOUND_S:-1.0}
 mkdir -p "$OUT"
 swiftc -O -o "$OUT/windows" bench/control/windows.swift
 label_shown() { "$OUT/windows" "$1" | grep -q '"name":"TwinCursor control label"'; }
@@ -66,6 +69,12 @@ EOF
 sharer=$!
 pids+=("$sharer")
 exec 3>"$OUT/share.in"
+check "$OUT/share.jsonl" '.event == "hello" and .role == "sharer" and .version == 1' "sharer says hello"
+check "$OUT/share.jsonl" '.event == "connection" and .state == "connected"' "sharer connected"
+# The guest joins a call already under way, as a guest does: its first packets reach the sharer
+# before the sharer's room has heard it joined (ARCHITECTURE.md, "Remote control over a data
+# channel").
+check "$OUT/share.jsonl" '.event == "stats" and .fps > 0' "sharer is sending video"
 
 "$BIN" view --ipc --audio off --room "$room" --name Sam --headless \
   --control-script "$OUT/script.json" --sent-log "$OUT/sent.jsonl" \
@@ -74,16 +83,50 @@ viewer=$!
 pids+=("$viewer")
 exec 4>"$OUT/view.in"
 
-check "$OUT/share.jsonl" '.event == "hello" and .role == "sharer" and .version == 1' "sharer says hello"
 check "$OUT/view.jsonl" '.event == "hello" and .role == "guest" and .version == 1' "guest says hello"
-check "$OUT/share.jsonl" '.event == "connection" and .state == "connected"' "sharer connected"
 check "$OUT/view.jsonl" '.event == "connection" and .state == "connected"' "guest connected"
 for side in share view; do
   order=$(head -2 "$OUT/$side.jsonl" | jq -r '.event + (if .state then ":" + .state else "" end)' | paste -sd, -)
   [[ $order == "hello,connection:connecting" ]] && pass "$side: hello first, then connecting" || fail "$side starts with $order"
 done
-check "$OUT/share.jsonl" '.event == "participants" and (.participants | any(.name == "Sam" and .role == "guest" and (.decoders | index("h264")) and (.decoders | index("h265"))))' \
-  "sharer sees Sam, a guest who decodes H.264 and H.265"
+# The guest's hello (its decoders) must reach the sharer's app soon after the guest shows up
+# there, before anyone asks for control: the sharer picks a codec from it.
+hello=$(python3 - "$OUT/share.jsonl" "$HELLO_BOUND_S" <<'PY'
+import json, sys, time
+path, bound = sys.argv[1], float(sys.argv[2])
+seen = decoders = None
+start = time.monotonic()
+while time.monotonic() - start < 20 and decoders is None:
+    try:
+        lines = open(path).read().splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        sam = [p for p in e.get("participants", []) if e.get("event") == "participants" and p.get("name") == "Sam" and p.get("role") == "guest"]
+        if sam and seen is None:
+            seen = time.monotonic()
+        if sam and {"h264", "h265"} <= set(sam[0].get("decoders", [])):
+            decoders = time.monotonic()
+            break
+    time.sleep(0.02)
+if seen is None:
+    print("never saw Sam")
+elif decoders is None:
+    print("saw Sam, but not Sam's decoders within 20 s")
+else:
+    took = decoders - seen
+    print(f"{'ok' if took <= bound else 'late'} {took:.2f} s")
+PY
+)
+case $hello in
+  ok*) pass "sharer sees Sam, a guest who decodes H.264 and H.265, ${hello#ok } after Sam appears (bound ${HELLO_BOUND_S} s)" ;;
+  late*) fail "Sam's decoders reached the sharer's app ${hello#late } after Sam appeared (bound ${HELLO_BOUND_S} s)" ;;
+  *) fail "Sam's decoders: $hello" ;;
+esac
 check "$OUT/view.jsonl" '.event == "participants" and (.participants | any(.name == "Alex" and .role == "sharer"))' "guest sees Alex, the sharer"
 
 echo '{"cmd":"request_control"}' >&4

@@ -138,9 +138,11 @@ impl<I: Injector> Controller<I> {
     /// Handles a message from `from`, the sender's identity as LiveKit reports it.
     pub fn handle(&mut self, from: &str, message: Message, now: Instant) -> Vec<Effect> {
         match message {
+            // Who is asking, for the consent prompt. Answered so the viewer stops offering it;
+            // the answer grants nothing.
             Message::Hello { name, platform, .. } => {
                 self.hellos.insert(from.to_owned(), (name, platform));
-                vec![]
+                vec![send(from.to_owned(), Message::HelloAck)]
             }
             Message::RequestControl => self.on_request(from),
             Message::ReleaseControl => self.end_by_guest(from, EndReason::Released),
@@ -163,7 +165,11 @@ impl<I: Injector> Controller<I> {
             // Sizing, not control: the sharer's media loop reads it from the room itself.
             Message::Viewport { .. } => vec![],
             // Only the sharer sends these.
-            Message::Grant | Message::Deny | Message::Revoke | Message::Released => vec![],
+            Message::HelloAck
+            | Message::Grant
+            | Message::Deny
+            | Message::Revoke
+            | Message::Released => vec![],
         }
     }
 

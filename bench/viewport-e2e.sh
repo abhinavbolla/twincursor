@@ -29,7 +29,7 @@ DURATION=${DURATION:-12}
 # at the new size has to arrive.
 MAX_CHANGE_S=${MAX_CHANGE_S:-2.5}
 # How long after the first frame a joining viewer's own size may take: its first data packets
-# are lost until its data channel opens (2 to 4 s on a local server).
+# are dropped until the sharer's room has heard it joined (2 to 3 s on a local server).
 MAX_JOIN_S=${MAX_JOIN_S:-6}
 # Text quality at the fitted size: the floors the matrix's 1080p rows clear with room to spare.
 MIN_SSIM_P50=${MIN_SSIM_P50:-0.98}

@@ -167,6 +167,54 @@ fn control_starts_off() {
 }
 
 #[test]
+fn a_hello_is_answered_and_grants_nothing() {
+    let ack = |to: &str| {
+        vec![Effect::Send {
+            to: to.into(),
+            message: Message::HelloAck,
+        }]
+    };
+    let mut t = Trace::new();
+    // Each hello is answered, to whoever sent it, however often it comes.
+    assert_eq!(t.msg(GUEST, hello("Alice", Platform::Macos), 0), ack(GUEST));
+    assert_eq!(
+        t.msg(GUEST, hello("Alice", Platform::Macos), 250),
+        ack(GUEST)
+    );
+    assert_eq!(t.msg(OTHER, hello("Bob", Platform::Linux), 300), ack(OTHER));
+    assert!(t.c.requester().is_none() && t.c.controller().is_none());
+    t.send(key("KeyA", true, Some("a")), 400);
+    assert!(
+        t.take().is_empty(),
+        "a hello is no request, let alone a grant"
+    );
+
+    // During control, a hello from the controller or anyone else changes nothing about it.
+    let mut t = Trace::granted(Platform::Macos);
+    assert_eq!(
+        t.msg(GUEST, hello("Mallory", Platform::Windows), 10),
+        ack(GUEST)
+    );
+    assert_eq!(
+        t.msg(OTHER, hello("Alice", Platform::Macos), 10),
+        ack(OTHER)
+    );
+    let controller = t.c.controller().unwrap();
+    assert_eq!(
+        (controller.identity.as_str(), controller.name.as_str()),
+        (GUEST, "Alice")
+    );
+    t.send_from(OTHER, key("KeyB", true, Some("b")), 20, 30);
+    assert!(t.take().is_empty(), "the other viewer still can't type");
+    // A hello sent after a revoke doesn't bring control back.
+    t.c.revoke();
+    t.msg(GUEST, hello("Alice", Platform::Macos), 50);
+    t.send(key("KeyC", true, Some("c")), 60);
+    assert!(t.c.controller().is_none());
+    assert!(!t.take().contains(&text("c")));
+}
+
+#[test]
 fn a_request_asks_the_sharer_and_a_grant_answers_the_guest() {
     let mut t = Trace::new();
     t.msg(GUEST, hello("Alice", Platform::Windows), 0);
