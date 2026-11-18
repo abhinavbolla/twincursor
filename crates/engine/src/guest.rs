@@ -76,10 +76,17 @@ impl ViewportReport {
         repeat.then(|| self.send(viewport, now))
     }
 
-    /// The newest viewport without waiting: for a sharer just found, with each offer of the
-    /// hello, and once the sharer is known to hear us.
+    /// A sharer was just found: tell it the newest viewport without waiting.
     fn fresh(&mut self, now: Instant) -> Option<Message> {
         let (viewport, _) = self.latest?;
+        Some(self.send(viewport, now))
+    }
+
+    /// The last viewport sent, again: with each offer of the hello, and once the sharer is known
+    /// to hear us, since what went before may have been dropped. A newer one still waits to
+    /// settle.
+    fn again(&mut self, now: Instant) -> Option<Message> {
+        let (viewport, _) = self.sent?;
         Some(self.send(viewport, now))
     }
 
@@ -365,8 +372,7 @@ fn run(
                     Ok(Message::HelloAck) => {
                         if offer.acknowledged() {
                             tracing::debug!("the sharer has our hello");
-                            // What went with earlier offers may have been dropped too.
-                            out.extend(viewport.fresh(now));
+                            out.extend(viewport.again(now));
                         }
                     }
                     Ok(message) => {
@@ -424,7 +430,7 @@ fn run(
         if sharer.is_some() {
             if offer.due(now) {
                 out.push(hello(&name));
-                out.extend(viewport.fresh(now));
+                out.extend(viewport.again(now));
             }
             out.extend(viewport.due(now));
         }
@@ -651,10 +657,18 @@ mod tests {
             .filter(|&ms| r.due(at(ms)).is_some())
             .collect();
         assert_eq!(sent, [6001, 8001, 10_001]);
-        // Sending it with an offer of the hello restarts the wait.
-        assert!(r.fresh(at(10_500)).is_some());
+        // Sending it again with an offer of the hello restarts the wait.
+        assert_eq!(r.again(at(10_500)), Some(viewport_message((1490, 800))));
         assert_eq!(r.due(at(12_001)), None);
         assert!(r.due(at(12_500)).is_some());
+        // Mid-drag, an offer repeats the last settled viewport, not the one under the pointer.
+        r.set((1600, 900), at(13_000));
+        assert_eq!(r.again(at(13_100)), Some(viewport_message((1490, 800))));
+        assert_eq!(r.due(at(13_300)), Some(viewport_message((1600, 900))));
+        assert_eq!(r.again(at(13_400)), Some(viewport_message((1600, 900))));
+        // A sharer that left takes nothing to repeat with it.
+        r.lost();
+        assert_eq!(r.again(at(14_000)), None);
     }
 
     #[test]
