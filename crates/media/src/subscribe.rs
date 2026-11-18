@@ -276,11 +276,11 @@ impl QualityProbe {
                     marker::MARKED_AREA,
                 );
                 if let Some(scores) = scores {
-                    let mut recorder = recorder.lock().unwrap();
-                    recorder.quality.push(scores);
-                    if fast_scrolling(n) {
-                        recorder.quality_fast.push(scores);
-                    }
+                    let size = (w as u32, h as u32);
+                    recorder
+                        .lock()
+                        .unwrap()
+                        .quality_scored(size, scores, fast_scrolling(n));
                 }
                 done.store(false, Ordering::Release);
             }

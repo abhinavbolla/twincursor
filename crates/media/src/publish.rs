@@ -229,6 +229,8 @@ pub async fn run(
         let latest_tick = latest_tick.clone();
         let stats = stats.clone();
         let stamp = config.stamp_markers;
+        // Only the synthetic pattern carries a frame number to keep through scaling.
+        let restamp = config.backend == Backend::Pattern;
         let snapshots = config.snapshots.clone();
         let send_size = send_size.clone();
         let mailbox = mailbox.clone();
@@ -242,6 +244,7 @@ pub async fn run(
                 &send_size,
                 capture_fps,
                 stamp,
+                restamp,
                 snapshots.as_ref(),
             )
         })
@@ -308,9 +311,11 @@ pub async fn run(
                                 "adapt: {} → {}: {}",
                                 change.from, change.to, change.reason
                             );
-                            adapt_note = (change.to != a.top())
-                                .then(|| format!("{}: {}", change.to, change.reason));
+                            let reduced = change.to != a.top();
                             sizing.apply(adapter.as_mut(), &send_size);
+                            let (w, h, _) = *send_size.lock().unwrap();
+                            adapt_note = reduced
+                                .then(|| format!("{} ({w}x{h}): {}", change.to, change.reason));
                         }
                     }
                     if let Some(cap) = cap.as_mut() {
@@ -363,11 +368,16 @@ pub async fn run(
                     }
                 }
                 Some(RoomEvent::DataReceived { payload, topic, participant, .. }) => {
+                    // Control messages are the control session's (`link`), except the
+                    // viewport, which is about the video and needs no control. Input arrives
+                    // here too, many times a second while someone is in control, and the link
+                    // decodes it already: only packets that can be a viewport are decoded.
                     if topic.as_deref() == Some(protocol::TOPIC) {
-                        // Control messages are the control session's (`link`), except the
-                        // viewport, which is about the video and needs no control.
-                        if let (Ok(protocol::Message::Viewport { width, height }), Some(from)) =
-                            (protocol::decode(&payload), participant.as_ref())
+                        let viewport = might_be_viewport(&payload)
+                            .then(|| protocol::decode(&payload).ok())
+                            .flatten();
+                        if let (Some(protocol::Message::Viewport { width, height }), Some(from)) =
+                            (viewport, participant.as_ref())
                         {
                             let t = started.elapsed().as_secs_f64();
                             tracing::debug!(from = %from.identity(), "viewport {width}x{height}");
@@ -416,6 +426,13 @@ pub async fn run(
         Some(reason) => Err(ShareError::Ended(reason)),
         None => Ok(()),
     }
+}
+
+/// Whether a control-topic payload names the viewport message, as `protocol::encode` writes
+/// it. Anything else (input, heartbeats) is left to the control session without decoding.
+fn might_be_viewport(payload: &[u8]) -> bool {
+    const NAME: &[u8] = b"\"viewport\"";
+    payload.windows(NAME.len()).any(|w| w == NAME)
 }
 
 /// What the size sent is worked out from, and what decided it last.
@@ -512,6 +529,7 @@ fn send_loop(
     send_size: &Mutex<(u32, u32, u32)>,
     capture_fps: u32,
     stamp: bool,
+    restamp: bool,
     snapshots: Option<&Snapshots>,
 ) {
     let start = Instant::now();
@@ -540,6 +558,9 @@ fn send_loop(
             &mut frame.buffer
         } else {
             scaled = frame.buffer.scaled(w, h);
+            if restamp {
+                restamp_frame_id(&frame.buffer, &mut scaled);
+            }
             &mut scaled
         };
         let tick = latest_tick.load(Ordering::Relaxed);
@@ -625,6 +646,38 @@ fn send<T: AsRef<dyn VideoBuffer>>(
         }),
         buffer,
     });
+}
+
+/// An 8-bit luma plane and its stride.
+fn luma(buffer: &FrameBuffer) -> (&[u8], usize) {
+    match buffer {
+        FrameBuffer::Nv12(b) => (b.data().0, b.strides().0 as usize),
+        FrameBuffer::I420(b) => (b.data().0, b.strides().0 as usize),
+    }
+}
+
+/// Carries the synthetic pattern's frame number (second marker slot) from `source` into its
+/// scaled copy, at the slot's normal size and place, so the viewer can still read it and score
+/// the frame (`pattern::expected` knows the scaling). Scaling smears the blocks past reading.
+/// Does nothing when `source` carries no readable number. The slot is inside
+/// `marker::MARKED_AREA`, which the comparison leaves out.
+fn restamp_frame_id(source: &FrameBuffer, scaled: &mut FrameBuffer) {
+    let (y, stride) = luma(source);
+    let (w, h) = (source.width() as usize, source.height() as usize);
+    let Some(id) = marker::read_luma_at(y, stride, w, h, marker::FRAME_SLOT_X) else {
+        return;
+    };
+    let (w, h) = (scaled.width() as usize, scaled.height() as usize);
+    match scaled {
+        FrameBuffer::Nv12(b) => {
+            let stride = b.strides().0 as usize;
+            marker::stamp_luma_at(b.data_mut().0, stride, w, h, marker::FRAME_SLOT_X, id);
+        }
+        FrameBuffer::I420(b) => {
+            let stride = b.strides().0 as usize;
+            marker::stamp_luma_at(b.data_mut().0, stride, w, h, marker::FRAME_SLOT_X, id);
+        }
+    }
 }
 
 fn save_snapshot(snaps: &Snapshots, tick: u32, buffer: &FrameBuffer) {
@@ -728,6 +781,76 @@ mod tests {
             .filter(|i| p.admit(back + Duration::from_micros(i * 16_667), 30))
             .count();
         assert_eq!(burst, 3, "every other frame, not a catch-up burst");
+    }
+
+    #[test]
+    fn scaled_pattern_frames_keep_a_readable_frame_number() {
+        use crate::pattern::{self, Pattern};
+        use crate::quality::{self, Plane};
+        let n = 1234;
+        let mut source = FrameBuffer::I420(Pattern::new(3840, 2160).render_i420(n));
+        let id = pattern::frame_id(n, (3840, 2160));
+        for (w, h) in [(1920, 1080), (2656, 1728), (1504, 980), (1280, 720)] {
+            let mut scaled = source.scaled(w, h);
+            restamp_frame_id(&source, &mut scaled);
+            let FrameBuffer::I420(b) = &scaled else {
+                unreachable!()
+            };
+            let (y, stride) = (b.data().0, b.strides().0 as usize);
+            let (w, h) = (w as usize, h as usize);
+            let read = marker::read_luma_at(y, stride, w, h, marker::FRAME_SLOT_X);
+            assert_eq!(read, Some(id), "{w}x{h}");
+            // What the viewer compares it with scores as the same picture.
+            let expected = pattern::expected(id, (w as u32, h as u32)).expect("a downscale");
+            let scores = quality::compare(
+                Plane {
+                    data: expected.data().0,
+                    stride: expected.strides().0 as usize,
+                },
+                Plane { data: y, stride },
+                w,
+                h,
+                marker::MARKED_AREA,
+            )
+            .unwrap();
+            assert!(scores.ssim > 0.999, "{w}x{h}: {scores:?}");
+        }
+    }
+
+    #[test]
+    fn only_viewports_are_decoded_on_the_control_topic() {
+        let viewport = protocol::encode(&protocol::Message::Viewport {
+            width: 1920,
+            height: 1080,
+        });
+        assert!(might_be_viewport(&viewport));
+        let input = protocol::encode(&protocol::Message::Input {
+            seq: 1,
+            sent_at_us: 2,
+            after: 0,
+            event: protocol::InputEvent::Move { x: 0.5, y: 0.5 },
+        });
+        assert!(!might_be_viewport(&input));
+        assert!(!might_be_viewport(&protocol::encode(
+            &protocol::Message::Heartbeat { sent_at_us: 1 }
+        )));
+    }
+
+    #[test]
+    fn frames_without_a_frame_number_are_left_alone() {
+        // A real screen: nothing readable in the slot, so nothing is stamped.
+        let mut grey = I420Buffer::new(1920, 1080);
+        grey.data_mut().0.fill(128);
+        let source = FrameBuffer::I420(grey);
+        let mut scaled = FrameBuffer::I420(I420Buffer::new(1280, 720));
+        if let FrameBuffer::I420(b) = &mut scaled {
+            b.data_mut().0.fill(128);
+        }
+        restamp_frame_id(&source, &mut scaled);
+        let FrameBuffer::I420(b) = &scaled else {
+            unreachable!()
+        };
+        assert!(b.data().0.iter().all(|&v| v == 128));
     }
 
     #[test]

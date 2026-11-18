@@ -11,11 +11,12 @@
 #   no viewport → the ceiling, and nothing else, all along
 #   a viewport change mid-call shows within MAX_CHANGE_S
 #   two viewers → the larger one's size; once it leaves, the smaller one's
-#   text quality (SSIM against the pattern) at the fitted size
+#   text quality (SSIM against the pattern) of frames received at the fitted size
 #
 # Needs `livekit-server --dev` running, jq, and a release build:
 #   cargo build --release -p twincursor-media-spike
-# Usage: bench/viewport-e2e.sh   (BIN=path/to/tc-spike to use another build, OUT=dir for logs)
+# Usage: bench/viewport-e2e.sh   (BIN=path/to/tc-spike to use another build, OUT=dir for logs,
+#        CASES="quality two" to run some of: fhd qhd above none change two quality)
 # Exits non-zero if any check fails.
 set -euo pipefail
 
@@ -33,6 +34,11 @@ MAX_JOIN_S=${MAX_JOIN_S:-6}
 # Text quality at the fitted size: the floors the matrix's 1080p rows clear with room to spare.
 MIN_SSIM_P50=${MIN_SSIM_P50:-0.98}
 MIN_SSIM_P5=${MIN_SSIM_P5:-0.95}
+# Frames scored at the fitted size. The viewer scores what it can keep up with, a few a second
+# on a loaded Mac.
+MIN_SCORED=${MIN_SCORED:-10}
+CASES=${CASES:-fhd qhd above none change two quality}
+wants() { [[ " $CASES " == *" $1 "* ]]; }
 mkdir -p "$OUT"
 command -v jq >/dev/null || { echo "needs jq"; exit 1; }
 
@@ -88,6 +94,7 @@ sized_by() { jq -r '.sharer_net_last.sized_by // "?"' "$1"; }
 # simple CASE VIEWPORT WANTED [what decided it]
 simple() {
   local case=$1 viewport=$2 wanted=$3 by=${4:-viewer}
+  wants "$case" || return 0
   echo "=== $case: viewport $viewport"
   start_sharer "$case" || return 0
   view "$case" v --viewport "$viewport" || fail "$case: the viewer failed"
@@ -114,7 +121,7 @@ simple qhd 2560x1440 2560x1440
 simple above 7680x4320 3840x2160 setting
 
 echo "=== none: no viewport (as before viewports existed)"
-if start_sharer none; then
+if wants none && start_sharer none; then
   view none v || fail "none: the viewer failed"
   stop_sharer
   f=$(result none-v)
@@ -128,7 +135,7 @@ if start_sharer none; then
 fi
 
 echo "=== change: 1920x1080, then 2560x1440 at 8 s, then 1280x720 at 14 s"
-if start_sharer change; then
+if wants change && start_sharer change; then
   DURATION=20 view change v --viewport 1920x1080 --viewport-at 8:2560x1440 \
     --viewport-at 14:1280x720 || fail "change: the viewer failed"
   stop_sharer
@@ -152,7 +159,7 @@ if start_sharer change; then
 fi
 
 echo "=== two: viewers at 1920x1080 and 2560x1440; the larger leaves first"
-if start_sharer two; then
+if wants two && start_sharer two; then
   DURATION=24 view two small --viewport 1920x1080 &
   small=$!
   sleep 1
@@ -172,17 +179,22 @@ if start_sharer two; then
 fi
 
 echo "=== quality: text at the fitted size (1920x1080 from the 4K pattern)"
-if start_sharer quality; then
+if wants quality && start_sharer quality; then
   DURATION=20 view quality v --viewport 1920x1080 --measure-quality || fail "quality: the viewer failed"
   stop_sharer
   f=$(result quality-v)
   if [[ -n $f ]]; then
     expect "quality: received at the end" "$(last_size "$f")" "1920x1080"
-    read -r p50 p5 n < <(jq -r '"\(.report.ssim.p50 // 0) \(.report.ssim.p5 // 0) \(.report.ssim.count // 0)"' "$f")
-    if awk -v a="$p50" -v b="$p5" -v x="$MIN_SSIM_P50" -v y="$MIN_SSIM_P5" 'BEGIN { exit !(a >= x && b >= y) }' && ((n > 0)); then
-      pass "quality: SSIM p50 $p50, p5 $p5 over $n frames"
+    # Only frames received at 1920x1080 count: the first ones may arrive at 4K, unscaled,
+    # before the viewport takes effect.
+    read -r p50 p5 n < <(jq -r '[.report.ssim_by_size[]? | select(.size == [1920, 1080]) | .ssim]
+      | first // {} | "\(.p50 // 0) \(.p5 // 0) \(.count // 0)"' "$f")
+    all=$(jq -r '[.report.ssim_by_size[]? | "\(.size[0])x\(.size[1]): \(.ssim.count)"] | join(", ")' "$f")
+    if ((n >= MIN_SCORED)) &&
+      awk -v a="$p50" -v b="$p5" -v x="$MIN_SSIM_P50" -v y="$MIN_SSIM_P5" 'BEGIN { exit !(a >= x && b >= y) }'; then
+      pass "quality: SSIM at 1920x1080 p50 $p50, p5 $p5 over $n frames (scored: $all)"
     else
-      fail "quality: SSIM p50 $p50, p5 $p5 over $n frames (at least $MIN_SSIM_P50 and $MIN_SSIM_P5)"
+      fail "quality: SSIM at 1920x1080 p50 $p50, p5 $p5 over $n frames (at least $MIN_SCORED frames, $MIN_SSIM_P50 and $MIN_SSIM_P5; scored: ${all:-none})"
     fi
   else
     fail "quality: no results"
