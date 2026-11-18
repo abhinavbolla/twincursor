@@ -27,11 +27,12 @@ pub const VIEWPORT_SETTLE: Duration = Duration::from_millis(300);
 /// The viewport is sent again this often. Nothing confirms it arrived; a repeat is a few dozen
 /// bytes.
 pub const VIEWPORT_REPEAT: Duration = Duration::from_secs(2);
-/// Data a viewer sends in its first seconds in the room is lost until its data channel is open
-/// (2 to 4 s on a local server), so the viewport sent the moment the sharer is found never
-/// arrives. For the first five seconds it's repeated this often instead.
-const VIEWPORT_EARLY_REPEAT: Duration = Duration::from_millis(500);
-const VIEWPORT_EARLY_REPEATS: u8 = 10;
+/// Until the sharer acknowledges the hello, it's offered again this often...
+const HELLO_RETRY: Duration = Duration::from_millis(250);
+/// ...for this long, and then every [`HELLO_SLOW_RETRY`]: a sharer that predates
+/// `Message::HelloAck` never answers.
+const HELLO_FAST_FOR: Duration = Duration::from_secs(15);
+const HELLO_SLOW_RETRY: Duration = Duration::from_secs(2);
 
 /// What the window or a script asks of the guest session.
 #[derive(Debug, Clone)]
@@ -53,8 +54,6 @@ struct ViewportReport {
     latest: Option<((u32, u32), Instant)>,
     /// The last one sent to the current sharer, and when.
     sent: Option<((u32, u32), Instant)>,
-    /// Repeats still to come at [`VIEWPORT_EARLY_REPEAT`] rather than [`VIEWPORT_REPEAT`].
-    early: u8,
 }
 
 impl ViewportReport {
@@ -71,29 +70,20 @@ impl ViewportReport {
     fn due(&mut self, now: Instant) -> Option<Message> {
         let (viewport, since) = self.latest?;
         let repeat = match self.sent {
-            Some((sent, at)) if sent == viewport => {
-                let gap = if self.early > 0 {
-                    VIEWPORT_EARLY_REPEAT
-                } else {
-                    VIEWPORT_REPEAT
-                };
-                now.duration_since(at) >= gap
-            }
+            Some((sent, at)) if sent == viewport => now.duration_since(at) >= VIEWPORT_REPEAT,
             _ => now.duration_since(since) >= VIEWPORT_SETTLE,
         };
         repeat.then(|| self.send(viewport, now))
     }
 
-    /// A sharer was just found: tell it the newest viewport without waiting.
+    /// The newest viewport without waiting: for a sharer just found, with each offer of the
+    /// hello, and once the sharer is known to hear us.
     fn fresh(&mut self, now: Instant) -> Option<Message> {
         let (viewport, _) = self.latest?;
-        let message = self.send(viewport, now);
-        self.early = VIEWPORT_EARLY_REPEATS;
-        Some(message)
+        Some(self.send(viewport, now))
     }
 
     fn send(&mut self, viewport: (u32, u32), now: Instant) -> Message {
-        self.early = self.early.saturating_sub(1);
         self.sent = Some((viewport, now));
         viewport_message(viewport)
     }
@@ -106,6 +96,59 @@ impl ViewportReport {
 
 fn viewport_message((width, height): (u32, u32)) -> Message {
     Message::Viewport { width, height }
+}
+
+/// Whether the current sharer has this viewer's hello, and when to offer it again.
+///
+/// A sharer drops what a viewer sends before the sharer's room has heard that viewer joined:
+/// LiveKit hands such packets over without a sender, and the control link only takes messages
+/// it can attribute. On a local server that window is about 2 to 3 s after a viewer joins, and
+/// the viewer can't see it from its side. So the hello is offered until the sharer answers with
+/// `Message::HelloAck`. The answer is about the hello only; it says nothing about control.
+#[derive(Debug, Default)]
+struct HelloOffer {
+    /// While unanswered: when offering to this sharer started, and when it was last sent.
+    pending: Option<(Instant, Instant)>,
+}
+
+impl HelloOffer {
+    /// Starts offering: the caller sends the hello now. For a sharer just found, or after the
+    /// connection came back, when the sharer may have forgotten us.
+    fn start(&mut self, now: Instant) {
+        self.pending = Some((now, now));
+    }
+
+    /// Whether to send the hello again now.
+    fn due(&mut self, now: Instant) -> bool {
+        let Some((since, last)) = self.pending else {
+            return false;
+        };
+        let gap = if now.duration_since(since) < HELLO_FAST_FOR {
+            HELLO_RETRY
+        } else {
+            HELLO_SLOW_RETRY
+        };
+        let due = now.duration_since(last) >= gap;
+        if due {
+            self.pending = Some((since, now));
+        }
+        due
+    }
+
+    /// The sharer answered. Returns whether that's news: the first answer since offering began.
+    fn acknowledged(&mut self) -> bool {
+        self.pending.take().is_some()
+    }
+
+    /// Whether the sharer may not have the hello yet.
+    fn unanswered(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// The sharer left: nothing to offer until the next one is found.
+    fn lost(&mut self) {
+        self.pending = None;
+    }
 }
 
 enum In {
@@ -279,6 +322,7 @@ fn run(
     let mut session = GuestSession::new(Instant::now());
     let mut sharer: Option<String> = None;
     let mut viewport = ViewportReport::default();
+    let mut offer = HelloOffer::default();
     // A release the sharer hasn't confirmed yet, and when we must leave anyway.
     let mut awaiting_release = false;
     let mut leave_by: Option<Instant> = None;
@@ -309,6 +353,7 @@ fn run(
                 tracing::info!(%identity, "sharer found");
                 sharer = Some(identity);
                 out.push(hello(&name));
+                offer.start(now);
                 out.extend(viewport.fresh(now));
                 // A request made before the sharer was found went nowhere: make it now.
                 if session.state() == GuestState::Requested {
@@ -317,6 +362,13 @@ fn run(
             }
             Ok(In::Link(LinkEvent::Data { from, payload })) if Some(&from) == sharer.as_ref() => {
                 match protocol::decode(&payload) {
+                    Ok(Message::HelloAck) => {
+                        if offer.acknowledged() {
+                            tracing::debug!("the sharer has our hello");
+                            // What went with earlier offers may have been dropped too.
+                            out.extend(viewport.fresh(now));
+                        }
+                    }
                     Ok(message) => {
                         if matches!(message, Message::Released | Message::Revoke) {
                             awaiting_release = false;
@@ -332,7 +384,15 @@ fn run(
                 session.on_message(&Message::Revoke);
                 sharer = None;
                 viewport.lost();
+                offer.lost();
                 awaiting_release = false;
+            }
+            // After a full reconnect we are a new participant to the sharer, which forgot the
+            // hello when the old one left.
+            Ok(In::Link(LinkEvent::Reconnected)) if sharer.is_some() => {
+                out.push(hello(&name));
+                offer.start(now);
+                out.extend(viewport.fresh(now));
             }
             Ok(In::Link(_)) => {}
             Ok(In::Ui(ui)) => match ui {
@@ -362,14 +422,28 @@ fn run(
             Err(RecvTimeoutError::Timeout) => {}
         }
         if sharer.is_some() {
+            if offer.due(now) {
+                out.push(hello(&name));
+                out.extend(viewport.fresh(now));
+            }
             out.extend(viewport.due(now));
         }
         for message in session.tick(now) {
-            // A repeated request goes with a repeated hello, in case that was lost too.
+            // A repeated request goes with a repeated hello, in case the sharer lost track of
+            // us some way the offer doesn't see.
             if message == Message::RequestControl {
                 out.push(hello(&name));
             }
             out.push(message);
+        }
+        // A request names who is asking from the hello: while the sharer may not have it, it
+        // goes first.
+        if offer.unanswered() {
+            if let Some(i) = out.iter().position(|m| *m == Message::RequestControl) {
+                if !out[..i].iter().any(|m| matches!(m, Message::Hello { .. })) {
+                    out.insert(i, hello(&name));
+                }
+            }
         }
         for message in out {
             if message == Message::ReleaseControl && sharer.is_some() {
@@ -568,16 +642,185 @@ mod tests {
         assert_eq!(r.due(at(3000)), None);
         assert_eq!(r.due(at(3280)), Some(viewport_message((1490, 800))));
         assert_eq!(r.due(at(3290)), None);
-        // A new sharer hears it at once, then a few times soon after, then every 2 s.
+        // A new sharer hears it at once, then every 2 s. (Sooner repeats ride with the hello
+        // until the sharer answers it: see `HelloOffer`.)
         r.lost();
         assert_eq!(r.fresh(at(4000)), Some(viewport_message((1490, 800))));
         let sent: Vec<u64> = (4001..12_000)
             .step_by(10)
             .filter(|&ms| r.due(at(ms)).is_some())
             .collect();
-        let early: Vec<u64> = (1..=10).map(|i| 4001 + i * 500).collect();
-        assert_eq!(sent[..10], early[..]);
-        assert_eq!(sent[10..], [11_001]);
+        assert_eq!(sent, [6001, 8001, 10_001]);
+        // Sending it with an offer of the hello restarts the wait.
+        assert!(r.fresh(at(10_500)).is_some());
+        assert_eq!(r.due(at(12_001)), None);
+        assert!(r.due(at(12_500)).is_some());
+    }
+
+    #[test]
+    fn the_hello_is_offered_until_the_sharer_answers() {
+        let t0 = Instant::now();
+        let at = |ms| t0 + Duration::from_millis(ms);
+        let offers = |o: &mut HelloOffer, from: u64, to: u64| -> Vec<u64> {
+            (from..to).step_by(10).filter(|&ms| o.due(at(ms))).collect()
+        };
+        let mut o = HelloOffer::default();
+        assert!(!o.due(t0) && !o.unanswered(), "no sharer, nothing to offer");
+        // Found a sharer: offered every 250 ms...
+        o.start(t0);
+        assert!(o.unanswered());
+        assert_eq!(offers(&mut o, 10, 1000), [250, 500, 750]);
+        // ...until it answers. A second answer (to an offer already on its way) is no news.
+        assert!(o.acknowledged());
+        assert!(!o.acknowledged());
+        assert!(!o.unanswered());
+        assert_eq!(offers(&mut o, 1000, 30_000), [] as [u64; 0]);
+        // The connection came back: offered again, from the start.
+        o.start(at(30_000));
+        assert_eq!(offers(&mut o, 30_010, 30_600), [30_250, 30_500]);
+        // The sharer left; the next one gets its own offers.
+        o.lost();
+        assert!(!o.unanswered());
+        assert_eq!(offers(&mut o, 30_600, 40_000), [] as [u64; 0]);
+        o.start(at(40_000));
+        assert_eq!(offers(&mut o, 40_010, 40_300), [40_250]);
+    }
+
+    #[test]
+    fn a_sharer_that_never_answers_hears_the_hello_less_often() {
+        let t0 = Instant::now();
+        let at = |ms| t0 + Duration::from_millis(ms);
+        let mut o = HelloOffer::default();
+        o.start(t0);
+        let sent: Vec<u64> = (10..25_000)
+            .step_by(10)
+            .filter(|&ms| o.due(at(ms)))
+            .collect();
+        // 59 offers in the first 15 s (every 250 ms), then every 2 s.
+        assert_eq!(sent.iter().filter(|&&ms| ms < 15_000).count(), 59);
+        assert_eq!(sent[59..], [16_750, 18_750, 20_750, 22_750, 24_750]);
+        assert!(o.unanswered());
+    }
+
+    /// The guest thread, fed by hand, and what it sends, as (to, message).
+    struct Harness {
+        tx: Sender<In>,
+        link: ControlLink,
+        thread: Option<JoinHandle<()>>,
+    }
+
+    impl Harness {
+        fn start() -> Self {
+            let (tx, rx) = mpsc::channel();
+            let (link, sender) = ControlLink::new(protocol::TOPIC, |_| {});
+            let thread = std::thread::spawn(move || {
+                run("Sam".into(), &rx, &sender, &Status::default(), None, None)
+            });
+            Self {
+                tx,
+                link,
+                thread: Some(thread),
+            }
+        }
+
+        fn link(&self, event: LinkEvent) {
+            self.tx.send(In::Link(event)).unwrap();
+        }
+
+        fn from(&self, who: &str, message: &Message) {
+            self.link(LinkEvent::Data {
+                from: who.into(),
+                payload: protocol::encode(message),
+            });
+        }
+
+        /// Everything sent in the next `ms`.
+        fn sent(&mut self, ms: u64) -> Vec<(String, Message)> {
+            std::thread::sleep(Duration::from_millis(ms));
+            let mut out = Vec::new();
+            while let Ok(o) = self.link.outgoing.try_recv() {
+                out.push((o.to.unwrap(), protocol::decode(&o.payload).unwrap()));
+            }
+            out
+        }
+    }
+
+    impl Drop for Harness {
+        fn drop(&mut self) {
+            let (tx, _) = mpsc::channel();
+            drop(std::mem::replace(&mut self.tx, tx));
+            let _ = self.thread.take().unwrap().join();
+        }
+    }
+
+    fn hellos(sent: &[(String, Message)], to: &str) -> usize {
+        sent.iter()
+            .filter(|(who, m)| who == to && matches!(m, Message::Hello { .. }))
+            .count()
+    }
+
+    #[test]
+    fn the_guest_offers_its_hello_until_its_sharer_answers() {
+        let mut h = Harness::start();
+        h.tx.send(In::Ui(Ui::Viewport((1920, 1080)))).unwrap();
+        h.link(LinkEvent::Sharing("sharer-a".into()));
+        let sent = h.sent(700);
+        assert!(hellos(&sent, "sharer-a") >= 2, "{sent:?}");
+        assert!(sent.iter().all(|(who, _)| who == "sharer-a"));
+        // The viewport rides with each offer.
+        let viewports = sent
+            .iter()
+            .filter(|(_, m)| *m == viewport_message((1920, 1080)))
+            .count();
+        assert_eq!(viewports, hellos(&sent, "sharer-a"), "{sent:?}");
+
+        // An answer from anyone but the sharer counts for nothing.
+        h.from("guest-b", &Message::HelloAck);
+        assert!(hellos(&h.sent(600), "sharer-a") >= 1);
+
+        // The sharer's answer stops the offers, and the viewport goes once more.
+        h.from("sharer-a", &Message::HelloAck);
+        let sent = h.sent(200);
+        assert!(sent.contains(&("sharer-a".into(), viewport_message((1920, 1080)))));
+        assert_eq!(hellos(&h.sent(800), "sharer-a"), 0);
+        // A second answer changes nothing.
+        h.from("sharer-a", &Message::HelloAck);
+        assert_eq!(h.sent(300), []);
+
+        // Once the sharer has the hello, a request goes alone.
+        h.tx.send(In::Ui(Ui::Request)).unwrap();
+        let sent = h.sent(100);
+        assert_eq!(sent, [("sharer-a".into(), Message::RequestControl)]);
+        h.tx.send(In::Ui(Ui::Release)).unwrap();
+        h.sent(100);
+
+        // After a full reconnect the sharer may have forgotten us: offered again.
+        h.link(LinkEvent::Reconnected);
+        assert!(hellos(&h.sent(600), "sharer-a") >= 2);
+        h.from("sharer-a", &Message::HelloAck);
+        h.sent(200);
+
+        // The sharer leaves and another comes: the new one is offered the hello, until it answers.
+        h.link(LinkEvent::Left("sharer-a".into()));
+        assert_eq!(h.sent(400), []);
+        h.link(LinkEvent::Sharing("sharer-c".into()));
+        let sent = h.sent(600);
+        assert!(hellos(&sent, "sharer-c") >= 2, "{sent:?}");
+        assert!(sent.iter().all(|(who, _)| who == "sharer-c"));
+        // A request while it may not have the hello goes after one, so the sharer is asked
+        // by name.
+        h.tx.send(In::Ui(Ui::Request)).unwrap();
+        let sent = h.sent(100);
+        let request = sent
+            .iter()
+            .position(|(_, m)| *m == Message::RequestControl)
+            .expect("request sent");
+        assert!(sent[..request]
+            .iter()
+            .any(|(_, m)| matches!(m, Message::Hello { .. })));
+        h.from("sharer-c", &Message::HelloAck);
+        h.sent(200);
+        assert_eq!(hellos(&h.sent(600), "sharer-c"), 0);
     }
 
     #[test]
