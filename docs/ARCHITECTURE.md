@@ -294,14 +294,17 @@ Latency alone doesn't tell us whether text is readable, so we measure picture qu
   - the left pane alternates 10 s of gentle scrolling with 10 s of fast scrolling (one line
     per frame, the hardest case for screen codecs);
   - a line being typed and a blinking cursor.
-  The frame number travels in a second marker slot next to the latency marker.
+  The frame number travels in a second marker slot next to the latency marker. When the sharer
+  scales a frame (to a viewer's viewport or an auto-throttle level), it stamps the number into
+  the scaled frame again at the slot's normal size, as it does the latency marker, so scaled
+  frames are scored too; real screen captures never get the slot.
 - `tc-spike view --measure-quality` regenerates the expected frame and compares the decoded
   luma with it on a background thread (`crates/media/src/quality.rs`, frames are skipped
   while it's busy):
   - **SSIM** (8x8 blocks; drops with blur and blocking, which is what makes text unreadable);
   - **PSNR**.
   Both skip the marker area. Results report p50, p5 and min, plus SSIM during fast scrolling
-  only.
+  only, and SSIM per frame size received (`ssim_by_size`).
 - `--headless` runs the viewer without a window. Latency is then measured at decode. Use it
   for benchmarks and the network lab.
 - For a real screen, `--snapshot-every N` on both ends saves the frame carrying every Nth tick
