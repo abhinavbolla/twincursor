@@ -85,7 +85,8 @@ jobs:
       - name: Build
         run: cargo build --locked --release -p twincursor-media-spike
 
-  # The viewer runs on Windows too, so make sure it keeps building there.
+  # The viewer runs on Windows too, so make sure it keeps building there: tc-spike for
+  # development, and tc-engine for the testers' viewer package (packaging/windows).
   windows-viewer:
     runs-on: windows-latest
     timeout-minutes: 45
@@ -104,10 +105,13 @@ jobs:
           triple: win-x64-release
 
       - name: Build
-        run: cargo build --locked --release -p twincursor-media-spike
+        run: cargo build --locked --release -p twincursor-media-spike -p twincursor-engine-cli
 
       - name: Smoke test
-        run: target/release/tc-spike.exe view --help
+        run: |
+          target/release/tc-spike.exe view --help
+          target/release/tc-engine.exe view --help
+          target/release/tc-engine.exe config
 
   # Enforces the license rule in CONTRIBUTING.md, and that crates only come from crates.io.
   dependencies:

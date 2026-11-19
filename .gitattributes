@@ -1,0 +1,4 @@
+# Windows tools read these: batch files need CRLF to find their labels reliably.
+packaging/windows/*.cmd text eol=crlf
+packaging/windows/*.txt text eol=crlf
+packaging/windows/*.example text eol=crlf
