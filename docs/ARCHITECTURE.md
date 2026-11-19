@@ -97,7 +97,8 @@ only text and controls; the shared screen is the engine's own native window (ADR
   sharer's engine always gets `--allow-control` (requests reach the window; nothing is granted
   until the person clicks Allow for that request) and `--exclude-app-pid` with the app's own
   process id, so the window is never in the picture. A control request brings the window to the
-  front. The window's commands are typed (`ipc::Command`), so only commands the protocol knows
+  front, and Allow stays off for its first second, so a click or key press already on its way
+  to another app can't grant control. The window's commands are typed (`ipc::Command`), so only commands the protocol knows
   reach the engine.
 - **Quality.** 1080p and 1440p share with H.264; 4K with HEVC. When a guest announces decoders
   without HEVC, the app restarts its engine with H.264 (same room, name and resolution) and stays

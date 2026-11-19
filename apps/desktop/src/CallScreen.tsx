@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { numbersReport, statsLine, unverified, type CallState } from "./call";
 import { copyText } from "./clipboard";
@@ -113,9 +113,24 @@ export function CallScreen({ call, send, leave, answered, dismiss }: Props) {
   );
 }
 
+/**
+ * How long Allow stays off after a request appears. The window comes to the front for a request,
+ * so a click or key press already on its way to another app must not land on Allow.
+ */
+export const ALLOW_AFTER_MS = 1000;
+
 function SharerControl({ call, send, answered }: Pick<Props, "call" | "send" | "answered">) {
   const asked = call.asked;
   const by = call.control.by;
+  const request = asked?.request ?? null;
+  const [armed, setArmed] = useState<number | null>(null);
+  useEffect(() => {
+    if (request === null) {
+      return;
+    }
+    const timer = setTimeout(() => setArmed(request), ALLOW_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [request]);
   return (
     <section className="card">
       <h3>Control of your computer</h3>
@@ -131,6 +146,7 @@ function SharerControl({ call, send, answered }: Pick<Props, "call" | "send" | "
           <div className="row">
             <button
               type="button"
+              disabled={armed !== asked.request}
               onClick={() => {
                 send(allowControl(asked.request));
                 answered();
