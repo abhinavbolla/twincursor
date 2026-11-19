@@ -125,6 +125,12 @@ Fill these in as code lands; keep them accurate.
   twincursor-engine-cli`, then `target/release/twincursor-desktop` (finds `tc-engine` next to
   it). Bundle: `apps/desktop/scripts/bundle.sh` → `target/release/bundle/macos/TwinCursor.app`
   (ad-hoc signed, `tc-engine` inside)
+- Test builds (`docs/RELEASING.md`, "Test builds"): `apps/desktop/scripts/package.sh
+  [testbuild.env]` → `target/release/packages/TwinCursor-<version>-macos-arm64.dmg` (bakes the
+  env file's server in, mounts the image and prints what the bundled `tc-engine config` sees;
+  rerun without the file afterwards so `target` holds no secret). Windows viewer zip: built by
+  `release.yml`, then `packaging/windows/assemble.sh VIEWER.zip testbuild.env` adds `server.txt`.
+  Testers read `docs/testing-guide.md`
 - Desktop dev in a browser, no engine: `npm run dev` in `apps/desktop`, then
   `http://localhost:5173/?mock=share` or `?mock=join` (`&quality=4k`, `&voice=off`); the mock
   engine's panel in the corner triggers control requests, the HEVC switch, errors and endings.

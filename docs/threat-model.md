@@ -93,7 +93,9 @@ hotkey, the on-screen label, and real input on macOS.*
   server's URL, API key and secret (`crates/engine-cli/build.rs`), so testers need no setup.
   Anyone who has that build can read the secret out of the binary and mint tokens for any room on
   that server. Give such builds only to people you'd give the key to, and rotate the key when a
-  test round ends. `tc-engine config` never prints the secret.
+  test round ends. `tc-engine config` never prints the secret. A Windows viewer zip with a
+  `server.txt` (`packaging/windows/assemble.sh`) carries the secret in plain text, with the same
+  rules.
 - **Server settings in the desktop app.** Overrides typed into Settings are saved in the app's
   config folder, readable only by your user, and passed to the engine in its environment rather
   than its flags (other users can read a process's flags). The window never gets the saved
