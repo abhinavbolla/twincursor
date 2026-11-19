@@ -49,10 +49,16 @@ hand over control without a terminal.
   the shell does
 - [ ] Hands-on: the macOS permission prompts name TwinCursor, and the shell's windows stay out of
   the shared screen
-- [ ] The engine as a library, and an engine binary the shell drives with messages
+- [x] The engine as a library, and an engine binary the shell drives with messages
+- [x] Share one app window instead of the whole screen
+- [x] Send the size the viewer shows, so a 4K sharer doesn't spend 4K on a smaller window
+  ([numbers](performance.md#a-4k-sharer-and-a-smaller-viewer))
+- [x] The sharer learns each viewer's name and decoders as it joins, also mid-call
 - [ ] Lobby and call panel, with the control request as a window
 - [ ] Permissions onboarding and settings
 - [ ] A bundled app and disk image
+- [ ] A Windows viewer package, and a one-page guide for testers
+- [ ] Hands-on: a call between two laptops through LiveKit Cloud, at 4K
 
 ## Next
 
