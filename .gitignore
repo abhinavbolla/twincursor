@@ -16,6 +16,8 @@ apps/desktop/src-tauri/binaries/
 .env.*
 !.env.example
 !.env.testbuild.example
+# A Windows viewer's server settings (packaging/windows/server.txt.example)
+packaging/windows/server.txt
 
 # Claude local overrides
 .claude/settings.local.json

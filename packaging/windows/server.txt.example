@@ -1,0 +1,8 @@
+# The server "Join TwinCursor" connects to. Save a copy as server.txt in the same folder and
+# fill in the three values from whoever runs the server: one NAME=value per line, no spaces
+# around "=", no quotes. Lines starting with # are ignored.
+#
+# The secret lets anyone mint access to any room on that server: don't pass this file on.
+TWINCURSOR_SERVER_URL=wss://your-project.livekit.cloud
+TWINCURSOR_API_KEY=APIxxxxxxxxxxxx
+TWINCURSOR_API_SECRET=replace-with-the-api-secret
