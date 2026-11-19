@@ -35,6 +35,8 @@ setlocal EnableDelayedExpansion
 set "NAME="
 set /p "NAME=Your name (what the other person sees): "
 if not defined NAME goto ask_name
+set "CHECK=!NAME: =!"
+if not defined CHECK goto ask_name
 rem Quotes and backslashes could break out of the quoted argument below.
 set "CHECK=!NAME:"=!"
 if defined CHECK set "CHECK=!CHECK:\=!"
