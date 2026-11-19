@@ -8,13 +8,14 @@ dist/
 
 # Tauri
 apps/desktop/src-tauri/gen/
-# The helper, copied in by apps/desktop/scripts/bundle.sh
+# The engine, copied in by apps/desktop/scripts/bundle.sh
 apps/desktop/src-tauri/binaries/
 
 # Env and secrets
 .env
 .env.*
 !.env.example
+!.env.testbuild.example
 
 # Claude local overrides
 .claude/settings.local.json

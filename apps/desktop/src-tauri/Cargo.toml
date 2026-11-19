@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 # Tauri 2.12 needs Rust 1.90; the engine crates keep the workspace's older minimum.
 rust-version = "1.90"
-description = "The TwinCursor desktop app: the window you open, which starts the helper"
+description = "The TwinCursor desktop app: the window you open, which starts the engine"
 publish = false
 
 [[bin]]
@@ -17,6 +17,7 @@ path = "src/main.rs"
 tauri-build = { version = "2.7.4", features = [] }
 
 [dependencies]
+twincursor-ipc = { path = "../../../crates/ipc" }
 tauri = { version = "2.12.5", features = [] }
 serde.workspace = true
 serde_json.workspace = true
