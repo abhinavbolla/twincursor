@@ -92,4 +92,5 @@ leave it open.
   HEVC, so a 4K share switches to H.264 when one joins; the picture pauses for a moment.
 - **The build carries the server's key.** Anyone who has the app or the zip can read it and start
   calls on that server, so please don't pass them on.
-- **4K takes a moment.** The first few seconds of a 4K share may run at 30 fps before reaching 60.
+- **4K takes a moment.** The first 20 seconds or so of a 4K share may run at 30 fps before
+  reaching 60.

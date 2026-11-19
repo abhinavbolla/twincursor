@@ -6,7 +6,8 @@
 #
 # The env file sets the server's URL, API key and API secret, either with the runtime names
 # (TWINCURSOR_SERVER_URL, TWINCURSOR_API_KEY, TWINCURSOR_API_SECRET) or with the build names
-# package.sh uses (TWINCURSOR_BUILD_SERVER_URL, ...). The values are never printed. The result
+# package.sh uses (TWINCURSOR_BUILD_SERVER_URL, ...), or LiveKit's own (LIVEKIT_URL,
+# LIVEKIT_API_KEY, LIVEKIT_API_SECRET). The values are never printed. The result
 # is written next to the input as <name>-tester.zip; anyone who has it can read the secret, so
 # give it only to people you'd give the server's key to.
 set -euo pipefail
@@ -40,7 +41,7 @@ esac
 
 names=(SERVER_URL API_KEY API_SECRET)
 for name in "${names[@]}"; do
-  unset "TWINCURSOR_$name" "TWINCURSOR_BUILD_$name"
+  unset "TWINCURSOR_$name" "TWINCURSOR_BUILD_$name" "LIVEKIT_${name#SERVER_}"
 done
 set -a
 # shellcheck disable=SC1090 # the file is the caller's choice
@@ -70,9 +71,10 @@ printf '# Written by assemble.sh. Keep it to yourself: the secret starts calls o
 for name in "${names[@]}"; do
   runtime="TWINCURSOR_$name"
   build="TWINCURSOR_BUILD_$name"
-  value="${!runtime:-${!build:-}}"
+  livekit="LIVEKIT_${name#SERVER_}"
+  value="${!runtime:-${!build:-${!livekit:-}}}"
   if [ -z "$value" ]; then
-    echo "assemble.sh: $env_file sets neither $runtime nor $build" >&2
+    echo "assemble.sh: $env_file sets none of $runtime, $build and $livekit" >&2
     exit 2
   fi
   case "$value" in

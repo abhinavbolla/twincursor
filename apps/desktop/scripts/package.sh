@@ -6,7 +6,8 @@
 #   apps/desktop/scripts/package.sh path/to/testbuild.env  # with that server built in
 #
 # The env file sets TWINCURSOR_BUILD_SERVER_URL, TWINCURSOR_BUILD_API_KEY and
-# TWINCURSOR_BUILD_API_SECRET (see .env.testbuild.example). Its values never reach the terminal,
+# TWINCURSOR_BUILD_API_SECRET (see .env.testbuild.example), or LiveKit's own names for them:
+# LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET. Its values never reach the terminal,
 # but anyone with the disk image can read the secret out of it: give it only to people you'd
 # give the server's key to (docs/threat-model.md).
 #
@@ -32,10 +33,11 @@ root="$(cd "$app_dir/../.." && pwd)"
 target="${CARGO_TARGET_DIR:-$root/target}"
 
 build_vars=(TWINCURSOR_BUILD_SERVER_URL TWINCURSOR_BUILD_API_KEY TWINCURSOR_BUILD_API_SECRET)
+livekit_vars=(LIVEKIT_URL LIVEKIT_API_KEY LIVEKIT_API_SECRET)
 runtime_vars=(TWINCURSOR_SERVER_URL TWINCURSOR_API_KEY TWINCURSOR_API_SECRET)
 
 # Start from nothing, so only the env file decides what is built in.
-unset "${build_vars[@]}"
+unset "${build_vars[@]}" "${livekit_vars[@]}"
 if [ "$#" -eq 1 ]; then
   env_file="$1"
   if [ ! -f "$env_file" ] || [ ! -r "$env_file" ]; then
@@ -46,9 +48,14 @@ if [ "$#" -eq 1 ]; then
   # shellcheck disable=SC1090 # the file is the caller's choice
   . "$env_file"
   set +a
-  for var in "${build_vars[@]}"; do
+  for i in 0 1 2; do
+    var="${build_vars[$i]}"
+    other="${livekit_vars[$i]}"
+    if [ -z "${!var:-}" ] && [ -n "${!other:-}" ]; then
+      export "$var=${!other}"
+    fi
     if [ -z "${!var:-}" ]; then
-      echo "package.sh: $env_file doesn't set $var" >&2
+      echo "package.sh: $env_file sets neither $var nor $other" >&2
       exit 2
     fi
   done
