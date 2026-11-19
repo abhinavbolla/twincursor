@@ -16,15 +16,26 @@ tc-engine view  --ipc --room ROOM --name "Sam" [--audio mic|off] [--mic DEVICE] 
 tc-engine permissions [--request]     # one JSON object: Screen Recording, Accessibility, Microphone
 tc-engine devices                     # {"mics": [...], "speakers": [...]}
 tc-engine windows                     # [{"id", "app", "pid", "title", "pixels"}, ...]
+tc-engine config                      # {"url", "api_key", "has_secret", "source"}
 ```
 
 `--window` and `--app` share one window or one app instead of the display, and are refused with
 `--allow-control`: control maps the guest's pointer onto the whole display.
 
-The server comes from `--url`, `--api-key` and `--api-secret`, or from `TWINCURSOR_SERVER_URL`,
-`TWINCURSOR_API_KEY` and `TWINCURSOR_API_SECRET`; without either, the local dev server. Prefer
-the environment for the secret: other users of the Mac can read a process's flags. The secret is
-only used to sign the access token and is never logged.
+Each of the server's URL, API key and API secret comes from the first of:
+
+1. the flag: `--url`, `--api-key`, `--api-secret`;
+2. the environment: `TWINCURSOR_SERVER_URL`, `TWINCURSOR_API_KEY`, `TWINCURSOR_API_SECRET`;
+3. what the build baked in: `TWINCURSOR_BUILD_SERVER_URL`, `TWINCURSOR_BUILD_API_KEY` and
+   `TWINCURSOR_BUILD_API_SECRET` in the environment of `cargo build` (`crates/engine-cli/build.rs`;
+   see `.env.testbuild.example`);
+4. the local dev server (`livekit-server --dev`).
+
+Prefer the environment for the secret: other users of the Mac can read a process's flags. The
+desktop app passes its saved overrides that way. The secret is only used to sign the access
+token and is never logged. `tc-engine config` prints the URL and key a call would use, whether a
+secret other than the dev server's is in effect (`has_secret`), and where the URL came from
+(`source`: `env`, `build` or `dev`), never the secret itself.
 
 **The engine exits when its stdin closes.** The app holds the engine's stdin open for as long as
 it runs. When the app quits or dies, the kernel closes the pipe; a sharer first takes control back
@@ -92,8 +103,10 @@ message it holds without a lookup. The **display name travels in the token's nam
 
 Guests **announce the codecs they decode** in the `hello` they already send the sharer on the
 control channel (`crates/protocol`, a `decoders` list that older peers ignore). The sharer
-shows them in `participants`, so a sharer using HEVC can see a guest that can't decode it.
-Falling back to H.264 for such a guest isn't built yet.
+shows them in `participants`, so a sharer using HEVC can see a guest that can't decode it. The
+desktop app then starts its engine again with `--codec h264` for the rest of the call (and does
+the same, once, if an engine sharing with HEVC fails before it sends any video). For tests,
+`tc-engine view --decoders h264,vp8` announces only the codecs listed.
 
 ## Checking it
 
@@ -101,3 +114,7 @@ Falling back to H.264 for such a guest isn't built yet.
 pattern and a headless guest, a request, the check that nothing is granted without an answer, an
 allow, typing (recorded, not injected), a revoke, a stale allow, both leaving, and the engine
 exiting when its stdin closes.
+
+`bench/app-e2e.sh` runs the real desktop app instead, in its test-only script mode, against a
+headless guest: a deny, an allow with recorded typing, a revoke and a leave, then the switch from
+HEVC to H.264 and the engine exiting when the app is killed.

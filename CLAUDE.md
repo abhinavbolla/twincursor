@@ -111,17 +111,28 @@ Fill these in as code lands; keep them accurate.
   alongside unless `AUDIO=off`; `SHARE_FLAGS="--voice-kbps 24 --no-red"` changes its encoding
 - Engine for the desktop app: `target/release/tc-engine share|view --ipc --room R --name N`
   (JSON lines on stdin and stdout, logs on stderr, exits when stdin closes; see `docs/ipc.md`),
-  `tc-engine permissions`, `tc-engine devices`, `tc-engine windows`. Build: `cargo build --release -p twincursor-engine-cli`
+  `tc-engine permissions`, `tc-engine devices`, `tc-engine windows`, `tc-engine config` (the
+  server it would use, never the secret). Build: `cargo build --release -p twincursor-engine-cli`.
+  Server: flag > `TWINCURSOR_SERVER_URL`/`_API_KEY`/`_API_SECRET` > baked in at build time from
+  `TWINCURSOR_BUILD_SERVER_URL`/`_API_KEY`/`_API_SECRET` (`.env.testbuild.example`) > local dev
 - IPC end to end: `bench/engine-e2e.sh` (a scripted app drives a sharer and a headless guest:
   request, allow, typing recorded not injected, revoke, leave, and the engine exiting when its
   stdin closes; pattern capture and `--audio off`, so no permissions or unlocked screen needed)
 - Releases: `docs/RELEASING.md`; a `v*` tag builds archives and a draft release
 - Desktop app (`apps/desktop`, Node 20.19+): `npm ci`, then `npm run build` (UI into `dist`,
-  which the app crate embeds: build it before `cargo clippy/test --workspace`), `npx tsc
-  --noEmit`, `npx vitest run`. Bundle: `apps/desktop/scripts/bundle.sh` →
-  `target/release/bundle/macos/TwinCursor.app` (ad-hoc signed, `tc-spike` inside). Unattended
-  checks that raise no prompt: `open -n TwinCursor.app --args --run-checks /path/out.json`.
-  `tc-spike permissions [--request] [--watch]` prints the helper's macOS permissions as JSON
+  which the app crate embeds: build it before `cargo clippy/test --workspace`), `npm run
+  typecheck`, `npm test`. Run it: `cargo build --release -p twincursor-desktop -p
+  twincursor-engine-cli`, then `target/release/twincursor-desktop` (finds `tc-engine` next to
+  it). Bundle: `apps/desktop/scripts/bundle.sh` → `target/release/bundle/macos/TwinCursor.app`
+  (ad-hoc signed, `tc-engine` inside)
+- Desktop dev in a browser, no engine: `npm run dev` in `apps/desktop`, then
+  `http://localhost:5173/?mock=share` or `?mock=join` (`&quality=4k`, `&voice=off`); the mock
+  engine's panel in the corner triggers control requests, the HEVC switch, errors and endings.
+  Development builds only; the bundled app has no mock
+- App end to end: `bench/app-e2e.sh` (the real app in its test-only `--script`/`--report` mode
+  shares the pattern to a headless guest: deny, allow, recorded typing, revoke, leave; then a 4K
+  HEVC share switching to H.264 for a guest without HEVC, and the engine dying with the app.
+  Needs `livekit-server --dev`; no permissions, sound or unlocked screen)
 - CI: `.github/workflows/ci.yml` runs fmt, clippy and tests on `macos-26` for every PR and
   push to `main`. Keep it green; run the same three commands locally before pushing.
 - Building needs **Xcode 26** (macOS 26 SDK): `screencapturekit`'s `apple-metal` Swift bridge
