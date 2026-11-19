@@ -3,11 +3,13 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  # Checks that the builds still work when this workflow changes. Nothing is published.
+  # Checks that the builds still work when this workflow or the packaging changes, and gives
+  # testers' builds a place to come from (the run's artifacts). Nothing is published.
   pull_request:
     paths:
       - .github/workflows/release.yml
       - .github/actions/**
+      - packaging/**
 
 env:
   CARGO_TERM_COLOR: always
@@ -22,10 +24,13 @@ jobs:
             webrtc: mac-arm64-release
             platform: macos-arm64
             binary: tc-spike
+            packages: -p twincursor-media-spike
           - runner: windows-latest
             webrtc: win-x64-release
             platform: windows-x64
             binary: tc-spike.exe
+            # The testers' viewer (packaging/windows) runs tc-engine.
+            packages: -p twincursor-media-spike -p twincursor-engine-cli
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     defaults:
@@ -41,7 +46,7 @@ jobs:
           triple: ${{ matrix.webrtc }}
 
       - name: Build
-        run: cargo build --locked --release -p twincursor-media-spike
+        run: cargo build --locked --release ${{ matrix.packages }}
 
       - name: Package
         run: |
@@ -54,6 +59,21 @@ jobs:
           else
             tar czf "$name.tar.gz" "$name"
           fi
+          rm -r "$name"
+
+      # Windows testers get a viewer: tc-engine and a script that asks for a name and a room
+      # code. No server settings go in here; whoever hands the zip to testers adds their own
+      # server.txt (packaging/windows/assemble.sh).
+      - name: Package the Windows viewer
+        if: runner.os == 'Windows'
+        run: |
+          name="TwinCursor-viewer-${GITHUB_REF_NAME//\//-}-${{ matrix.platform }}"
+          mkdir -p "dist/$name"
+          cp target/release/tc-engine.exe LICENSE "dist/$name/"
+          cp "packaging/windows/Join TwinCursor.cmd" packaging/windows/server.txt.example \
+            packaging/windows/README.txt "dist/$name/"
+          cd dist
+          7z a -bd "$name.zip" "$name"
           rm -r "$name"
 
       - uses: actions/upload-artifact@v4
