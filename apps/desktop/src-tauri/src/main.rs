@@ -97,10 +97,26 @@ fn begin(
         if let Some(also) = &also {
             also(output.clone());
         }
+        let asked = matches!(&output, Output::Event { event } if event["event"] == "control_asked");
         let _ = window.emit(ENGINE_EVENT, output);
+        if asked {
+            bring_forward(&window);
+        }
     });
     *slot = Some(Call::start(launcher, plan, sink)?);
     Ok(())
+}
+
+/// A control request must be seen: the window comes to the front, out of the Dock if minimised,
+/// and the Dock icon asks for attention. The window is left out of the shared picture, so only
+/// the sharer sees it.
+fn bring_forward(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        let _ = window.request_user_attention(Some(tauri::UserAttentionType::Critical));
+    }
 }
 
 #[tauri::command]
