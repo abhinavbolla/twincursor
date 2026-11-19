@@ -9,7 +9,7 @@ export default defineConfig({
   build: {
     target: "safari16",
     rollupOptions: {
-      input: { main: "index.html", probe: "probe.html" },
+      input: { main: "index.html" },
     },
   },
   test: { include: ["src/**/*.test.ts"] },

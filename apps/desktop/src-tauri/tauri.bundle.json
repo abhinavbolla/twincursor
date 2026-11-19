@@ -1,5 +1,5 @@
 {
   "bundle": {
-    "externalBin": ["binaries/tc-spike"]
+    "externalBin": ["binaries/tc-engine"]
   }
 }

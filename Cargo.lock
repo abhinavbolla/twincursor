@@ -5933,6 +5933,7 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "twincursor-ipc",
 ]
 
 [[package]]

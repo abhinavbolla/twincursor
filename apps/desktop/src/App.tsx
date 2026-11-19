@@ -1,191 +1,157 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useState } from "react";
 
-import {
-  checkCapture,
-  checkPermissions,
-  checkStdinClose,
-  helperInfo,
-  onOutput,
-  onStatus,
-  restartHelper,
-  type HelperInfo,
-  type OutputLine,
-} from "./bridge";
-import {
-  captureChecks,
-  describeAccess,
-  failed,
-  parseReport,
-  permissionChecks,
-  stdinCloseCheck,
-  type CheckResult,
-  type PermissionStatus,
-} from "./checks";
+import type { EngineInfo, LoadedBridge } from "./bridge";
+import { loadBridge } from "./bridge";
+import { callReducer, initialCall } from "./call";
+import { CallScreen } from "./CallScreen";
+import { Details } from "./Details";
+import type { EngineCommand, Plan } from "./ipc";
+import { parsePermissions, type PermissionStatus } from "./permissions";
+import { SettingsPanel } from "./Settings";
+import { StartScreen } from "./StartScreen";
 
-/** Output lines kept on screen. */
-const MAX_LINES = 400;
+/** How often the permissions are read again while the start screen is showing. */
+const PERMISSIONS_EVERY_MS = 2000;
 
-function Verdict({ result }: { result: CheckResult }) {
-  return (
-    <li className={`check ${result.verdict}`}>
-      <span className="mark">{result.verdict === "pass" ? "Pass" : "Fail"}</span>
-      <span className="label">{result.label}</span>
-      <span className="detail">{result.detail}</span>
-    </li>
-  );
+function usePageVisible(): boolean {
+  const [visible, setVisible] = useState(document.visibilityState === "visible");
+  useEffect(() => {
+    const update = () => setVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+  return visible;
 }
 
-function LiveStatus({ status }: { status: PermissionStatus | null }) {
-  if (status === null) {
-    return <p className="muted">Waiting for the helper…</p>;
-  }
-  const rows: [string, PermissionStatus["screen_recording"]][] = [
-    ["Screen Recording", status.screen_recording],
-    ["Accessibility", status.accessibility],
-    ["Microphone", status.microphone],
-  ];
+function Window({ bridge, DevPanel }: LoadedBridge) {
+  const [call, dispatch] = useReducer(callReducer, initialCall);
+  const [info, setInfo] = useState<EngineInfo | null>(null);
+  const [permissions, setPermissions] = useState<PermissionStatus | null>(null);
+  const [permissionsError, setPermissionsError] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const visible = usePageVisible();
+  const inCall = call.phase === "in_call";
+
+  useEffect(() => bridge.onOutput((output) => dispatch({ type: "output", output })), [bridge]);
+
+  useEffect(() => {
+    bridge.engineInfo().then(setInfo, (e: unknown) =>
+      setInfo({ path: null, error: String(e), in_bundle: false, app_pid: 0 }),
+    );
+  }, [bridge]);
+
+  const readPermissions = useCallback(
+    async (request: boolean) => {
+      try {
+        const status = parsePermissions(await bridge.permissions(request));
+        setPermissions(status);
+        setPermissionsError(status === null ? "The engine's answer couldn't be read." : null);
+      } catch (e) {
+        setPermissionsError(String(e));
+      }
+    },
+    [bridge],
+  );
+
+  // A fresh engine process every couple of seconds: macOS applies a new grant only to processes
+  // started after it. Not during a call, and not while the window is hidden.
+  useEffect(() => {
+    if (inCall || !visible || info?.path == null) {
+      return;
+    }
+    void readPermissions(false);
+    const timer = window.setInterval(() => void readPermissions(false), PERMISSIONS_EVERY_MS);
+    return () => window.clearInterval(timer);
+  }, [inCall, visible, info, readPermissions]);
+
+  const start = useCallback(
+    async (plan: Plan) => {
+      setBusy(true);
+      try {
+        await bridge.startCall(plan);
+      } catch (e) {
+        dispatch({ type: "start_failed", message: String(e) });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [bridge],
+  );
+
+  const send = useCallback(
+    (command: EngineCommand) => {
+      bridge.send(command).catch((e: unknown) =>
+        dispatch({ type: "output", output: { kind: "log", line: `(not sent: ${String(e)})` } }),
+      );
+    },
+    [bridge],
+  );
+
   return (
-    <ul className="live">
-      {rows.map(([name, access]) => (
-        <li key={name} className={access === "granted" ? "on" : "off"}>
-          {name}: {describeAccess(access)}
-        </li>
-      ))}
-    </ul>
+    <main>
+      <header className="top">
+        <h1>TwinCursor</h1>
+        <button
+          type="button"
+          className="secondary small"
+          aria-expanded={showSettings}
+          onClick={() => setShowSettings((s) => !s)}
+        >
+          {showSettings ? "Close settings" : "Settings"}
+        </button>
+      </header>
+
+      {showSettings && <SettingsPanel bridge={bridge} inCall={inCall} />}
+
+      {info !== null && info.path === null && (
+        <p className="banner bad" role="alert">
+          The engine wasn't found, so calls can't start: {info.error}
+        </p>
+      )}
+
+      {inCall ? (
+        <CallScreen
+          call={call}
+          send={send}
+          leave={() => void bridge.leave()}
+          answered={() => dispatch({ type: "answered" })}
+          dismiss={() => dispatch({ type: "dismiss" })}
+        />
+      ) : (
+        <StartScreen
+          endMessage={call.endMessage}
+          dismiss={() => dispatch({ type: "dismiss" })}
+          start={(plan) => void start(plan)}
+          busy={busy || info?.path == null}
+          permissions={permissions}
+          permissionsError={permissionsError}
+          ask={() => void readPermissions(true)}
+          openPane={(name) => void bridge.openPane(name)}
+        />
+      )}
+
+      <Details info={info} call={call} />
+      {DevPanel !== null && <DevPanel />}
+    </main>
   );
 }
 
 export function App() {
-  const [info, setInfo] = useState<HelperInfo | null>(null);
-  const [status, setStatus] = useState<PermissionStatus | null>(null);
-  const [results, setResults] = useState<CheckResult[]>([]);
-  const [running, setRunning] = useState(false);
-  const [lines, setLines] = useState<OutputLine[]>([]);
-  const logEnd = useRef<HTMLDivElement>(null);
-
+  const [loaded, setLoaded] = useState<LoadedBridge | null | undefined>(undefined);
   useEffect(() => {
-    helperInfo().then(setInfo, (e: unknown) =>
-      setInfo({ path: null, error: String(e), in_bundle: false, app_pid: 0 }),
-    );
-    const output = onOutput((line) => setLines((all) => [...all, line].slice(-MAX_LINES)));
-    const live = onStatus((value) => {
-      try {
-        setStatus(parseReport(value));
-      } catch {
-        // A status this app doesn't understand: leave the last one up.
-      }
-    });
-    return () => {
-      void output.then((stop) => stop());
-      void live.then((stop) => stop());
-    };
+    loadBridge().then(setLoaded, () => setLoaded(null));
   }, []);
-
-  useEffect(() => {
-    logEnd.current?.scrollIntoView({ block: "end" });
-  }, [lines]);
-
-  const runChecks = useCallback(async () => {
-    setRunning(true);
-    const done: CheckResult[] = [];
-    const add = (more: CheckResult[]) => {
-      done.push(...more);
-      setResults([...done]);
-    };
-    setResults([]);
-    try {
-      add(permissionChecks(parseReport(await checkPermissions(true))));
-    } catch (e) {
-      add([failed("permissions", "Read the helper's permissions", e)]);
-    }
-    try {
-      add(captureChecks(parseReport(await checkCapture()).capture));
-    } catch (e) {
-      add([failed("capture", "The helper can capture the screen", e)]);
-    }
-    try {
-      add([stdinCloseCheck(await checkStdinClose())]);
-    } catch (e) {
-      add([failed("stdin", "The helper exits when the app goes away", e)]);
-    }
-    // Each check above ran in a fresh helper; the live status line gets one too.
-    await restartHelper().catch(() => undefined);
-    setRunning(false);
-  }, []);
-
-  const passed = results.filter((r) => r.verdict === "pass").length;
-
-  return (
-    <main>
-      <header>
+  if (loaded === undefined) {
+    return null;
+  }
+  if (loaded === null) {
+    return (
+      <main>
         <h1>TwinCursor</h1>
-        <p className="muted">
-          This window starts the TwinCursor helper, which does the capture, voice and remote
-          control, and checks that macOS gives it TwinCursor's permissions.
-        </p>
-      </header>
-
-      <section>
-        <h2>Helper</h2>
-        {info === null ? (
-          <p className="muted">Looking for the helper…</p>
-        ) : info.path === null ? (
-          <p className="bad">Helper not found: {info.error}</p>
-        ) : (
-          <p>
-            <code>{info.path}</code>
-            <br />
-            <span className={info.in_bundle ? "muted" : "bad"}>
-              {info.in_bundle
-                ? "Inside the app bundle."
-                : "Not inside an app bundle (a development build): macOS gives it the permissions of whatever started the app."}
-            </span>
-          </p>
-        )}
-        <LiveStatus status={status} />
-      </section>
-
-      <section>
-        <h2>Checks</h2>
-        <p className="muted">
-          Press the button and answer each macOS prompt with Allow, or turn TwinCursor on in
-          the System Settings pane it opens. Two magenta squares appear for a few seconds while
-          the capture is checked: leave them uncovered. Every press starts fresh helpers, so
-          after allowing something, press the button again to see it take effect. If macOS
-          offers to quit and reopen TwinCursor after Screen Recording, choose Later first and
-          press the button again: the check shows whether a fresh helper gets the grant
-          without restarting the app.
-        </p>
-        <button type="button" onClick={() => void runChecks()} disabled={running || info?.path == null}>
-          {running ? "Running…" : "Run checks"}
-        </button>
-        {results.length > 0 && (
-          <>
-            <ul className="checks">
-              {results.map((r) => (
-                <Verdict key={r.id} result={r} />
-              ))}
-            </ul>
-            {!running && (
-              <p className={passed === results.length ? "good" : "bad"}>
-                {passed} of {results.length} passed.
-              </p>
-            )}
-          </>
-        )}
-      </section>
-
-      <section className="output">
-        <h2>Helper output</h2>
-        <div className="log">
-          {lines.map((l, i) => (
-            <div key={i}>
-              <span className="source">{l.source}</span> {l.line}
-            </div>
-          ))}
-          <div ref={logEnd} />
-        </div>
-      </section>
-    </main>
-  );
+        <p>This page runs inside the TwinCursor app.</p>
+      </main>
+    );
+  }
+  return <Window bridge={loaded.bridge} DevPanel={loaded.DevPanel} />;
 }

@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::hash::{BuildHasher, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use ipc::{Event, Participant, Role};
 
@@ -73,11 +73,32 @@ pub fn new_identity(role: Role) -> String {
     format!("{prefix}-{:016x}", hasher.finish())
 }
 
+static ANNOUNCED: OnceLock<Vec<protocol::Codec>> = OnceLock::new();
+
+/// For tests: announce only these codecs (`h264`, `vp8`, ...), as a viewer that can't decode
+/// the others would. Call before the call starts; later calls change nothing.
+pub fn announce_only(names: &[String]) -> Result<(), String> {
+    let codecs = names
+        .iter()
+        .map(
+            |name| match serde_json::from_value(serde_json::Value::String(name.clone())) {
+                Ok(protocol::Codec::Unknown) | Err(_) => Err(format!("unknown codec `{name}`")),
+                Ok(codec) => Ok(codec),
+            },
+        )
+        .collect::<Result<Vec<_>, _>>()?;
+    let _ = ANNOUNCED.set(codecs);
+    Ok(())
+}
+
 /// The video codecs this build can decode on this platform, as a viewer announces them.
 /// libwebrtc decodes VP8, VP9 and AV1 in software everywhere; on macOS VideoToolbox decodes
 /// H.264 and H.265 in hardware (docs/adr/0002, docs/adr/0008).
 pub fn decoders() -> Vec<protocol::Codec> {
     use protocol::Codec;
+    if let Some(only) = ANNOUNCED.get() {
+        return only.clone();
+    }
     if cfg!(target_os = "macos") {
         vec![Codec::H264, Codec::H265, Codec::Vp8, Codec::Vp9, Codec::Av1]
     } else {
@@ -174,6 +195,14 @@ mod tests {
         assert_eq!(codec_name("video/H265").as_deref(), Some("h265"));
         assert_eq!(codec_name("video/HEVC").as_deref(), Some("h265"));
         assert_eq!(codec_name(""), None);
+    }
+
+    #[test]
+    fn announcing_an_unknown_codec_is_refused() {
+        // Errors set nothing, so the other tests still see this build's own decoders.
+        let err = announce_only(&["h264".into(), "h266".into()]).unwrap_err();
+        assert!(err.contains("h266"), "{err}");
+        assert!(announce_only(&["unknown".into()]).is_err());
     }
 
     #[test]

@@ -69,6 +69,11 @@ On an Apple silicon Mac, macOS 26, with an ad-hoc signed build (`apps/desktop/sc
 These need someone to answer macOS prompts, so they weren't run unattended. Open the bundled
 app, press **Run checks** and answer each prompt; the window shows pass or fail for each.
 
+The proof page with **Run checks** has since been replaced by the app's own window, which drives
+`tc-engine`. The same questions are answered there: its permissions list shows each grant live
+from a fresh engine process, with an Ask button per row, and sharing with a guest on another Mac
+shows whether the window stays out of the picture.
+
 1. The Screen Recording, Accessibility and Microphone prompts name **TwinCursor**, and after
    allowing each one, a fresh helper reports it as granted (the first three checks).
 2. Screen Recording takes effect in a newly started helper without quitting and reopening the

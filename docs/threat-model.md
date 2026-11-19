@@ -56,19 +56,20 @@ weaken them won't be merged.
   sharer unlocks it; releases still go through.
 
 The session logic lives in `crates/control` with no network or platform code, so these rules can
-be tested with scripted traces. *Status: the session rules are built and tested, and run over the network
-with a consent prompt in the sharer's terminal, the revoke hotkey, the on-screen label, and real
-input on macOS.*
+be tested with scripted traces. *Status: the session rules are built and tested, and run over the
+network with a consent prompt in the desktop app's window (or `tc-spike`'s terminal), the revoke
+hotkey, the on-screen label, and real input on macOS.*
 
 ## Voice
 
-- **Your mic is on from the moment you join,** unless you start with `--audio off`. The desktop
-  app will ask first.
+- **Your mic is on from the moment you join,** unless you start with `--audio off`. In the
+  desktop app, voice is a choice on the start screen, and turning it off means no mic and no
+  sound for that call.
 - **Mute stops the sound at its source.** A muted track sends silence, not your voice at a lower
   level, and the other side is shown that you're muted. Mute is yours alone: the other side
   can't unmute you.
 - **You can see that you're muted.** The viewer says so in its window title and its HUD. The
-  sharer has no window yet, so today it's a line in its terminal.
+  desktop app's window says so too; `tc-spike` on the sharer prints a line in its terminal.
 - **Only voices are sent,** not the computer's own sound.
 
 ## Known limits
@@ -85,6 +86,18 @@ input on macOS.*
   document what we find.
 - **Guests shouldn't type passwords during control.** They go to the sharer's machine, and through
   the server, like every other keystroke.
+- **A room code is the only key to a call.** Anyone with the app, the server it uses and the
+  code can join. The app makes codes from 80 random bits and says to share them only with the
+  person you're calling; accounts and invitations come with the server.
+- **A test build with a baked-in server carries its secret.** `tc-engine` can be built with a
+  server's URL, API key and secret (`crates/engine-cli/build.rs`), so testers need no setup.
+  Anyone who has that build can read the secret out of the binary and mint tokens for any room on
+  that server. Give such builds only to people you'd give the key to, and rotate the key when a
+  test round ends. `tc-engine config` never prints the secret.
+- **Server settings in the desktop app.** Overrides typed into Settings are saved in the app's
+  config folder, readable only by your user, and passed to the engine in its environment rather
+  than its flags (other users can read a process's flags). The window never gets the saved
+  secret back.
 - **`tc-spike` isn't safe on untrusted networks.** It uses LiveKit's well-known development keys and
   an unencrypted `ws://` connection, so anyone who can reach the server can join. Real deployments
   need the server's own keys and TLS, which come with the self-hosting work.
@@ -92,9 +105,10 @@ input on macOS.*
 ## macOS permissions
 
 TwinCursor needs Screen Recording to capture, Accessibility to inject input, and Microphone to
-talk. macOS grants these to the app you launch it from, which today is your terminal. So
-everything else running from that terminal gets them too. The desktop app will hold these
-permissions itself.
+talk. The desktop app holds these itself: its engine runs inside the app bundle, so macOS asks
+for TwinCursor and grants nothing to anything else (ADR 0007). Run from a terminal, `tc-spike`
+and `tc-engine` get the terminal's permissions instead, and so does everything else running from
+it.
 
 ## Supply chain
 

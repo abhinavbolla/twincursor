@@ -1,6 +1,6 @@
 # TwinCursor: Architecture
 
-Status: living document. The app shell and server below are planned; the media path, voice,
+Status: living document. The server below is planned; the app shell, the media path, voice,
 remote control and measurement tools exist today. Validate each decision with a spike before
 building on it.
 
@@ -83,6 +83,42 @@ The Rust core is split into crates:
   so a frame a few pixels smaller than the window, from rounding, is drawn 1:1 and centred
   with thin black bars rather than stretched by a fraction of a percent, which would blur every
   line of text. Frames are scaled only when larger than the window, or at least 5% smaller.
+
+#### The desktop app
+`apps/desktop` is one plain window. It starts the engine, `tc-engine`, for each call and shows
+only text and controls; the shared screen is the engine's own native window (ADR 0007, and
+[the IPC protocol](ipc.md)).
+
+- **Rust side** (`src-tauri`). `engine.rs` builds the engine's flags from the person's choices
+  (role, room, name, quality, voice), starts it with its stdin held open for the call, reads
+  every stdout line as an event and every stderr line as a log line, and ends it: `leave`, then
+  closing stdin, then killing it, each only if the step before didn't work within a few seconds.
+  It holds no Tauri types, so its lifecycle is tested against a stand-in engine script. A
+  sharer's engine always gets `--allow-control` (requests reach the window; nothing is granted
+  until the person clicks Allow for that request) and `--exclude-app-pid` with the app's own
+  process id, so the window is never in the picture. A control request brings the window to the
+  front, and Allow stays off for its first second, so a click or key press already on its way
+  to another app can't grant control. The window's commands are typed (`ipc::Command`), so only commands the protocol knows
+  reach the engine.
+- **Quality.** 1080p and 1440p share with H.264; 4K with HEVC. When a guest announces decoders
+  without HEVC, the app restarts its engine with H.264 (same room, name and resolution) and stays
+  on H.264 for the rest of the call; a guest that hasn't announced yet changes nothing. An HEVC
+  engine that fails before sending any video falls back the same way, once.
+- **Settings.** The server the build baked into `tc-engine` is the default (`tc-engine config`).
+  Overrides are saved by the Rust side as JSON in the app's config folder (mode 0600) and handed
+  to the engine in its environment, never its flags. The window learns whether a secret is set,
+  never its value.
+- **Permissions.** While the start screen is showing, the window runs `tc-engine permissions` in
+  a fresh process every two seconds, since macOS applies a new grant only to processes started
+  after it. Each row opens its System Settings pane, and Ask runs `tc-engine permissions
+  --request`. Sharing is blocked only by a missing Screen Recording grant; joining never is.
+- **Webview** (`src`, React). A pure reducer turns the engine's output into call state; it is
+  tested against `crates/ipc/fixtures`. Outside Tauri, in development builds only, a mock engine
+  plays a call so the window can be checked in a browser.
+- **Script mode.** `twincursor-desktop --script PATH --report PATH` shares the synthetic pattern
+  with voice off and input recorded, answers control requests as the script says, and writes what
+  it sees as JSON lines. It is the only path that answers a request without a click, exists only
+  behind that flag, and can't inject real input. `bench/app-e2e.sh` uses it.
 
 ### 2. WebRTC through LiveKit (self-hostable SFU)
 - LiveKit's Rust SDK (`livekit` crate, built on libwebrtc) gives us congestion control,
@@ -189,8 +225,8 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
   when capture starts, so both windows are made, hidden, before the network thread starts
   capture; made on the first grant, they were captured. `bench/control-e2e.sh` checks that the
   label is on screen during control and gone after.
-- macOS needs Screen Recording and Accessibility permissions. Onboarding must guide the user
-  through both.
+- macOS needs Screen Recording and Accessibility permissions. The desktop app's start screen
+  lists them with their live status (see [The desktop app](#the-desktop-app)).
 - Keyboard layouts: the viewer sends the physical key and the text it produced, and the sharer
   types the text unless it's a shortcut. ADR 0004 has the rules.
 

@@ -3,6 +3,9 @@
 //! on stdout, logs on stderr. The engine exits when its stdin closes, so it never outlives the
 //! app. `permissions` and `devices` print one JSON object.
 //!
+//! The server comes from flags, else the environment, else what the build baked in (`build.rs`),
+//! else the local dev server; `config` prints which, without the secret.
+//!
 //! `tc-spike` is the same engine as a development tool, with its terminal prompt and its
 //! measurement flags; this binary carries only what the app needs.
 
@@ -28,6 +31,94 @@ const URL_ENV: &str = "TWINCURSOR_SERVER_URL";
 const KEY_ENV: &str = "TWINCURSOR_API_KEY";
 const SECRET_ENV: &str = "TWINCURSOR_API_SECRET";
 
+/// The server the build environment named, if any (see `build.rs`).
+mod baked {
+    include!(concat!(env!("OUT_DIR"), "/baked.rs"));
+}
+
+/// Where a setting came from, strongest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    Flag,
+    Env,
+    Build,
+    Dev,
+}
+
+impl Origin {
+    fn name(self) -> &'static str {
+        match self {
+            Origin::Flag => "flag",
+            Origin::Env => "env",
+            Origin::Build => "build",
+            Origin::Dev => "dev",
+        }
+    }
+}
+
+/// A flag beats the environment, which beats what the build baked in, which beats the local dev
+/// server. Empty values count as unset.
+fn resolve(
+    flag: Option<&str>,
+    env: Option<String>,
+    baked: Option<&str>,
+    dev: &str,
+) -> (String, Origin) {
+    let set = |v: &str| !v.trim().is_empty();
+    if let Some(v) = flag.filter(|v| set(v)) {
+        return (v.to_owned(), Origin::Flag);
+    }
+    if let Some(v) = env.filter(|v| set(v)) {
+        return (v, Origin::Env);
+    }
+    if let Some(v) = baked.filter(|v| set(v)) {
+        return (v.to_owned(), Origin::Build);
+    }
+    (dev.to_owned(), Origin::Dev)
+}
+
+fn env_var(name: &str) -> Option<String> {
+    std::env::var(name).ok()
+}
+
+/// The server's URL, API key and API secret, each from wherever it comes.
+struct Server {
+    url: (String, Origin),
+    api_key: (String, Origin),
+    api_secret: (String, Origin),
+}
+
+impl Server {
+    fn resolve(url: Option<&str>, api_key: Option<&str>, api_secret: Option<&str>) -> Self {
+        Server {
+            url: resolve(url, env_var(URL_ENV), baked::URL, token::DEV_URL),
+            api_key: resolve(
+                api_key,
+                env_var(KEY_ENV),
+                baked::API_KEY,
+                token::DEV_API_KEY,
+            ),
+            api_secret: resolve(
+                api_secret,
+                env_var(SECRET_ENV),
+                baked::API_SECRET,
+                token::DEV_API_SECRET,
+            ),
+        }
+    }
+
+    /// What `config` prints. Never the secret: only whether one other than the dev server's is
+    /// in effect.
+    fn describe(&self) -> serde_json::Value {
+        serde_json::json!({
+            "url": self.url.0,
+            "api_key": self.api_key.0,
+            "has_secret": self.api_secret.1 != Origin::Dev,
+            "source": self.url.1.name(),
+        })
+    }
+}
+
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
@@ -51,18 +142,24 @@ enum Cmd {
     Devices,
     /// Print the windows `share --window` can share as JSON: id, app, pid, title, pixels.
     Windows,
+    /// Print the server a call would use, as JSON: url, api_key, has_secret and source
+    /// (`env`, `build` or `dev`). Never prints the secret.
+    Config,
 }
 
 /// Where the call is, and who this person says they are.
 #[derive(Args)]
 struct Call {
-    /// The server's URL [env: TWINCURSOR_SERVER_URL; default: the local dev server].
+    /// The server's URL [env: TWINCURSOR_SERVER_URL; default: the build's, else the local dev
+    /// server].
     #[arg(long)]
     url: Option<String>,
-    /// The server's API key [env: TWINCURSOR_API_KEY; default: the dev server's].
+    /// The server's API key [env: TWINCURSOR_API_KEY; default: the build's, else the dev
+    /// server's].
     #[arg(long)]
     api_key: Option<String>,
-    /// The server's API secret [env: TWINCURSOR_API_SECRET; default: the dev server's]. Prefer
+    /// The server's API secret [env: TWINCURSOR_API_SECRET; default: the build's, else the dev
+    /// server's]. Prefer
     /// the environment: other users of this Mac can read a process's flags.
     #[arg(long)]
     api_secret: Option<String>,
@@ -86,24 +183,31 @@ struct Call {
 }
 
 impl Call {
-    fn setting(flag: &Option<String>, env: &str, default: &str) -> String {
-        flag.clone()
-            .or_else(|| std::env::var(env).ok().filter(|v| !v.is_empty()))
-            .unwrap_or_else(|| default.to_owned())
+    fn server(&self) -> Server {
+        Server::resolve(
+            self.url.as_deref(),
+            self.api_key.as_deref(),
+            self.api_secret.as_deref(),
+        )
     }
 
     fn url(&self) -> String {
-        Self::setting(&self.url, URL_ENV, token::DEV_URL)
+        self.server().url.0
     }
 
     /// A token for a fresh identity with `role`'s prefix. The secret goes into the token's
     /// signature and nowhere else.
     fn token(&self, role: Role) -> anyhow::Result<(String, String)> {
         let identity = app::new_identity(role);
-        let key = Self::setting(&self.api_key, KEY_ENV, token::DEV_API_KEY);
-        let secret = Self::setting(&self.api_secret, SECRET_ENV, token::DEV_API_SECRET);
-        let jwt = token::mint(&key, &secret, &self.room, &identity, &self.name)
-            .context("couldn't make an access token")?;
+        let server = self.server();
+        let jwt = token::mint(
+            &server.api_key.0,
+            &server.api_secret.0,
+            &self.room,
+            &identity,
+            &self.name,
+        )
+        .context("couldn't make an access token")?;
         Ok((identity, jwt))
     }
 
@@ -211,6 +315,10 @@ struct ViewArgs {
     /// Write every control message sent as a line of JSON, for tests.
     #[arg(long, hide = true)]
     sent_log: Option<std::path::PathBuf>,
+    /// Announce only these decoders to the sharer (comma-separated, such as `h264,vp8`), as a
+    /// guest that can't decode the others would. For tests.
+    #[arg(long, hide = true, value_delimiter = ',')]
+    decoders: Option<Vec<String>>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -236,6 +344,10 @@ fn main() -> anyhow::Result<()> {
         Cmd::Windows => {
             let (windows, _) = capture::shareable().context("listing windows")?;
             print_line(&serde_json::to_string(&windows)?);
+            Ok(())
+        }
+        Cmd::Config => {
+            print_line(&Server::resolve(None, None, None).describe().to_string());
             Ok(())
         }
         Cmd::Devices => {
@@ -576,6 +688,9 @@ async fn report(events: Events, voice: Arc<VoiceState>, stats: Arc<ShareStats>) 
 fn watch(args: ViewArgs) -> anyhow::Result<()> {
     let events = events(args.call.ipc);
     hello(&events, Role::Guest);
+    if let Some(decoders) = &args.decoders {
+        app::announce_only(decoders).map_err(|e| failed_early(&events, anyhow::anyhow!(e)))?;
+    }
     let setup = (|| -> anyhow::Result<_> {
         let (_, token) = args.call.token(Role::Guest)?;
         Ok(ViewConfig {
@@ -629,4 +744,52 @@ fn watch(args: ViewArgs) -> anyhow::Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_come_from_the_strongest_source() {
+        let dev = "ws://localhost:7880";
+        assert_eq!(
+            resolve(Some("f"), Some("e".into()), Some("b"), dev),
+            ("f".into(), Origin::Flag)
+        );
+        assert_eq!(
+            resolve(None, Some("e".into()), Some("b"), dev),
+            ("e".into(), Origin::Env)
+        );
+        assert_eq!(
+            resolve(None, None, Some("b"), dev),
+            ("b".into(), Origin::Build)
+        );
+        assert_eq!(resolve(None, None, None, dev), (dev.into(), Origin::Dev));
+        // Empty values are unset, at every level.
+        assert_eq!(
+            resolve(Some(""), Some(" ".into()), Some(""), dev),
+            (dev.into(), Origin::Dev)
+        );
+    }
+
+    #[test]
+    fn config_never_prints_the_secret() {
+        let server = Server {
+            url: ("wss://example.test".into(), Origin::Build),
+            api_key: ("key".into(), Origin::Build),
+            api_secret: ("very-secret-value".into(), Origin::Build),
+        };
+        let text = server.describe().to_string();
+        assert!(!text.contains("very-secret-value"), "{text}");
+        assert_eq!(server.describe()["has_secret"], true);
+        assert_eq!(server.describe()["source"], "build");
+        let dev = Server {
+            url: (token::DEV_URL.into(), Origin::Dev),
+            api_key: (token::DEV_API_KEY.into(), Origin::Dev),
+            api_secret: (token::DEV_API_SECRET.into(), Origin::Dev),
+        };
+        assert_eq!(dev.describe()["has_secret"], false);
+        assert_eq!(dev.describe()["source"], "dev");
+    }
 }
