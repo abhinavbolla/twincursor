@@ -315,13 +315,24 @@ button:disabled {
   right: 8px;
   bottom: 8px;
   width: 210px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
   padding: 8px;
   background: var(--panel);
   border: 1px dashed var(--muted);
   border-radius: 8px;
   font-size: 12px;
   opacity: 0.95;
+}
+.mock-panel[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mock-panel summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.card > button {
+  align-self: flex-start;
 }

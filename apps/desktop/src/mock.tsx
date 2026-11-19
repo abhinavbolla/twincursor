@@ -348,8 +348,8 @@ function MockPanel({ engine }: { engine: MockEngine }) {
     engine.permissions = { screen_recording: access, accessibility: access, microphone: access };
   };
   return (
-    <aside className="mock-panel" aria-label="Mock engine">
-      <strong>Mock engine (development only)</strong>
+    <details className="mock-panel" aria-label="Mock engine">
+      <summary>Mock engine (development only)</summary>
       {buttons.map(([label, run]) => (
         <button key={label} type="button" className="small secondary" onClick={run}>
           {label}
@@ -362,7 +362,7 @@ function MockPanel({ engine }: { engine: MockEngine }) {
       <button type="button" className="small secondary" onClick={() => set("denied")}>
         Turn all off
       </button>
-    </aside>
+    </details>
   );
 }
 
