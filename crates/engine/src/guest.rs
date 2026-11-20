@@ -832,6 +832,9 @@ mod tests {
         assert!(sent[..request]
             .iter()
             .any(|(_, m)| matches!(m, Message::Hello { .. })));
+        // Withdrawn, so no repeat of the request (which carries a hello) lands in the wait below.
+        h.tx.send(In::Ui(Ui::Release)).unwrap();
+        h.sent(100);
         h.from("sharer-c", &Message::HelloAck);
         h.sent(200);
         assert_eq!(hellos(&h.sent(600), "sharer-c"), 0);
