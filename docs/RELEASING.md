@@ -28,7 +28,8 @@ Test builds go to a few people by hand, with a server built in so they need no s
 releases: nothing is tagged or published. Whoever has one can read the server's API secret out
 of it (see [the threat model](threat-model.md)), so give them only to people you'd give the key
 to, and rotate the key when the test round ends. Testers follow the
-[testing guide](testing-guide.md).
+[testing guide](testing-guide.md); before handing a build out, go through the
+[test plan](test-plan.md) yourself.
 
 The server's settings live in an env file outside the repository, with the names in
 [`.env.testbuild.example`](../.env.testbuild.example). Never commit it.
