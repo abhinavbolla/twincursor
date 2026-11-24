@@ -101,7 +101,7 @@ export function CallScreen({ call, send, leave, answered, dismiss }: Props) {
           {call.voice === null
             ? "…"
             : !call.voice.sending
-              ? "Voice is off in this call: no mic and no sound."
+              ? "Voice is off in this call. No mic and no sound."
               : call.voice.muted
                 ? "You're muted."
                 : `Your mic is on${call.voice.mic ? ` (${call.voice.mic})` : ""}.`}
@@ -178,7 +178,7 @@ function SharerControl({ call, send, answered }: Pick<Props, "call" | "send" | "
         </div>
       ) : (
         <p className="muted">
-          Nobody is controlling your computer. A guest can ask; you'll be asked every time.
+          Nobody is controlling your computer. A guest can ask, and you decide each time.
         </p>
       )}
     </section>
