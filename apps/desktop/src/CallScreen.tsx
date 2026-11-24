@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { numbersReport, statsLine, unverified, type CallState } from "./call";
+import { numbersReport, readouts, statsLine, unverified, type CallState } from "./call";
 import { copyText } from "./clipboard";
 import {
   allowControl,
@@ -28,6 +28,17 @@ const CONNECTION: Record<string, string> = {
   disconnected: "Disconnected",
 };
 
+/** A hotkey, one keycap per key. */
+function Keys({ keys }: { keys: string[] }) {
+  return (
+    <span className="keys" aria-label={keys.join(" ")}>
+      {keys.map((k) => (
+        <kbd key={k}>{k}</kbd>
+      ))}
+    </span>
+  );
+}
+
 export function CallScreen({ call, send, leave, answered, dismiss }: Props) {
   const sharer = call.role === "share";
   const others = call.participants;
@@ -38,7 +49,7 @@ export function CallScreen({ call, send, leave, answered, dismiss }: Props) {
     <>
       <section className="card">
         <div className="row spread">
-          <div>
+          <div className="stack">
             <h2>{sharer ? "Sharing your screen" : host ? `Watching ${host.name}'s screen` : "Joining"}</h2>
             <p className={`status ${call.connection ?? ""}`}>
               {CONNECTION[call.connection ?? "connecting"]}
@@ -50,7 +61,7 @@ export function CallScreen({ call, send, leave, answered, dismiss }: Props) {
               )}
             </p>
           </div>
-          <button type="button" className="danger" onClick={leave}>
+          <button type="button" className="quiet-danger" onClick={leave}>
             Leave
           </button>
         </div>
@@ -69,20 +80,22 @@ export function CallScreen({ call, send, leave, answered, dismiss }: Props) {
           </p>
         )}
 
-        <h3>In the call</h3>
-        {others.length === 0 ? (
-          <p className="muted">
-            {sharer ? "Waiting for someone to join with the room code." : "Waiting for the sharer."}
-          </p>
-        ) : (
-          <ul className="people">
-            {others.map((p) => (
-              <li key={p.identity}>
-                {unverified(p.name)} <span className="muted">· {p.role === "sharer" ? "sharing" : "guest"}</span>
-              </li>
-            ))}
-          </ul>
-        )}
+        <div className="stack">
+          <h3>In the call</h3>
+          {others.length === 0 ? (
+            <p className="muted">
+              {sharer ? "Waiting for someone to join with the room code." : "Waiting for the sharer."}
+            </p>
+          ) : (
+            <ul className="people">
+              {others.map((p) => (
+                <li key={p.identity}>
+                  {unverified(p.name)} <span className="muted">· {p.role === "sharer" ? "sharing" : "guest"}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
         <p className="hint">Names are what people typed. Make sure you know who you're talking to.</p>
       </section>
 
@@ -90,9 +103,9 @@ export function CallScreen({ call, send, leave, answered, dismiss }: Props) {
 
       <section className="card">
         <div className="row spread">
-          <h3>Voice</h3>
+          <h2>Voice</h2>
           {call.voice?.sending === true && (
-            <button type="button" className="secondary" onClick={() => send(call.voice?.muted ? unmute() : mute())}>
+            <button type="button" onClick={() => send(call.voice?.muted ? unmute() : mute())}>
               {call.voice.muted ? "Unmute" : "Mute"}
             </button>
           )}
@@ -106,6 +119,19 @@ export function CallScreen({ call, send, leave, answered, dismiss }: Props) {
                 ? "You're muted."
                 : `Your mic is on${call.voice.mic ? ` (${call.voice.mic})` : ""}.`}
         </p>
+        {call.voice?.sending === true && (
+          <p className="hint">
+            {sharer ? (
+              <>
+                <Keys keys={["⌃", "⌥", "⌘", "M"]} /> mutes from any app
+              </>
+            ) : (
+              <>
+                <Keys keys={["M"]} /> in the viewer mutes
+              </>
+            )}
+          </p>
+        )}
       </section>
 
       <Numbers call={call} />
@@ -133,7 +159,7 @@ function SharerControl({ call, send, answered }: Pick<Props, "call" | "send" | "
   }, [request]);
   return (
     <section className="card">
-      <h3>Control of your computer</h3>
+      <h2>Control of your computer</h2>
       {asked !== null ? (
         <div className="prompt" role="alertdialog" aria-labelledby="ask-title">
           <p id="ask-title">
@@ -146,6 +172,7 @@ function SharerControl({ call, send, answered }: Pick<Props, "call" | "send" | "
           <div className="row">
             <button
               type="button"
+              className="primary"
               disabled={armed !== asked.request}
               onClick={() => {
                 send(allowControl(asked.request));
@@ -156,7 +183,6 @@ function SharerControl({ call, send, answered }: Pick<Props, "call" | "send" | "
             </button>
             <button
               type="button"
-              className="secondary"
               onClick={() => {
                 send(denyControl(asked.request));
                 answered();
@@ -174,7 +200,9 @@ function SharerControl({ call, send, answered }: Pick<Props, "call" | "send" | "
           <button type="button" className="danger" onClick={() => send(revokeControl())}>
             Take back control
           </button>
-          <p className="hint">⌃⌥⌘R takes control back too, from any app.</p>
+          <p className="hint">
+            <Keys keys={["⌃", "⌥", "⌘", "R"]} /> takes control back too, from any app
+          </p>
         </div>
       ) : (
         <p className="muted">
@@ -191,27 +219,33 @@ function GuestControl({ call, send }: Pick<Props, "call" | "send">) {
   const state = call.control.state;
   return (
     <section className="card">
-      <h3>Control</h3>
+      <h2>Control</h2>
       {state === "controlling" ? (
         <>
           <p>You're controlling {who}'s computer. Click into the shared screen's window to use it.</p>
-          <button type="button" className="secondary" onClick={() => send(releaseControl())}>
+          <button type="button" onClick={() => send(releaseControl())}>
             Give back control
           </button>
+          <p className="hint">
+            <Keys keys={["F9"]} /> in the viewer gives it back too
+          </p>
         </>
       ) : state === "asked" ? (
         <>
           <p>Waiting for {who} to allow it…</p>
-          <button type="button" className="secondary" onClick={() => send(releaseControl())}>
+          <button type="button" onClick={() => send(releaseControl())}>
             Never mind
           </button>
         </>
       ) : (
         <>
           <p className="muted">You're watching. You can ask {who} to let you use their mouse and keyboard.</p>
-          <button type="button" disabled={host === undefined} onClick={() => send(requestControl())}>
+          <button type="button" className="primary" disabled={host === undefined} onClick={() => send(requestControl())}>
             Ask for control
           </button>
+          <p className="hint">
+            <Keys keys={["F9"]} /> in the viewer asks too
+          </p>
         </>
       )}
     </section>
@@ -220,19 +254,34 @@ function GuestControl({ call, send }: Pick<Props, "call" | "send">) {
 
 function Numbers({ call }: { call: CallState }) {
   const [copied, setCopied] = useState(false);
+  const line = statsLine(call.stats, call.role);
   return (
     <section className="card">
       <div className="row spread">
-        <h3>Numbers</h3>
+        <h2>Numbers</h2>
         <button
           type="button"
-          className="secondary small"
+          className="small"
           onClick={() => void copyText(numbersReport(call, new Date())).then(setCopied)}
         >
           {copied ? "Copied" : "Copy numbers"}
         </button>
       </div>
-      <p className="numbers">{statsLine(call.stats, call.role)}</p>
+      {call.stats === null ? (
+        <p className="muted">{line}</p>
+      ) : (
+        <dl className="readout" aria-label={line}>
+          {readouts(call.stats, call.role).map((r) => (
+            <div key={r.label}>
+              <dt>{r.label}</dt>
+              <dd className="figure">
+                {r.value}
+                {r.unit !== null && <small>{r.unit}</small>}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
     </section>
   );
 }

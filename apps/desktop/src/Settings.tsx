@@ -87,12 +87,13 @@ export function SettingsPanel({ bridge, inCall }: { bridge: Bridge; inCall: bool
       <div className="row">
         <button
           type="button"
+          className="primary"
           onClick={() => void save(secret === "" ? { do: "keep" } : { do: "set", value: secret })}
         >
           Save
         </button>
         {saved?.has_secret === true && (
-          <button type="button" className="secondary" onClick={() => void save({ do: "clear" })}>
+          <button type="button" onClick={() => void save({ do: "clear" })}>
             Forget the saved secret
           </button>
         )}

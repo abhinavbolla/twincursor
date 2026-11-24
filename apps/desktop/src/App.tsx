@@ -91,10 +91,16 @@ function Window({ bridge, DevPanel }: LoadedBridge) {
   return (
     <main>
       <header className="top">
-        <h1>TwinCursor</h1>
+        <h1 className="brand">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <polyline points="4,5 9,10 4,15" opacity="0.45" />
+            <polyline points="10.5,5 15.5,10 10.5,15" />
+          </svg>
+          TwinCursor
+        </h1>
         <button
           type="button"
-          className="secondary small"
+          className="small"
           aria-expanded={showSettings}
           onClick={() => setShowSettings((s) => !s)}
         >

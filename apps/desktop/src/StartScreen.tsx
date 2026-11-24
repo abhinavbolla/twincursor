@@ -40,6 +40,8 @@ export function StartScreen(props: Props) {
   const [voice, setVoice] = useState(() => remembered("voice", "on") === "on");
   const [problem, setProblem] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  /** The code in the field was made here, so this person is the one sharing. */
+  const [made, setMade] = useState(false);
 
   const go = (role: Plan["role"]) => {
     const trimmed = name.trim();
@@ -51,6 +53,7 @@ export function StartScreen(props: Props) {
     if (code === null && role === "share" && room.trim() === "") {
       code = makeRoomCode();
       setRoom(code);
+      setMade(true);
     }
     if (code === null) {
       setProblem(
@@ -77,8 +80,12 @@ export function StartScreen(props: Props) {
 
   const make = () => {
     setRoom(makeRoomCode());
+    setMade(true);
     setCopied(false);
   };
+
+  // A code someone sent you means you're joining; otherwise sharing is the main action.
+  const joining = !made && normalizeRoomCode(room) !== null;
 
   const copy = async () => {
     const code = normalizeRoomCode(room);
@@ -112,7 +119,7 @@ export function StartScreen(props: Props) {
 
         <div className="field">
           <label htmlFor="room">Room code</label>
-          <div className="row">
+          <div className="row code-row">
             <input
               id="room"
               className="code"
@@ -122,15 +129,15 @@ export function StartScreen(props: Props) {
               placeholder="Paste one, or make one to share"
               onChange={(e) => {
                 setRoom(e.target.value);
+                setMade(false);
                 setCopied(false);
               }}
             />
-            <button type="button" className="secondary" onClick={make}>
+            <button type="button" onClick={make}>
               Make one
             </button>
             <button
               type="button"
-              className="secondary"
               disabled={normalizeRoomCode(room) === null}
               onClick={() => void copy()}
             >
@@ -139,15 +146,15 @@ export function StartScreen(props: Props) {
           </div>
           <p className="hint">
             Anyone with the app and this code can join, so share it only with the person you're
-            calling.
+            calling
           </p>
         </div>
 
         <fieldset className="field">
           <legend>Quality when you share</legend>
-          <div className="choices">
+          <div className="segments">
             {QUALITIES.map((q) => (
-              <label key={q.value} className="choice">
+              <label key={q.value}>
                 <input
                   type="radio"
                   name="quality"
@@ -155,7 +162,7 @@ export function StartScreen(props: Props) {
                   checked={quality === q.value}
                   onChange={() => setQuality(q.value)}
                 />
-                <span>{q.label}</span>
+                {q.label}
               </label>
             ))}
           </div>
@@ -180,10 +187,10 @@ export function StartScreen(props: Props) {
         )}
 
         <div className="row actions">
-          <button type="button" disabled={props.busy} onClick={() => go("share")}>
+          <button type="button" className={joining ? "big" : "big primary"} disabled={props.busy} onClick={() => go("share")}>
             Share my screen
           </button>
-          <button type="button" disabled={props.busy} onClick={() => go("join")}>
+          <button type="button" className={joining ? "big primary" : "big"} disabled={props.busy} onClick={() => go("join")}>
             Join
           </button>
         </div>
@@ -218,10 +225,10 @@ function Permissions(props: {
   };
   return (
     <section className="card">
-      <h2>Permissions</h2>
-      <p className="hint">
-        Only sharing needs Screen Recording and Accessibility.
-      </p>
+      <div className="stack">
+        <h2>Permissions</h2>
+        <p className="hint">Only sharing needs Screen Recording and Accessibility</p>
+      </div>
       {props.error !== null && <p className="bad">Couldn't read them: {props.error}</p>}
       <ul className="permissions">
         {rows.map((name) => {
@@ -230,16 +237,18 @@ function Permissions(props: {
           return (
             <li key={name}>
               <span className={`dot ${access === null ? "" : ok ? "on" : "off"}`} aria-hidden="true" />
-              <span className="perm-name">{PERMISSION_LABELS[name]}</span>
+              <span className="stack">
+                <span className="perm-name">{PERMISSION_LABELS[name]}</span>
+                <span className="hint">{usedBy(name)}</span>
+              </span>
               <span className="perm-state">{access === null ? "Checking…" : describeAccess(access)}</span>
-              <span className="perm-why muted">{usedBy(name)}</span>
               <span className="perm-buttons">
                 {!ok && (
-                  <button type="button" className="small secondary" onClick={props.ask}>
+                  <button type="button" className="small" onClick={props.ask}>
                     Ask
                   </button>
                 )}
-                <button type="button" className="small secondary" onClick={() => props.openPane(name)}>
+                <button type="button" className="small" onClick={() => props.openPane(name)}>
                   Open Settings
                 </button>
               </span>
