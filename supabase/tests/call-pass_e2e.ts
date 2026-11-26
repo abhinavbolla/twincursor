@@ -70,6 +70,15 @@ Deno.test("call-pass gives passes only to the host and admitted members", async 
     assertEquals(started.status, 200, JSON.stringify(started.body));
     const { call_id, code } = started.body[0];
 
+    await t.step("inbox works with and without the hosting argument", async () => {
+      const plain = await rpc("inbox", host.token);
+      assertEquals(plain.status, 200, JSON.stringify(plain.body));
+      assertEquals(plain.body.hosting.call_id, call_id);
+      const beat = await rpc("inbox", host.token, { hosting: call_id });
+      assertEquals(beat.status, 200, JSON.stringify(beat.body));
+      assertEquals(beat.body.hosting.code, code);
+    });
+
     await t.step("rejects requests without a user session", async () => {
       assertEquals((await pass(undefined, { call_id })).status, 401);
       assertEquals((await pass(anonKey, { call_id })).status, 401);

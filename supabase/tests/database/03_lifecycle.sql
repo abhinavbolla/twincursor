@@ -1,8 +1,9 @@
--- How calls end: start_call replacing a call, leaving, a stale host, end_call, and the heartbeat.
+-- How calls end and come back: start_call replacing a call, leaving, the host heartbeat, a stale
+-- host reviving, ringing on a stale call, and end_call.
 --   d1 Hal (host)   d2 Gia (guest)   d3 Kit (knocks late)
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(42);
+select plan(54);
 
 insert into auth.users (id, email, raw_user_meta_data) values
   ('00000000-0000-4000-8000-0000000000d1', 'hal@example.test', '{"name": "Hal"}'),
@@ -73,28 +74,38 @@ set local request.jwt.claims to '{"sub": "00000000-0000-4000-8000-0000000000d1",
 select is(public.answer_knock(current_setting('t.call2')::uuid, '00000000-0000-4000-8000-0000000000d2', true),
           'admitted', 'the host lets the guest back in');
 
--- The heartbeat: the host's inbox keeps the call live.
+-- The heartbeat: only inbox(hosting => call) by the host keeps a call live.
 reset role;
 update public.calls set seen_at = now() - interval '30 seconds' where id = current_setting('t.call2')::uuid;
 set local role authenticated;
 set local request.jwt.claims to '{"sub": "00000000-0000-4000-8000-0000000000d2", "role": "authenticated"}';
-select ok(public.inbox() is not null, 'a guest polls');
+select ok(public.inbox(current_setting('t.call2')::uuid) is not null, 'a guest polls, naming the host''s call');
 reset role;
 select ok((select seen_at < now() from public.calls where id = current_setting('t.call2')::uuid),
-          'a guest''s poll is not a heartbeat');
+          'someone else naming the call is not a heartbeat');
 set local role authenticated;
 set local request.jwt.claims to '{"sub": "00000000-0000-4000-8000-0000000000d1", "role": "authenticated"}';
-select ok(public.inbox() -> 'hosting' is not null, 'the host polls');
+select is((public.inbox() -> 'hosting' ->> 'call_id')::uuid, current_setting('t.call2')::uuid,
+          'a poll without hosting still shows the host''s live call');
+reset role;
+select ok((select seen_at < now() from public.calls where id = current_setting('t.call2')::uuid),
+          'a poll without hosting is not a heartbeat');
+set local role authenticated;
+set local request.jwt.claims to '{"sub": "00000000-0000-4000-8000-0000000000d1", "role": "authenticated"}';
+select ok(public.inbox(current_setting('t.call2')::uuid) -> 'hosting' is not null, 'the host polls, naming the call');
 reset role;
 select is((select seen_at from public.calls where id = current_setting('t.call2')::uuid), now(),
-          'the host''s poll refreshes seen_at');
+          'naming the call refreshes seen_at');
 
--- A stale host: not seen for over 45 s.
+-- A stale host: not heard from for over 45 s. (Call 1 is ended; its seen_at is set back too, so a
+-- refresh would show.)
 update public.calls set seen_at = now() - interval '46 seconds' where id = current_setting('t.call2')::uuid;
+update public.calls set seen_at = now() - interval '100 seconds' where id = current_setting('t.call1')::uuid;
 set local role authenticated;
 set local request.jwt.claims to '{"sub": "00000000-0000-4000-8000-0000000000d2", "role": "authenticated"}';
 select throws_ok($$select * from public.pass_claims(current_setting('t.call2')::uuid)$$,
   '42501', 'not_allowed', 'a stale host''s call gives the guest no pass');
+select ok(public.inbox(current_setting('t.call2')::uuid) is not null, 'the guest polls naming the stale call');
 reset role;
 set local role authenticated;
 set local request.jwt.claims to '{"sub": "00000000-0000-4000-8000-0000000000d3", "role": "authenticated"}';
@@ -105,27 +116,55 @@ set local role authenticated;
 set local request.jwt.claims to '{"sub": "00000000-0000-4000-8000-0000000000d1", "role": "authenticated"}';
 select throws_ok($$select * from public.pass_claims(current_setting('t.call2')::uuid)$$,
   '42501', 'not_allowed', 'a stale host gets no pass either');
-select is(public.inbox() -> 'hosting', 'null'::jsonb, 'a stale call is no longer shown as hosted');
+select is(public.inbox() -> 'hosting', 'null'::jsonb, 'a stale call is not shown as hosted');
 select throws_ok($$select public.answer_knock(current_setting('t.call2')::uuid, '00000000-0000-4000-8000-0000000000d3', true)$$,
   'P0001', 'call_not_found', 'knocks on a stale call cannot be answered');
+select is(public.inbox(gen_random_uuid()) -> 'hosting', 'null'::jsonb, 'an unknown hosting id is ignored');
+select is(public.inbox(current_setting('t.call1')::uuid) -> 'hosting', 'null'::jsonb,
+          'naming an ended call shows nothing');
 reset role;
 select ok((select seen_at < now() - interval '45 seconds' from public.calls where id = current_setting('t.call2')::uuid),
-          'polling doesn''t bring a stale call back');
+          'polls without the id, by a guest, or with a wrong id revive nothing');
+select ok((select ended_at is not null and seen_at < now() - interval '45 seconds'
+           from public.calls where id = current_setting('t.call1')::uuid),
+          'an ended call is never revived');
 
--- Ringing with only a stale call starts a fresh one.
+-- The host's app is still sharing: naming the call brings it back.
 set local role authenticated;
 set local request.jwt.claims to '{"sub": "00000000-0000-4000-8000-0000000000d1", "role": "authenticated"}';
-select ok(set_config('t.call3', s.call_id::text, true) <> current_setting('t.call2'),
-          'ringing while the old call is stale starts a new call')
+select is((public.inbox(current_setting('t.call2')::uuid) -> 'hosting' ->> 'call_id')::uuid,
+          current_setting('t.call2')::uuid, 'naming a stale call revives it');
+select is((select role from public.pass_claims(current_setting('t.call2')::uuid)), 'sharer',
+          'the host gets passes again');
+reset role;
+set local role authenticated;
+set local request.jwt.claims to '{"sub": "00000000-0000-4000-8000-0000000000d2", "role": "authenticated"}';
+select is((select identity from public.pass_claims(current_setting('t.call2')::uuid)),
+          'guest-00000000-0000-4000-8000-0000000000d2', 'an admitted guest gets passes again');
+reset role;
+set local role authenticated;
+set local request.jwt.claims to '{"sub": "00000000-0000-4000-8000-0000000000d3", "role": "authenticated"}';
+select is((select state from public.knock(current_setting('t.code2'))), 'knocking',
+          'knocking works again');
+reset role;
+
+-- Ringing counts as the host acting: it reuses the open call, even a stale one.
+update public.calls set seen_at = now() - interval '46 seconds' where id = current_setting('t.call2')::uuid;
+set local role authenticated;
+set local request.jwt.claims to '{"sub": "00000000-0000-4000-8000-0000000000d1", "role": "authenticated"}';
+select ok(set_config('t.call3', s.call_id::text, true) = current_setting('t.call2'),
+          'ringing while the open call is stale reuses it')
 from public.ring('00000000-0000-4000-8000-0000000000d2') s;
 reset role;
-select isnt((select ended_at from public.calls where id = current_setting('t.call2')::uuid), null,
-            '...and ends the stale one');
+select results_eq(
+  $$select ended_at, seen_at from public.calls where id = current_setting('t.call2')::uuid$$,
+  $$select null::timestamptz, now()$$,
+  '...and brings it back');
 
 -- end_call.
 set local role authenticated;
 set local request.jwt.claims to '{"sub": "00000000-0000-4000-8000-0000000000d2", "role": "authenticated"}';
-select is(public.answer_ring(current_setting('t.call3')::uuid, true), 'admitted', 'the guest joins call 3');
+select is((select role from public.pass_claims(current_setting('t.call3')::uuid)), 'guest', 'the guest is in the call');
 select throws_ok($$select public.end_call(current_setting('t.call3')::uuid)$$,
   'P0001', 'call_not_found', 'a guest cannot end the call');
 reset role;
@@ -152,6 +191,15 @@ set local role authenticated;
 set local request.jwt.claims to '{"sub": "00000000-0000-4000-8000-0000000000d3", "role": "authenticated"}';
 select throws_ok($$select * from public.knock(current_setting('t.code3'))$$,
   'P0001', 'call_not_found', 'nobody can knock on an ended call');
+reset role;
+update public.calls set seen_at = now() - interval '100 seconds' where id = current_setting('t.call3')::uuid;
+set local role authenticated;
+set local request.jwt.claims to '{"sub": "00000000-0000-4000-8000-0000000000d1", "role": "authenticated"}';
+select is(public.inbox(current_setting('t.call3')::uuid) -> 'hosting', 'null'::jsonb,
+          'naming an ended call shows nothing');
+reset role;
+select ok((select seen_at < now() - interval '45 seconds' from public.calls where id = current_setting('t.call3')::uuid),
+          'naming an ended call doesn''t refresh it');
 
 select * from finish();
 rollback;

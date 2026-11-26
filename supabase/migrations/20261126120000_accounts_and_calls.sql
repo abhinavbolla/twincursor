@@ -43,7 +43,7 @@ create table public.calls (
 comment on table public.calls is 'A call hosted (shared) by one person. Live while ended_at is null and the host was seen in the last 45 s.';
 comment on column public.calls.room is 'LiveKit room name: 128 random bits as 32 lowercase hex characters. Only ever handed out inside a call pass.';
 comment on column public.calls.code is 'What a call link carries: 128 random bits as 32 lowercase hex characters, independent of room.';
-comment on column public.calls.seen_at is 'Host heartbeat, refreshed by the host''s inbox() polls.';
+comment on column public.calls.seen_at is 'Host heartbeat, refreshed by inbox(hosting => id) while the host''s app is sharing this call.';
 
 -- A host has at most one call that isn't ended; start_call() ends the earlier one.
 create unique index calls_one_open_per_host on public.calls (host) where ended_at is null;
@@ -477,8 +477,12 @@ begin
     raise exception 'not_a_contact' using errcode = '42501';
   end if;
 
-  select * into c from public.calls k where k.host = uid and k.ended_at is null;
-  if not found or not private.is_live(c.ended_at, c.seen_at) then
+  -- Ringing is the host acting, so it counts as a heartbeat for their open call, stale or not: the
+  -- app may still be sharing it after a missed poll. Only without an open call is one started.
+  update public.calls k set seen_at = now()
+  where k.host = uid and k.ended_at is null
+  returning * into c;
+  if c.id is null then
     select o.call_id into v_call from private.open_call(uid) o;
     select * into c from public.calls k where k.id = v_call;
   end if;
@@ -492,7 +496,7 @@ begin
   return query select c.id, c.code;
 end;
 $$;
-comment on function public.ring(uuid) is 'Rings a contact (who must have the caller as a contact too) into the caller''s live call, starting one if needed. Ringing again restarts the 60 s; someone admitted or knocking is left as they are.';
+comment on function public.ring(uuid) is 'Rings a contact (who must have the caller as a contact too) into the caller''s open call (refreshing its heartbeat, so a stale one comes back), starting one if there is none. Ringing again restarts the 60 s; someone admitted or knocking is left as they are.';
 
 create function public.answer_ring(call_id uuid, accept boolean)
 returns text
@@ -615,7 +619,7 @@ end;
 $$;
 comment on function public.pass_claims(uuid) is 'Decides who may join a call''s media room: its host (role sharer) or an admitted member (role guest), while the call is live. Raises not_allowed for everyone else.';
 
-create function public.inbox()
+create function public.inbox(hosting uuid default null)
 returns jsonb
 language plpgsql
 security definer
@@ -626,12 +630,16 @@ declare
   hosted public.calls;
   v_hosting jsonb;
 begin
-  -- Host heartbeat. A call that already went stale stays dead.
-  update public.calls k set seen_at = now()
-  where k.host = uid and private.is_live(k.ended_at, k.seen_at)
-  returning * into hosted;
+  -- Host heartbeat, only for the call the app says it is sharing. This also revives a call that
+  -- went stale (a missed poll or two), but never an ended one. A wrong or foreign id is ignored.
+  if inbox.hosting is not null then
+    update public.calls k set seen_at = now()
+    where k.id = inbox.hosting and k.host = uid and k.ended_at is null;
+  end if;
 
-  if hosted.id is not null then
+  select * into hosted from public.calls k where k.host = uid and k.ended_at is null;
+
+  if hosted.id is not null and private.is_live(hosted.ended_at, hosted.seen_at) then
     v_hosting := jsonb_build_object(
       'call_id', hosted.id,
       'code', hosted.code,
@@ -676,7 +684,7 @@ begin
   );
 end;
 $$;
-comment on function public.inbox() is 'Everything the app polls for, as one JSON object (see supabase/README.md). Also the host''s heartbeat: call it with POST.';
+comment on function public.inbox(uuid) is 'Everything the app polls for, as one JSON object (see supabase/README.md). With hosting => the id of the call the app is sharing, also the host''s heartbeat for that call. Call it with POST.';
 
 revoke execute on function
   public.start_call(),
@@ -688,7 +696,7 @@ revoke execute on function
   public.end_call(uuid),
   public.remove_contact(uuid),
   public.pass_claims(uuid),
-  public.inbox()
+  public.inbox(uuid)
 from public, anon;
 
 grant execute on function
@@ -701,5 +709,5 @@ grant execute on function
   public.end_call(uuid),
   public.remove_contact(uuid),
   public.pass_claims(uuid),
-  public.inbox()
+  public.inbox(uuid)
 to authenticated;
