@@ -1,8 +1,8 @@
 # TwinCursor: Architecture
 
-Status: living document. The server below is planned; the app shell, the media path, voice,
-remote control and measurement tools exist today. Validate each decision with a spike before
-building on it.
+Status: living document. It describes what exists today: the menu bar app, the engine (media
+path, voice, remote control), the Supabase backend for accounts and calls, and the measurement
+tools. Validate each decision with a spike before building on it.
 
 ## Overview
 
@@ -10,7 +10,7 @@ building on it.
  Sharer (desktop app)                                   Guest (desktop app)
  ┌──────────────────────────────┐                      ┌──────────────────────────────┐
  │ Tauri UI (webview)           │                      │ Tauri UI (webview)           │
- │  lobby · settings · controls │                      │  lobby · settings · controls │
+ │  panel · call bar            │                      │  panel · call bar            │
  ├──────────────────────────────┤                      ├──────────────────────────────┤
  │ Rust core                    │   video/audio (RTP)  │ Rust core                    │
  │  capture → encode ──────────────────► LiveKit SFU ──────► decode → native viewer   │
@@ -18,8 +18,8 @@ building on it.
  │  cursor overlay window       │                      │  (mouse, keys, scroll)       │
  └──────────────────────────────┘                      └──────────────────────────────┘
                  ▲                                                    ▲
-                 └────────── HTTPS: auth, rooms, LiveKit tokens ──────┘
-                                     server/ (axum + Postgres)
+                 └──── HTTPS: sign-in, contacts, calls, call passes ──┘
+                        Supabase (Auth, Postgres, call-pass function)
 ```
 
 The Rust core is split into crates:
@@ -35,6 +35,15 @@ The Rust core is split into crates:
 - `crates/engine-cli` builds `tc-engine`, the engine process the desktop app starts. It speaks
   the commands and events in `crates/ipc` as JSON lines on stdin and stdout; see
   [the IPC protocol](ipc.md).
+- `crates/account` is the client for the backend: GitHub sign-in, the session, and the calls the
+  app makes. It also builds `tc-account`, for trying a backend from the terminal
+  ([accounts](accounts.md)).
+- `supabase/` is the backend itself: the database migration and the `call-pass` function
+  ([Accounts and calls](#6-accounts-and-calls)).
+- `apps/desktop` is the menu bar app ([The desktop app](#the-desktop-app)).
+
+The engine knows nothing about accounts. The app signs in, asks the backend who may join, and
+starts the engine with a call pass in its environment.
 
 ## Key decisions
 
@@ -157,7 +166,8 @@ engine's own native window (ADR 0007, and [the IPC protocol](ipc.md)).
 ### 2. WebRTC through LiveKit (self-hostable SFU)
 - LiveKit's Rust SDK (`livekit` crate, built on libwebrtc) gives us congestion control,
   NAT traversal, simulcast, and data channels without building our own.
-- Self-hosting is a single LiveKit server next to our API.
+- Self-hosting is a LiveKit server (LiveKit Cloud or `livekit-server`) next to a Supabase project
+  ([self-hosting](self-hosting.md)).
 - Peer-to-peer without an SFU is an option for 1:1 calls later. Not v1.
 - One LiveKit participant per person (screen, camera, and audio are tracks, not separate participants).
 
@@ -303,12 +313,25 @@ The decisions and what they cost are in [ADR 0006](adr/0006-voice.md).
 - Devices are selected with the SDK's live switch, also when joining: if the other side is
   already talking, playout has started, and a plain "set" is refused once a device is running.
 
-### 6. Server
-- Rust + axum + Postgres. Handles accounts, teams, rooms, and issuing LiveKit access tokens.
-  It never touches media.
-- The tokens it issues are call passes: the engine takes one in `TWINCURSOR_PASS` and needs no
-  API secret of its own.
-- `deploy/` ships a docker compose file: server, LiveKit, Postgres, and Caddy for TLS.
+### 6. Accounts and calls
+The backend is a Supabase project, not a server of our own
+([ADR 0011](adr/0011-accounts-and-call-passes.md)). The details are in
+[`supabase/README.md`](../supabase/README.md), [accounts](accounts.md) and [calls](calls.md).
+- **Supabase Auth** signs people in with GitHub only. The app runs the OAuth code flow with PKCE
+  through a one-time listener on `127.0.0.1:53682`, and keeps the session in its config folder.
+  Names, handles and pictures come from the GitHub identity.
+- **Postgres** holds profiles, contacts, calls and call members. Row-level security lets each
+  person read only their own rows and the people in a live call with them; no table can be
+  written directly, and every change is an RPC function that checks who is calling. The app
+  polls `inbox` every 2 seconds: the host's heartbeat, and how knocks and rings arrive.
+- **The `call-pass` Edge Function** signs a LiveKit token for one person, one room and 10
+  minutes to join, after the database says that person may join. The LiveKit API secret is one
+  of its secrets and is nowhere else; the app carries only the project URL and its public key,
+  baked in at build time (`apps/desktop/src-tauri/build.rs`).
+- **The engine joins with the pass** (`TWINCURSOR_PASS`) and never talks to Supabase. The
+  backend decides who may join a call, never who may control: that is the sharer's app and
+  engine alone.
+- It never touches media: screen, voice and input go through LiveKit.
 
 ## Measuring latency
 

@@ -1,127 +1,198 @@
-# Test plan for a test build
+# Test plan for a build
 
-A hands-on pass over everything the test app does, for two people on two computers. It takes
-about an hour. Testers who only want to try a call can follow the shorter
+A hands-on pass over everything the app does, for two people on two Macs. It takes about an hour
+and a half. Testers who only want to try a call can follow the shorter
 [testing guide](testing-guide.md).
 
-> The desktop app now lives in the menu bar: a panel under its icon and a call bar during calls
-> ([the UI](ui.md)), with calls started by signing in and sharing a link. Sections that mention
-> the start screen, room codes or **Join** describe the previous build and are being rewritten.
-
-Mark each line pass or fail. For a fail, note what happened, and copy the numbers and the log
-(see [What to send back](#what-to-send-back)).
+Mark each line pass or fail. For a fail, note what happened, and copy the numbers (see
+[What to send back](#what-to-send-back)).
 
 ## What you need
 
-- **Sharer:** an Apple silicon Mac on macOS 15 or later, with the disk image from
-  [Test builds](RELEASING.md#test-builds).
-- **Guest:** a second Mac with the same disk image, or a Windows PC with the viewer zip. Run the
-  plan once with each if you can.
-- Both on mains power, on different networks if possible (one on a phone hotspot is fine).
-- A second way to talk (a phone call) for the parts where voice is off or being tested.
+- **Two Apple silicon Macs** on macOS 15 or later, each with the disk image of a build made for
+  your backend ([Releasing](RELEASING.md#builds-for-people-to-install)), and two GitHub accounts.
+  One Mac is the **sharer**, the other the **guest**; swap roles for a second pass if you can.
+- For a first-run pass, Macs that have never run TwinCursor, or with its permissions removed in
+  System Settings > Privacy & Security.
+- Both plugged in and not in Low Power Mode, on different networks if possible (one on a phone
+  hotspot is fine). A second display on the sharer's Mac for section 11.
+- A second way to talk (a phone call) for the parts where voice is being tested.
 
 ## 1. Install and first open
 
 | # | Do | Expect |
 |---|---|---|
 | 1.1 | Open the disk image, drag TwinCursor to Applications, open it | macOS blocks it once; **Open Anyway** in System Settings > Privacy & Security lets it through |
-| 1.2 | Open it a second time | It opens with no warning |
-| 1.3 | Windows: extract the zip, double-click **Join TwinCursor** | SmartScreen warns once; **More info > Run anyway** opens a window asking for a name |
-| 1.4 | Mac: open **Settings** in the app | The server address and key are filled in, and the secret shows as built in, not as text |
+| 1.2 | Open it a second time | It opens with no warning. The panel hangs from the TwinCursor icon in the menu bar |
+| 1.3 | Click the icon; click it again; press Escape with the panel open; click another app | The panel opens, closes, closes, closes |
+| 1.4 | Right-click the icon | A menu with **Open TwinCursor** and **Quit TwinCursor** |
+| 1.5 | Open a build made without a backend, if you have one | The panel says "This build isn't connected to a server." and nothing else works |
 
-## 2. Permissions (Mac)
-
-| # | Do | Expect |
-|---|---|---|
-| 2.1 | Look at the start screen before allowing anything | Three rows, each "not allowed" or "not asked" |
-| 2.2 | Click **Ask** on Screen Recording, allow it in System Settings | The prompt names TwinCursor. The row turns to allowed within a few seconds, without restarting the app |
-| 2.3 | The same for Accessibility and Microphone | As above |
-| 2.4 | With Screen Recording not allowed, try **Share my screen** | It doesn't start, and says why |
-| 2.5 | With nothing allowed and Voice off, click **Join** | Joining works: a guest needs no permission to watch |
-
-## 3. Start a call
+## 2. Sign in
 
 | # | Do | Expect |
 |---|---|---|
-| 3.1 | Sharer: type a name, **Make one**, **Copy** | A code like `7kq2-m9xd-p4tz-hc3w`, and it pastes elsewhere |
-| 3.2 | Sharer: **Share my screen** at 1080p | "Sharing your screen", Connected, numbers start within a few seconds |
-| 3.3 | Guest: paste the code, **Join** | The sharer's screen opens in its own window; both sides list the other by name |
-| 3.4 | Guest: type the code in capitals, without dashes | It still joins |
-| 3.5 | Guest: join with a wrong code | No picture, "Waiting for the sharer", and the sharer sees nobody |
-| 3.6 | The sharer's TwinCursor window, seen from the guest | It isn't in the picture |
+| 2.1 | **Sign in with GitHub** | The browser opens GitHub; the panel says "Finish signing in in your browser…" and stays open |
+| 2.2 | Approve the app on GitHub | The tab says "You're signed in. You can close this tab."; the panel shows your picture and **Share my screen** |
+| 2.3 | Click your picture | Your name and @handle, **Settings…**, **Sign out**, **Quit TwinCursor** |
+| 2.4 | Quit and reopen the app | Still signed in |
+| 2.5 | Start a sign-in, then **Cancel** | Back to **Sign in with GitHub** |
+| 2.6 | **Sign out**, then sign in again | Signed out at once; signing in works |
+| 2.7 | Turn Wi-Fi off for a minute while signed in | A muted "Can't reach the server." at the bottom of the panel; you stay signed in, and it goes away once Wi-Fi is back |
 
-## 4. Picture
+## 3. Permissions, when first needed
 
-Read the **Numbers** line on each side for these.
-
-| # | Do | Expect |
-|---|---|---|
-| 4.1 | Share at 1080p, scroll code and switch apps | 60 fps or close, text readable, H.264 |
-| 4.2 | Share at 1440p | As above at the larger size |
-| 4.3 | Share at 4K between two Macs, guest's window full screen | HEVC. 30 fps is normal for the first 20 seconds or so, then 60. Small text is sharp |
-| 4.4 | Guest: make the viewer window small, then large again | The size in the numbers follows the window within a few seconds; the picture stays sharp at each size |
-| 4.5 | Play a video on the sharer's screen for a minute | Motion stays smooth; the bitrate rises and falls back afterwards |
-| 4.6 | Leave a mostly still screen up for two minutes | The picture stays sharp, no drift into blur |
-| 4.7 | Guest: move the pointer and type while watching | What the guest sees trails the sharer by a blink at most. Say so if it feels like more |
-
-## 5. Voice
+On a Mac that hasn't granted TwinCursor anything yet.
 
 | # | Do | Expect |
 |---|---|---|
-| 5.1 | Both with Voice on, headphones on, talk | Each hears the other clearly, with no obvious delay |
-| 5.2 | Both on speakers, talk over each other | No echo of your own voice coming back |
-| 5.3 | Sharer: **Mute**, then ⌃⌥⌘M from another app | The guest hears nothing while muted; the app shows "You're muted" |
-| 5.4 | Guest: **M** in the viewer window | The same, the other way |
-| 5.5 | One side joins with Voice off | The call works; the app says voice is off in this call |
-| 5.6 | Unplug headphones mid-call | Sound moves to the speakers without leaving the call |
+| 3.1 | Sharer: **Share my screen** | macOS asks for Screen Recording, naming TwinCursor. The share doesn't start; the panel says "TwinCursor needs Screen Recording to share your screen." with **Open Settings** |
+| 3.2 | Allow it in System Settings, click **Share my screen** again | It shares, without restarting the app |
+| 3.3 | Either side, first call | macOS asks for the microphone, naming TwinCursor |
+| 3.4 | Guest, with nothing granted: **Paste link** and join | Joining works: watching needs no permission |
+| 3.5 | Sharer, with Accessibility not granted: **Let in with control** | macOS asks for Accessibility. The guest is let in without control, and the bar says why, with **Open Settings** |
+| 3.6 | Grant Accessibility, then **Give control** to that guest from the bar's menu (**⋯**) | It works without restarting the app |
+| 3.7 | Sharer, with Accessibility not granted: **Allow** a plain request | Note what happens. The app asks for Accessibility only on Let in with control and Give control |
+
+## 4. Share and join by link
+
+| # | Do | Expect |
+|---|---|---|
+| 4.1 | Sharer: **Share my screen** | The call bar appears at the top centre: "Sharing your screen", **Copy link**. A notice says the link is on your clipboard |
+| 4.2 | Paste the clipboard somewhere | `twincursor://call/` and 32 letters and digits |
+| 4.3 | Sharer: open the panel | "You're sharing your screen", the link, **Copy link**, **Stop sharing** |
+| 4.4 | Guest: copy the link, **Paste link** | The bar says "Waiting for <sharer> to let you in…" with **Cancel** |
+| 4.5 | Guest: **Paste link** with the code alone, or the link with spaces around it | Same as 4.4 |
+| 4.6 | Guest: **Paste link** with something else on the clipboard | "That isn't a TwinCursor call link."; nothing else happens |
+| 4.7 | Guest: **Cancel** while waiting | The bar goes; the sharer's knock card goes within a few seconds |
+| 4.8 | Guest: paste the link of a call that has ended | A sentence saying the call has ended or wasn't found |
+
+## 5. Letting people in
+
+| # | Do | Expect |
+|---|---|---|
+| 5.1 | Guest knocks; sharer looks at the bar | "<name> wants to join" with their @handle. **Let in** and **Let in with control** are off for a second, with a thin line across the top; **Turn away** works at once |
+| 5.2 | Sharer clicks **Let in** as fast as possible after the knock appears | Nothing, or "Too soon. Try again." |
+| 5.3 | Sharer: **Let in** | The guest's viewer window opens on the sharer's screen; the sharer's bar says "With <name>" |
+| 5.4 | Sharer is typing in another app when the knock appears | The typing stays in that app; the bar never takes the keyboard |
+| 5.5 | Another guest knocks; sharer: **Turn away** | The guest is told "<sharer> didn't let you in." Pasting the same link again is refused |
+| 5.6 | Sharer: **Let in with control** for a new guest | The bar says "<name> can take control" with **Take back** |
+| 5.7 | The sharer's TwinCursor windows, seen from the guest | The panel and the bar aren't in the picture |
 
 ## 6. Control
 
 | # | Do | Expect |
 |---|---|---|
-| 6.1 | Guest: **Ask for control** (or F9 in the viewer) | The sharer's TwinCursor window comes to the front naming the guest. **Allow** is off for the first second |
+| 6.1 | A guest let in without control clicks **Control** in their bar (or F9 in the viewer) | Guest: "Asked for control…" with **Never mind**. Sharer's bar: "<name> wants to control your Mac", **Deny** and **Allow**, Allow off for a second |
 | 6.2 | Sharer: **Deny** | The guest is told no. Guest clicks and types: nothing happens on the sharer's Mac |
-| 6.3 | Guest asks again; sharer: **Allow** | Both sides say who is controlling, and a label on the sharer's screen names the guest |
+| 6.3 | Guest asks again; sharer: **Allow** | Sharer's bar turns red: "<name> is controlling", ⌃⌥⌘R keycaps, **Take back**. A label at the top of the sharer's screen names the guest, and a name tag follows their pointer. Guest's bar: "Controlling <sharer>'s Mac" |
 | 6.4 | Guest: type a paragraph in a text editor, with capitals and symbols | Every character arrives, in order |
 | 6.5 | Guest: click, double-click, drag to select, right-click, scroll | Each does what it would locally |
-| 6.6 | Guest: shortcuts (copy, paste, undo, switch tabs) | They act on the sharer's Mac. From Windows, note which keys you used |
-| 6.7 | Sharer: press ⌃⌥⌘R while another app is in front | Control ends at once; the guest's input stops working; the label goes away |
-| 6.8 | Allow again; sharer clicks **Take back control** | As above |
-| 6.9 | Allow again; guest presses F9 | Control is given back |
-| 6.10 | Guest asks; sharer does nothing for a minute | Nothing is granted. The guest can cancel with **Never mind** |
-| 6.11 | Guest asks, then leaves before the sharer answers | The prompt goes away; clicking nothing grants nothing |
-| 6.12 | Sharer uses their own mouse while the guest controls | The sharer's own input always works |
+| 6.6 | Guest: shortcuts (copy, paste, undo, switch tabs) | They act on the sharer's Mac |
+| 6.7 | Sharer: press ⌃⌥⌘R while another app is in front | Control ends at once; the guest's input stops working; the label goes away. Next time the guest asks, the sharer is asked again, even if they were trusted |
+| 6.8 | Allow again; sharer clicks **Take back** | As above |
+| 6.9 | Allow again; guest clicks **Give back** or presses F9 | Control is given back |
+| 6.10 | Guest let in with control (5.6) asks | They get control at once, no prompt; the label still shows |
+| 6.11 | That guest gives control back, then asks again | Granted again without a prompt |
+| 6.12 | Sharer: **Let in with control**, then ⌃⌥⌘R before the guest's window has opened; guest asks | The sharer is asked: the revoke took the promise back |
+| 6.13 | Sharer: **⋯** > **Give control** next to a guest | That guest's row says "Can take control"; their next request is granted at once |
+| 6.14 | Guest asks; sharer does nothing for a minute | Nothing is granted. The guest can cancel with **Never mind** |
+| 6.15 | Guest asks, then leaves before the sharer answers | The request goes away; nothing is granted |
+| 6.16 | Sharer uses their own mouse while the guest controls | The sharer's own input always works |
+| 6.17 | Sharer locks the screen during control | Nothing the guest types reaches the lock screen |
 
-## 7. A guest that can't decode HEVC
+## 7. People and ringing
 
-| # | Do | Expect |
-|---|---|---|
-| 7.1 | Sharer shares at 4K; a Windows guest joins | The sharer's app says it switched to H.264. The picture comes back within a few seconds and stays |
-| 7.2 | A second, Mac guest in the same call | It keeps watching through the switch |
-
-## 8. Networks
-
-| # | Do | Expect |
-|---|---|---|
-| 8.1 | Guest on a phone hotspot | The call works; the size or frame rate may step down, and steps back up on a good network |
-| 8.2 | Sharer: turn Wi-Fi off for five seconds, then on | "Connection lost, reconnecting…", then the call resumes by itself |
-| 8.3 | Sharer: Wi-Fi off for a minute | The call ends with a sentence saying why, back at the start screen |
-
-## 9. Ending a call
+After section 5, each of you is in the other's **People**.
 
 | # | Do | Expect |
 |---|---|---|
-| 9.1 | Guest: **Leave** | The sharer's list empties; the sharer keeps sharing |
-| 9.2 | Guest: close the viewer window | The same as Leave |
-| 9.3 | Sharer: **Leave** | Both return to the start screen; the guest is told the call ended |
-| 9.4 | Sharer: quit the app with ⌘Q during control | Sharing and control stop at once; no TwinCursor process is left in Activity Monitor |
-| 9.5 | Start a new call straight after | It works with a new or the same code |
+| 7.1 | Both: open the panel | The other person is listed with their picture, name, @handle and **Call** |
+| 7.2 | A (not in a call): **Call** next to B | A starts sharing. A's row for B says "Ringing…". Within a few seconds B's panel opens by itself, without taking the keyboard: "<A> is calling", **Decline**, **Join** |
+| 7.3 | B: **Join** | B joins A's call without knocking; A's row says "In the call" |
+| 7.4 | Ring again; B: **Decline** | B's ring goes. A's row shows **Call** again |
+| 7.5 | Ring again; B does nothing for a minute | The ring goes from B's panel; A's row shows **Call** again |
+| 7.6 | Note for 7.4 and 7.5 | Whether A can tell a declined ring from a missed one. Today the row just goes back to **Call** |
+| 7.7 | B is in another call when A rings | Note what B sees |
+
+## 8. The call bar
+
+| # | Do | Expect |
+|---|---|---|
+| 8.1 | Drag the bar by its background | It moves; buttons still click. It reopens where you left it in the next call |
+| 8.2 | Click into other apps | The bar stays on top |
+| 8.3 | Make an app full screen | The bar is over it |
+| 8.4 | Switch to another Space | The bar is there too |
+| 8.5 | The mic button; then ⌃⌥⌘M from another app (sharer); **M** in the viewer (guest) | Each mutes; the other side hears nothing and is shown that you're muted. Again unmutes |
+| 8.6 | **⋯** | The call link with **Copy link**, the numbers, a row per guest with **Give control**, and your mic |
+| 8.7 | Light and dark appearance (System Settings > Appearance) | Both look right, with nothing showing at the corners |
+
+## 9. Quality
+
+Read the numbers in **⋯** on both sides. The calls with accounts share at 4K with HEVC.
+
+| # | Do | Expect |
+|---|---|---|
+| 9.1 | Guest: make the viewer window full screen on a large display | **Resolution** grows to what the window can show, up to the sharer's display (3840×2160 from a 4K display). **Codec** HEVC |
+| 9.2 | Scroll code and switch apps on the sharer | **Frame rate** near 60 after the first 20 seconds or so (30 before is normal). Small text is sharp |
+| 9.3 | Look at **Bitrate** and **Round trip** | Note both. On home Wi-Fi, round trip should be well under 100 ms |
+| 9.4 | Guest: make the viewer window small, then large again | **Resolution** follows within a few seconds; **Shown at** says 1:1 when the picture fits the window |
+| 9.5 | Play a video on the sharer's screen for a minute | Motion stays smooth; the bitrate rises and falls back afterwards |
+| 9.6 | Leave a mostly still screen up for two minutes | The picture stays sharp, no drift into blur |
+| 9.7 | Guest: move the pointer and type while in control | What the guest sees trails the sharer by a blink at most. Say so if it feels like more |
+| 9.8 | Voice: talk on headphones, then both on speakers, talking over each other | Clear, no obvious delay, and no echo of your own voice |
+
+## 10. Ending and leaving
+
+| # | Do | Expect |
+|---|---|---|
+| 10.1 | Guest: **Leave** | The guest's bar and viewer go; the sharer's bar loses them and keeps sharing |
+| 10.2 | Guest: close the viewer window | The same as Leave |
+| 10.3 | Sharer: **Stop** | The sharer's bar goes. Within a few seconds the guest's call ends by itself and says "The call ended." |
+| 10.4 | Sharer: **Quit TwinCursor** (⌘Q) during control | Control and sharing stop at once; the guest's call ends; no TwinCursor process is left in Activity Monitor |
+| 10.5 | Guest: quit during a call | The sharer's bar loses them |
+| 10.6 | Start a new call straight after | It works, with a new link |
+| 10.7 | Paste an old call's link | Refused: that call has ended |
+
+## 11. Two displays (sharer)
+
+| # | Do | Expect |
+|---|---|---|
+| 11.1 | Share with a second display connected | Note which display the guest sees |
+| 11.2 | Guest takes control and clicks near each edge of the picture | Clicks land where the guest points |
+| 11.3 | Click the menu bar icon on each display | The panel opens under the icon on that display |
+| 11.4 | Drag the bar to the second display, then unplug it | The bar comes back onto the remaining display |
+
+## 12. Bad networks
+
+| # | Do | Expect |
+|---|---|---|
+| 12.1 | Guest on a phone hotspot | The call works; the size or frame rate may step down, and steps back up on a good network |
+| 12.2 | Sharer: Wi-Fi off for five seconds, then on | The bar says "Reconnecting…", then the call resumes by itself |
+| 12.3 | Sharer: Wi-Fi off for a minute | The call ends with a sentence saying why |
+| 12.4 | Guest: Wi-Fi off while waiting to be let in | After a while: "Can't reach the server, so you stopped waiting to join." |
+
+## Windows viewer
+
+The Windows viewer has no accounts and can't join a call started from the menu bar app. It is a
+terminal viewer that joins a room by code on a LiveKit server whose key and secret are in its
+`server.txt` ([Releasing](RELEASING.md#builds-with-a-livekit-key-legacy)). A Mac sharer for it
+runs `tc-engine share --room CODE --name NAME` from a terminal against the same server, which
+can't answer control requests; so this pass covers watching and voice only.
+
+| # | Do | Expect |
+|---|---|---|
+| W.1 | Extract the zip, double-click **Join TwinCursor** | SmartScreen warns once; **More info > Run anyway** opens a window asking for a name and a room code |
+| W.2 | Enter the code the sharer used | The sharer's screen opens in its own window; text is readable |
+| W.3 | Talk; press **M** in the viewer | Both hear each other; M mutes |
+
+The Windows viewer can't decode HEVC, and only the menu bar app switches a call to H.264 for
+it, so the terminal sharer uses the default H.264.
 
 ## What to send back
 
-For each fail, and once for a normal call at each quality:
+For each fail, and once for a normal call:
 
-- The **Copy numbers** line from both sides.
-- The log: **Details > Copy** in the Mac app, or the last lines of the black window on Windows.
-- Both computers' models and OS versions, and each side's network.
+- The **Copy numbers** text from both sides (**⋯** in the bar).
+- Both Macs' models and macOS versions, and each side's network.
 - A screenshot or a short phone video when the picture or the delay is the problem.

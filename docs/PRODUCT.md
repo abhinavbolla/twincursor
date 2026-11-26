@@ -24,7 +24,7 @@ as a real platform.
 
 ## Core experience (v1)
 
-1. Start a call and send a link, or click a teammate's name.
+1. Start a call and send a link, or ring someone you've paired with before.
 2. Talk right away (voice first, camera optional).
 3. Share a screen or a single window. The viewer gets crisp, readable text at low latency.
 4. The sharer grants control. The guest gets their own cursor and can type and click on the sharer's machine.
@@ -55,8 +55,15 @@ See [ADR 0005](adr/0005-unattended-access.md).
 Recording, chat, whiteboard, calls with more than 4 people, and an AI pair (maybe later). Mobile
 apps and access to your own devices come after v1 (above).
 
+## Decided
+
+- **Accounts:** sign in with GitHub, and only GitHub. Names, handles and pictures come from
+  GitHub, so the name you see before letting someone in is theirs
+  ([ADR 0011](adr/0011-accounts-and-call-passes.md)).
+- **Self-hosting:** a Supabase project and a LiveKit server, both available as hosted services
+  with free tiers or run yourself ([self-hosting](self-hosting.md)).
+
 ## Open questions
 
-- Accounts: email magic link, GitHub OAuth, or both?
 - Hosted offering? If yes, how do we fund it (donations, paid hosted tier)?
 - Linux: when to start, and Wayland (PipeWire + libei) vs X11 priority.
