@@ -16,6 +16,10 @@ name = "account"
 name = "tc-account"
 path = "src/bin/tc-account.rs"
 
+[features]
+# `account::fake`, a stand-in backend for other crates' tests. Never in a shipped build.
+fake = []
+
 [dependencies]
 # HTTP to the backend. Already in the tree through LiveKit (livekit-net, webrtc-sys-build), with
 # these same features, so it adds no packages.
