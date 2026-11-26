@@ -1,38 +1,55 @@
-//! The TwinCursor desktop app: one window to start or join a call. The call itself runs in the
-//! engine, `tc-engine` (inside the bundle), which does everything that touches the screen, the
-//! mic and input, and shows the shared screen in its own native window. The webview only shows
-//! text and controls (docs/adr/0007-shell-and-engine.md).
+//! The TwinCursor desktop app: a menu bar app with two small windows, the panel (from the menu
+//! bar icon) and the call bar (during a call). The call itself runs in the engine, `tc-engine`
+//! (inside the bundle), which does everything that touches the screen, the mic and input, and
+//! shows the shared screen in its own native window. The webview only shows text and controls
+//! (docs/adr/0007-shell-and-engine.md).
 //!
-//! `engine.rs` starts and stops the engine and reads its events, `settings.rs` keeps the server
-//! overrides, `accounts.rs` signs in and out (`backend.rs` says where), and `script.rs` is the
-//! test-only `--script` mode. This file connects them to the window.
+//! `calls.rs` runs calls with accounts (sharing, joining by link, letting in, ringing) and owns
+//! the engine of every call; `engine.rs` starts and stops the engine and reads its events;
+//! `windows.rs` makes the windows and the menu bar icon and decides when they show (with
+//! `surfaces.rs`, `native.rs` and `mark.rs`); `settings.rs` keeps the server overrides;
+//! `accounts.rs` signs in and out (`backend.rs` says where); `script.rs` is the test-only
+//! `--script` mode. This file connects them.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod accounts;
 mod backend;
+mod calls;
 mod engine;
+mod link;
+mod mark;
+mod native;
 mod script;
+mod seams;
 mod settings;
+mod snapshot;
+mod surfaces;
+mod windows;
 
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, Manager, RunEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewWindow};
 
 use accounts::{AccountShell, AccountView};
-use engine::{Call, Launcher, Output, Plan, Sink, TestHooks};
+use calls::{Calls, HomeView, Options, Setup};
+use engine::{Output, Quality, Sink, TestHooks};
+use seams::{
+    EnginePermits, MemoryClipboard, RealEngines, ScriptPermits, SystemClipboard, SystemClock,
+};
 use settings::{Settings, SettingsChange, SettingsView};
+use surfaces::Hold;
+use windows::{HeldPermits, Windows};
 
 /// The webview hears about the call on this event.
 const ENGINE_EVENT: &str = "engine";
-
-#[derive(Default)]
-struct AppState {
-    call: Mutex<Option<Call>>,
-}
+/// And about accounts and calls on this one: the whole [`HomeView`], whenever it changes.
+const HOME_EVENT: &str = "home";
+/// A session file for this run instead of the one in the app's config folder (for tests).
+const SESSION_FILE_ENV: &str = "TWINCURSOR_SESSION_FILE";
 
 #[derive(Serialize)]
 struct EngineInfo {
@@ -72,77 +89,104 @@ fn engine_info() -> EngineInfo {
     }
 }
 
-/// Starts a call unless one is running. Its output goes to the window, and to `also`.
-fn begin(
-    app: &AppHandle,
-    plan: Plan,
-    env: Vec<(String, String)>,
-    hooks: TestHooks,
-    also: Option<Sink>,
-) -> Result<(), String> {
-    let plan = plan.checked()?;
-    let state = app.state::<AppState>();
-    let mut slot = state.call.lock().unwrap();
-    if slot.as_ref().is_some_and(|call| !call.is_done()) {
-        return Err("A call is already running.".into());
-    }
-    if let Some(old) = slot.take() {
-        old.shutdown();
-    }
-    let launcher = Launcher {
-        exe: engine::engine_path()?,
-        env,
-        app_pid: std::process::id(),
-        hooks,
-    };
-    let window = app.clone();
-    let sink: Sink = Arc::new(move |output: Output| {
-        if let Some(also) = &also {
-            also(output.clone());
-        }
-        let asked = matches!(&output, Output::Event { event } if event["event"] == "control_asked");
-        let _ = window.emit(ENGINE_EVENT, output);
-        if asked {
-            bring_forward(&window);
-        }
-    });
-    *slot = Some(Call::start(launcher, plan, sink)?);
-    Ok(())
-}
-
-/// A control request must be seen: the window comes to the front, out of the Dock if minimised,
-/// and the Dock icon asks for attention. The window is left out of the shared picture, so only
-/// the sharer sees it.
-fn bring_forward(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-        let _ = window.request_user_attention(Some(tauri::UserAttentionType::Critical));
-    }
-}
-
+/// The page in the calling window is `height` points tall: the window follows (`windows.rs`).
 #[tauri::command]
-fn start_call(app: AppHandle, plan: Plan) -> Result<(), String> {
-    let env = load_settings(&app)?.env();
-    begin(&app, plan, env, TestHooks::default(), None)
+fn fit_window(window: WebviewWindow, windows: tauri::State<'_, Windows>, height: f64) {
+    windows.fit(&window, height);
+}
+
+/// Escape in the panel.
+#[tauri::command]
+fn hide_panel(windows: tauri::State<'_, Windows>) {
+    windows.hide_panel();
+}
+
+/// Quit TwinCursor (the panel's menu): any call is ended or left properly first.
+#[tauri::command]
+fn quit(windows: tauri::State<'_, Windows>) {
+    windows.quit();
 }
 
 /// One command for the engine, as the person clicked it. Typed, so only commands the protocol
-/// knows get through; an allow names the request the person answered.
+/// knows get through; an allow names the request the person answered, and is refused if it
+/// comes within a second of that request being shown.
 #[tauri::command]
-fn send_command(state: tauri::State<'_, AppState>, command: ipc::Command) -> Result<(), String> {
-    match state.call.lock().unwrap().as_ref() {
-        Some(call) if !call.is_done() => call.send(&command),
-        _ => Err("No call is running.".into()),
-    }
+fn send_command(calls: tauri::State<'_, Calls>, command: ipc::Command) -> Result<(), String> {
+    calls.send_command(&command)
 }
 
 #[tauri::command]
-fn leave_call(state: tauri::State<'_, AppState>) {
-    if let Some(call) = state.call.lock().unwrap().as_ref() {
-        call.leave();
-    }
+fn leave_call(calls: tauri::State<'_, Calls>) {
+    calls.leave_engine();
+}
+
+#[tauri::command]
+fn home_state(calls: tauri::State<'_, Calls>) -> HomeView {
+    calls.home()
+}
+
+/// The current call's engine output, for a window opened mid-call to replay.
+#[tauri::command]
+fn call_snapshot(calls: tauri::State<'_, Calls>) -> Vec<Output> {
+    calls.snapshot()
+}
+
+#[tauri::command]
+async fn share(calls: tauri::State<'_, Calls>) -> Result<HomeView, String> {
+    calls.share().await
+}
+
+/// Paste link: the app reads the clipboard itself; the window gets only the outcome.
+#[tauri::command]
+async fn join_from_clipboard(calls: tauri::State<'_, Calls>) -> Result<HomeView, String> {
+    calls.join_from_clipboard().await
+}
+
+#[tauri::command]
+async fn join_link(calls: tauri::State<'_, Calls>, text: String) -> Result<HomeView, String> {
+    calls.join_link(&text).await
+}
+
+#[tauri::command]
+async fn cancel_knock(calls: tauri::State<'_, Calls>) -> Result<HomeView, String> {
+    calls.cancel_knock().await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn answer_knock(
+    calls: tauri::State<'_, Calls>,
+    user_id: String,
+    let_in: bool,
+    control: bool,
+) -> Result<HomeView, String> {
+    calls.answer_knock(&user_id, let_in, control).await
+}
+
+#[tauri::command]
+async fn give_control(
+    calls: tauri::State<'_, Calls>,
+    identity: String,
+) -> Result<HomeView, String> {
+    calls.give_control(&identity).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn ring(calls: tauri::State<'_, Calls>, user_id: String) -> Result<HomeView, String> {
+    calls.ring(&user_id).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn answer_ring(
+    calls: tauri::State<'_, Calls>,
+    call_id: String,
+    accept: bool,
+) -> Result<HomeView, String> {
+    calls.answer_ring(&call_id, accept).await
+}
+
+#[tauri::command]
+async fn end(calls: tauri::State<'_, Calls>) -> Result<HomeView, String> {
+    calls.end().await
 }
 
 /// `tc-engine permissions`, in a fresh process each time: macOS applies a new grant only to
@@ -227,28 +271,49 @@ fn save_settings(app: AppHandle, change: SettingsChange) -> Result<SettingsView,
 }
 
 #[tauri::command]
-async fn account_state(account: tauri::State<'_, AccountShell>) -> Result<AccountView, String> {
+async fn account_state(
+    account: tauri::State<'_, Arc<AccountShell>>,
+) -> Result<AccountView, String> {
     Ok(account.view().await)
 }
 
 /// Signs in with GitHub in the default browser. Resolves once signed in, or with a sentence.
+/// The panel stays open meanwhile (the browser takes focus) and comes back when it's over.
 #[tauri::command]
-async fn sign_in(account: tauri::State<'_, AccountShell>) -> Result<AccountView, String> {
-    account.sign_in(accounts::open_browser).await
+async fn sign_in(
+    account: tauri::State<'_, Arc<AccountShell>>,
+    calls: tauri::State<'_, Calls>,
+    windows: tauri::State<'_, Windows>,
+) -> Result<AccountView, String> {
+    windows.hold(Hold::SignIn);
+    let view = account.sign_in(accounts::open_browser).await;
+    windows.release(Hold::SignIn);
+    calls.refresh().await;
+    view
 }
 
 #[tauri::command]
-fn cancel_sign_in(account: tauri::State<'_, AccountShell>) {
+fn cancel_sign_in(account: tauri::State<'_, Arc<AccountShell>>) {
     account.cancel_sign_in();
 }
 
+/// Signs out, ending or leaving any call first.
 #[tauri::command]
-async fn sign_out(account: tauri::State<'_, AccountShell>) -> Result<AccountView, String> {
-    account.sign_out().await
+async fn sign_out(
+    account: tauri::State<'_, Arc<AccountShell>>,
+    calls: tauri::State<'_, Calls>,
+) -> Result<AccountView, String> {
+    if calls.busy() {
+        let _ = calls.end().await;
+    }
+    let view = account.sign_out().await;
+    calls.refresh().await;
+    view
 }
 
 /// The account backend this run names, if any, with its session file in the app's config
-/// directory. A backend that is set up wrongly is reported and left out.
+/// directory (or where `TWINCURSOR_SESSION_FILE` says). A backend that is set up wrongly is
+/// reported and left out.
 fn account_shell(app: &AppHandle) -> AccountShell {
     let backend = match backend::from_environment() {
         Ok(Some(backend)) => backend,
@@ -258,61 +323,198 @@ fn account_shell(app: &AppHandle) -> AccountShell {
             return AccountShell::none();
         }
     };
-    let shell = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| format!("No config folder: {e}."))
-        .and_then(|dir| AccountShell::new(backend, dir.join(accounts::SESSION_FILE)));
+    let session_file = match std::env::var_os(SESSION_FILE_ENV).filter(|v| !v.is_empty()) {
+        Some(path) => Ok(PathBuf::from(path)),
+        None => app
+            .path()
+            .app_config_dir()
+            .map(|dir| dir.join(accounts::SESSION_FILE))
+            .map_err(|e| format!("No config folder: {e}.")),
+    };
+    let shell = session_file.and_then(|file| AccountShell::new(backend, file));
     shell.unwrap_or_else(|e| {
         eprintln!("accounts: {e}");
         AccountShell::none()
     })
 }
 
-/// `--script PATH --report PATH`: share as the script says, write what happens, maybe quit.
-fn run_script(app: AppHandle, script_path: PathBuf, report_path: PathBuf) {
+/// What `--script` mode reads before the app starts.
+struct ScriptRun {
+    script: script::Script,
+    report: Arc<script::Report>,
+    outputs: mpsc::Receiver<Output>,
+    tee: mpsc::Sender<Output>,
+}
+
+fn load_script(
+    script_path: &std::path::Path,
+    report_path: &std::path::Path,
+) -> Result<ScriptRun, String> {
+    let report = Arc::new(script::Report::create(report_path)?);
+    report.write(serde_json::json!({ "kind": "app", "pid": std::process::id() }));
+    let script = script::Script::read(script_path).inspect_err(|e| {
+        report.write(serde_json::json!({ "kind": "script", "ok": false, "error": e }));
+    })?;
+    let (tee, outputs) = mpsc::channel();
+    Ok(ScriptRun {
+        script,
+        report,
+        outputs,
+        tee,
+    })
+}
+
+/// The call flows, wired to the windows (and, in script mode, to the report).
+fn make_calls(
+    app: &AppHandle,
+    windows: &Windows,
+    account: Arc<AccountShell>,
+    run: Option<&ScriptRun>,
+) -> Calls {
+    let window = app.clone();
+    let surfaces = windows.clone();
+    let report = run.map(|r| r.report.clone());
+    let tee = run.map(|r| r.tee.clone());
+    let on_engine: Sink = {
+        let report = report.clone();
+        let tee = tee.map(std::sync::Mutex::new);
+        Arc::new(move |output: Output| {
+            if let Some(report) = &report {
+                report.output(&output);
+            }
+            if let Some(tee) = &tee {
+                let _ = tee.lock().unwrap().send(output.clone());
+            }
+            let asked =
+                matches!(&output, Output::Event { event } if event["event"] == "control_asked");
+            let _ = window.emit(ENGINE_EVENT, output);
+            if asked {
+                surfaces.control_asked();
+            }
+        })
+    };
+    let window = app.clone();
+    let on_home = {
+        let report = report.clone();
+        let surfaces = windows.clone();
+        Arc::new(move |home: &HomeView| {
+            if let Some(report) = &report {
+                report.write(serde_json::json!({ "kind": "home", "home": home }));
+            }
+            let _ = window.emit(HOME_EVENT, home);
+            surfaces.on_home(home);
+        })
+    };
+    let trace: Arc<dyn Fn(Value) + Send + Sync> = match report {
+        Some(report) => Arc::new(move |v: Value| {
+            report.write(serde_json::json!({ "kind": "trace", "trace": v }))
+        }),
+        None => Arc::new(|_| {}),
+    };
+    let runtime = tauri::async_runtime::handle().inner().clone();
+    let setup = match run {
+        // Pattern capture, recorded input, voice off, a clipboard in memory, and the
+        // permissions those need, which are none.
+        Some(run) => Setup {
+            account,
+            engines: Arc::new(RealEngines {
+                hooks: run.script.hooks(),
+            }),
+            clipboard: Arc::new(MemoryClipboard::default()),
+            permits: Arc::new(ScriptPermits),
+            clock: Arc::new(SystemClock),
+            options: Options {
+                quality: run.script.quality(),
+                voice: false,
+            },
+            on_home,
+            on_engine,
+            trace,
+            runtime,
+        },
+        None => Setup {
+            account,
+            engines: Arc::new(RealEngines {
+                hooks: TestHooks::default(),
+            }),
+            clipboard: Arc::new(SystemClipboard),
+            permits: Arc::new(HeldPermits {
+                inner: EnginePermits,
+                windows: windows.clone(),
+            }),
+            clock: Arc::new(SystemClock),
+            options: Options {
+                quality: Quality::K4,
+                voice: true,
+            },
+            on_home,
+            on_engine,
+            trace,
+            runtime,
+        },
+    };
+    Calls::new(setup)
+}
+
+/// Plays the script's steps, then maybe quits.
+fn run_script(app: AppHandle, run: ScriptRun) {
+    let ScriptRun {
+        script,
+        report,
+        outputs,
+        ..
+    } = run;
+    let calls = app.state::<Calls>().inner().clone();
     let fail = |app: &AppHandle, message: String| {
         eprintln!("script: {message}");
         app.exit(2);
     };
-    let report = match script::Report::create(&report_path) {
-        Ok(report) => Arc::new(report),
-        Err(e) => return fail(&app, e),
-    };
-    report.write(serde_json::json!({ "kind": "app", "pid": std::process::id() }));
-    let script = match script::Script::read(&script_path) {
-        Ok(script) => script,
-        Err(e) => return fail(&app, e),
-    };
-    let (tx, rx) = mpsc::channel::<Output>();
-    let tee = {
-        let report = report.clone();
-        Arc::new(move |output: Output| {
-            report.output(&output);
-            let _ = tx.send(output);
-        }) as Sink
-    };
     // Saved settings are left out: a test talks to the server its environment names, or the
     // local dev server.
-    if let Err(e) = begin(&app, script.plan(), Vec::new(), script.hooks(), Some(tee)) {
-        report.write(serde_json::json!({ "kind": "script", "ok": false, "error": e }));
-        return fail(&app, e);
+    if let Some(plan) = script.plan() {
+        if let Err(e) = calls.start_plan(plan, Vec::new()) {
+            report.write(serde_json::json!({ "kind": "script", "ok": false, "error": e }));
+            return fail(&app, e);
+        }
     }
     std::thread::spawn(move || {
-        let send = |command: &ipc::Command| -> Result<(), String> {
-            let state = app.state::<AppState>();
-            let slot = state.call.lock().unwrap();
-            slot.as_ref()
-                .ok_or_else(|| "No call is running.".to_owned())?
-                .send(command)
+        let runtime = tauri::async_runtime::handle();
+        let send = |command: &ipc::Command| calls.send_command(command);
+        let home = || serde_json::to_value(calls.home()).unwrap_or(Value::Null);
+        let act = |act: script::Act| -> Result<Value, String> {
+            let view = runtime.block_on(async {
+                match act {
+                    script::Act::Share => calls.share().await,
+                    script::Act::JoinLink(text) => calls.join_link(&text).await,
+                    script::Act::CancelKnock => calls.cancel_knock().await,
+                    script::Act::AnswerKnock {
+                        user_id,
+                        let_in,
+                        control,
+                    } => calls.answer_knock(&user_id, let_in, control).await,
+                    script::Act::GiveControl { name } => match calls.guest_identity(&name) {
+                        Some(identity) => calls.give_control(&identity).await,
+                        None => Err(calls::NOT_IN_THE_CALL.into()),
+                    },
+                    script::Act::Ring { user_id } => calls.ring(&user_id).await,
+                    script::Act::AnswerRing { call_id, accept } => {
+                        calls.answer_ring(&call_id, accept).await
+                    }
+                    script::Act::End => calls.end().await,
+                }
+            })?;
+            Ok(serde_json::to_value(view).unwrap_or(Value::Null))
         };
-        let result = script::play(
-            &script.steps,
-            &rx,
-            &send,
-            &|v| report.write(v),
-            script::STEP_TIMEOUT,
-        );
+        let write = |v: Value| report.write(v);
+        let host = script::Host {
+            outputs: &outputs,
+            send: &send,
+            report: &write,
+            home: &home,
+            act: &act,
+            timeout: script::STEP_TIMEOUT,
+        };
+        let result = script::play(&script.steps, &host);
         report.write(serde_json::json!({
             "kind": "script",
             "done": true,
@@ -326,12 +528,24 @@ fn run_script(app: AppHandle, script_path: PathBuf, report_path: PathBuf) {
 }
 
 fn main() {
-    let script = script::args_from(std::env::args_os().skip(1));
+    let script_args = script::args_from(std::env::args_os().skip(1));
+    let run = match &script_args {
+        Some((script_path, report_path)) => match load_script(script_path, report_path) {
+            Ok(run) => Some(run),
+            Err(e) => {
+                eprintln!("script: {e}");
+                std::process::exit(2);
+            }
+        },
+        None => None,
+    };
+    let run = std::sync::Mutex::new(run);
     let app = tauri::Builder::default()
-        .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             engine_info,
-            start_call,
+            fit_window,
+            hide_panel,
+            quit,
             send_command,
             leave_call,
             permissions,
@@ -342,28 +556,73 @@ fn main() {
             account_state,
             sign_in,
             cancel_sign_in,
-            sign_out
+            sign_out,
+            home_state,
+            call_snapshot,
+            share,
+            join_from_clipboard,
+            join_link,
+            cancel_knock,
+            answer_knock,
+            give_control,
+            ring,
+            answer_ring,
+            end
         ])
+        .on_menu_event(|app, event| {
+            if let Some(windows) = app.try_state::<Windows>() {
+                windows.on_app_menu(&event);
+            }
+        })
         .setup(move |app| {
-            app.manage(account_shell(app.handle()));
-            if let Some((script_path, report_path)) = script.clone() {
+            let account = Arc::new(account_shell(app.handle()));
+            let run = run.lock().unwrap().take();
+            // In script mode the windows exist but stay out of sight, unless the script asks.
+            let live = run.as_ref().is_none_or(|r| r.script.windows);
+            let windows = Windows::create(app.handle(), live)?;
+            let calls = make_calls(app.handle(), &windows, account.clone(), run.as_ref());
+            windows.attach(calls.clone());
+            app.manage(account);
+            app.manage(calls.clone());
+            app.manage(windows.clone());
+            calls.start_polling();
+            if run.is_none() {
+                // Launching the app opens the panel, as a click on the icon does.
+                windows.show_panel(true);
+            }
+            if let Some(run) = run {
                 let handle = app.handle().clone();
                 // Give the window a moment to appear: capture leaves out apps with a window.
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_secs(1));
-                    run_script(handle, script_path, report_path);
+                    run_script(handle, run);
                 });
             }
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("starting TwinCursor");
-    app.run(|app, event| {
-        if let RunEvent::Exit = event {
-            // Closing the engine's stdin ends it; the kernel does the same if we die instead.
-            if let Some(call) = app.state::<AppState>().call.lock().unwrap().take() {
-                call.shutdown();
+    app.run(|app, event| match event {
+        // Windows closing never quits a menu bar app; Quit and a finished script do.
+        RunEvent::ExitRequested { code, api, .. } => {
+            let quitting = app.try_state::<Windows>().is_some_and(|w| w.quitting());
+            if !surfaces::allow_exit(code, quitting) {
+                api.prevent_exit();
             }
         }
+        // The Dock icon (or opening the app again): the panel.
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { .. } => {
+            if let Some(windows) = app.try_state::<Windows>() {
+                windows.show_panel(true);
+            }
+        }
+        RunEvent::Exit => {
+            // Closing the engine's stdin ends it; the kernel does the same if we die instead.
+            if let Some(calls) = app.try_state::<Calls>() {
+                calls.shutdown();
+            }
+        }
+        _ => {}
     });
 }

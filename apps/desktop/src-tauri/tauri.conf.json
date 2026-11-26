@@ -10,16 +10,7 @@
     "beforeBuildCommand": "npm run build"
   },
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "TwinCursor",
-        "width": 760,
-        "height": 720,
-        "minWidth": 560,
-        "minHeight": 480
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' https://avatars.githubusercontent.com"
     }

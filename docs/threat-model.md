@@ -3,8 +3,7 @@
 TwinCursor shows your screen to someone else and can let them use your computer. That's the
 product, so it needs to be clear what protects you, and what doesn't.
 
-This describes the design for remote control and the first release. Remote control isn't finished
-yet. Where something isn't built, it says so.
+This describes the app as it is now. Where something isn't built, it says so.
 
 ## What we're protecting
 
@@ -15,7 +14,8 @@ yet. Where something isn't built, it says so.
   They may include passwords.
 - **What's said.** Only people in the call should hear it, and nothing should be sent while
   you're muted.
-- Accounts and room access on the server (when it exists).
+- **Who can join a call.** Only people the host let in, or who answered the host's ring, get a
+  call pass.
 
 ## Who we consider
 
@@ -26,7 +26,8 @@ yet. Where something isn't built, it says so.
 | A guest you granted control | Anything you can do on that computer | Allowed by design, so consent must be obvious and revocable |
 | A guest you didn't grant control | Inject input anyway | Must be stopped |
 | A buggy or stalled network | Leave a key or button stuck down | Must be handled |
-| Whoever runs the server | See video, hear voice and read keystrokes | **Not protected today**: see below |
+| Whoever runs the LiveKit server | See video, hear voice and read keystrokes | **Not protected today**: see below |
+| Whoever runs the backend | See who has an account, who is whose contact, and who called whom and when | Allowed by design: they hold that data ([ADR 0011](adr/0011-accounts-and-call-passes.md#consequences)). They can't see or hear a call, or grant control |
 | Malware on either computer | Anything | Out of scope |
 
 ## How control works
@@ -44,6 +45,15 @@ weaken them won't be merged.
   engine's stdin); no message from a guest or the server can, and it is never stored. The guest
   still has to ask each time, one controller at a time, and the label shows every grant. Any
   revoke, even with nobody in control, takes every trust back.
+- **A request can't be answered by a stray click.** A knock or a control request can appear
+  while you're typing or about to click something else. The app's Rust side refuses to let
+  someone in until a second after their knock was first on screen, and refuses an Allow until a
+  second after that request was ("Too soon. Try again."), whatever the window does. The call bar
+  that shows them never takes the keyboard when it appears.
+  An Allow names its request and reaches only the engine that asked. Turning away and denying
+  are never delayed. "Let in with control" trusts that one identity if they join within a
+  minute, a promise kept in the engine, so any revoke (the hotkey included, even before they
+  join), the end of the call or a restart of the engine cancels it ([calls](calls.md#arming-why-let-in-and-allow-wait-a-second)).
 - **Names come from the token.** The name in "Sam wants control", in "Sam is controlling" and in
   the list of trusted guests is the one in that person's token, not the one their own app sends.
   With a call pass, that is the account's name, signed by the account server. Without one, it is
@@ -79,8 +89,7 @@ hotkey, the on-screen label, and real input on macOS.*
 ## Voice
 
 - **Your mic is on from the moment you join,** unless you start with `--audio off`. In the
-  desktop app, voice is a choice on the start screen, and turning it off means no mic and no
-  sound for that call.
+  desktop app, voice is on in every call, and the call bar's mic button mutes it.
 - **Mute stops the sound at its source.** A muted track sends silence, not your voice at a lower
   level, and the other side is shown that you're muted. Mute is yours alone: the other side
   can't unmute you.
@@ -92,8 +101,8 @@ hotkey, the on-screen label, and real input on macOS.*
 
 - **The server can see everything that passes through it.** WebRTC encrypts traffic between each
   person and the LiveKit server, but the server decrypts it to forward it. So whoever runs the
-  server can read video, audio and keystrokes. Self-hosting means that's you. End-to-end encryption
-  is on the [roadmap](ROADMAP.md) under "Later".
+  server can read video, audio and keystrokes: you, if you run `livekit-server` yourself, or
+  LiveKit if you use LiveKit Cloud. End-to-end encryption is on the [roadmap](ROADMAP.md).
 - **A guest in control can do anything you can.** That includes opening a terminal. Only grant
   control to people you'd hand your unlocked laptop to, and stay at the computer.
 - **Screen sharing shows what's on your screen,** including notifications. Excluding windows or
@@ -102,11 +111,23 @@ hotkey, the on-screen label, and real input on macOS.*
   document what we find.
 - **Guests shouldn't type passwords during control.** They go to the sharer's machine, and through
   the server, like every other keystroke.
-- **A room code is the only key to a call.** Anyone with the app, the server it uses and the
-  code can join. The app makes codes from 80 random bits and says to share them only with the
-  person you're calling; accounts and invitations come with the server.
-- **A test build with a baked-in server carries its secret.** `tc-engine` can be built with a
-  server's URL, API key and secret (`crates/engine-cli/build.rs`), so testers need no setup.
+- **A call link lets anyone signed in knock.** The link's code is 128 random bits; knowing it
+  lets someone ask to join, not join: the host lets each person in, and the backend signs a pass
+  only for those. Share the link only with the person you're calling. The app puts it on your
+  clipboard when you share, where other apps you run can read it, as they can anything you copy.
+  Paste link reads the clipboard only when you click it, in the app's Rust side; what it finds
+  goes to the link parser and nowhere else (never to the window or a log), and anything over 256
+  characters isn't looked at.
+- **Anyone with a GitHub account can sign up** on a backend that allows sign-ups. An account
+  alone can knock only with a link and ring only mutual contacts. Whoever runs the backend can
+  turn sign-ups off ([self-hosting](self-hosting.md#7-what-you-are-responsible-for)).
+- **A room code is the only key to a room-code call.** The terminal tools and the Windows viewer
+  join rooms by name on a server whose key they hold; anyone with that key and the code can
+  join. The menu bar app doesn't start such calls.
+- **A build with a baked-in LiveKit server carries its secret.** `tc-engine` can be built with a
+  server's URL, API key and secret (`crates/engine-cli/build.rs`), for test rounds with the
+  Windows viewer (`package.sh --legacy-keys`). `package.sh` refuses to combine that with a
+  backend, and checks that an app built for a backend has no server key in its engine.
   Anyone who has that build can read the secret out of the binary and mint tokens for any room on
   that server. Give such builds only to people you'd give the key to, and rotate the key when a
   test round ends. `tc-engine config` never prints the secret. A Windows viewer zip with a
@@ -148,7 +169,7 @@ hotkey, the on-screen label, and real input on macOS.*
   signed-in person may do. No service key, LiveKit secret or GitHub secret is ever in the app.
 - **`tc-spike` isn't safe on untrusted networks.** It uses LiveKit's well-known development keys and
   an unencrypted `ws://` connection, so anyone who can reach the server can join. Real deployments
-  need the server's own keys and TLS, which come with the self-hosting work.
+  need the server's own keys and TLS ([self-hosting](self-hosting.md)).
 
 ## macOS permissions
 

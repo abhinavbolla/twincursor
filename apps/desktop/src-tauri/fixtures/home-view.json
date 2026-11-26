@@ -1,0 +1,59 @@
+{
+  "account": {
+    "configured": true,
+    "signed_in": true,
+    "me": {
+      "id": "00000000-0000-4000-8000-00000000000a",
+      "name": "Alex",
+      "handle": "alex",
+      "avatar_url": null
+    },
+    "signing_in": false
+  },
+  "stage": {
+    "kind": "hosting",
+    "call_id": "11111111-1111-4111-8111-111111111111",
+    "link": "twincursor://call/0123456789abcdef0123456789abcdef"
+  },
+  "contacts": [
+    {
+      "id": "00000000-0000-4000-8000-00000000000b",
+      "name": "Sam",
+      "handle": "sam",
+      "avatar_url": "https://avatars.githubusercontent.com/u/2"
+    }
+  ],
+  "rings": [
+    {
+      "call_id": "22222222-2222-4222-8222-222222222222",
+      "host": {
+        "id": "00000000-0000-4000-8000-00000000000b",
+        "name": "Sam",
+        "handle": "sam",
+        "avatar_url": "https://avatars.githubusercontent.com/u/2"
+      }
+    }
+  ],
+  "knocks": [
+    {
+      "user_id": "00000000-0000-4000-8000-00000000000c",
+      "name": "Kim",
+      "handle": null,
+      "avatar_url": null,
+      "armed": false
+    }
+  ],
+  "members": [
+    {
+      "user_id": "00000000-0000-4000-8000-00000000000b",
+      "name": "Sam",
+      "handle": "sam",
+      "avatar_url": null,
+      "state": "admitted"
+    }
+  ],
+  "notice": "The call link is on your clipboard.",
+  "error": null,
+  "needs": "accessibility",
+  "server_problem": "Can't reach the server."
+}

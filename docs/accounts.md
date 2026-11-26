@@ -6,7 +6,13 @@ login and picture), contacts, and calls that only the people you let in can join
 never sees the call's screen, voice or input, and it never decides remote control: the
 sharer's app does.
 
+What the backend stores about people, and what it never sees, is in
+[ADR 0011](adr/0011-accounts-and-call-passes.md#consequences). Setting one up is in
+[self-hosting](self-hosting.md).
+
 The code is in `crates/account` (no Tauri in it) and `apps/desktop/src-tauri/src/accounts.rs`.
+What the app does with an account (sharing, joining by link, letting people in, ringing) is in
+[calls](calls.md).
 
 ## Signing in
 
@@ -80,14 +86,15 @@ The app looks in this order, each value separately:
      npm run tauri dev
    ```
 
-2. Values baked in at build time:
+2. Values baked in at build time from `TWINCURSOR_BUILD_SUPABASE_URL` and
+   `TWINCURSOR_BUILD_SUPABASE_KEY` (`apps/desktop/src-tauri/build.rs`). To make an app for other
+   people, use `apps/desktop/scripts/package.sh BACKEND_FILE`, which sets them from a file and
+   checks that no LiveKit key goes in with them ([Releasing](RELEASING.md#builds-for-people-to-install)).
 
-   ```sh
-   TWINCURSOR_BUILD_SUPABASE_URL=https://<project>.supabase.co TWINCURSOR_BUILD_SUPABASE_KEY=<public key> \
-     cargo build --release -p twincursor-desktop
-   ```
+3. Neither: the panel says "This build isn't connected to a server." and nothing else works.
 
-3. Neither: the app has no account features and shows nothing about accounts.
+`TWINCURSOR_SESSION_FILE`, if set, is where the app keeps the session instead of its config
+folder, for tests that sign in with `tc-account` first.
 
 The URL must be `https://`, except `http://` on `127.0.0.1` or `localhost` for a local stack.
 

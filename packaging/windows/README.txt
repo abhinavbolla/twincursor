@@ -1,8 +1,12 @@
 TwinCursor viewer for Windows
 =============================
 
-Watch a Mac's shared screen, talk, and take control when the sharer allows it. Windows can
-join a call but can't share its own screen yet.
+Watch a Mac's shared screen and talk. Windows can join a call but can't share its own screen
+yet.
+
+This viewer has no sign-in. It can't join a call started from the TwinCursor menu bar app on a
+Mac; it joins a room by code on the server in server.txt, where the sharer starts the call from
+a terminal with the same server and room code.
 
 Start
 -----
@@ -21,8 +25,9 @@ In the viewer
 F9   ask for control, and give it back
 M    mute or unmute your mic (F8 while you're in control)
 
-While you're in control, your mouse and keyboard go to the sharer's Mac. The sharer sees
-that you're in control and can take it back at any time.
+F9 asks for control; only a sharer whose app can answer the request can grant it. While
+you're in control, your mouse and keyboard go to the sharer's Mac. The sharer sees that you're
+in control and can take it back at any time.
 
 server.txt
 ----------

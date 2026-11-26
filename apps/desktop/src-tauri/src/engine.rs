@@ -75,6 +75,11 @@ pub struct Plan {
     pub quality: Quality,
     /// Off: no mic and no sound (`--audio off`).
     pub voice: bool,
+    /// Join with the call pass in the engine's environment (`TWINCURSOR_PASS`), so the room and
+    /// the name come from the pass and are not flags. Never set by the webview: only the
+    /// shell's account flows (`calls.rs`) start an engine this way.
+    #[serde(skip)]
+    pub pass: bool,
 }
 
 const MAX_NAME: usize = 64;
@@ -125,8 +130,10 @@ pub fn engine_args(plan: &Plan, codec: Codec, app_pid: u32, hooks: &TestHooks) -
         Role::Join => push("view"),
     }
     push("--ipc");
-    push(&format!("--room={}", plan.room));
-    push(&format!("--name={}", plan.name));
+    if !plan.pass {
+        push(&format!("--room={}", plan.room));
+        push(&format!("--name={}", plan.name));
+    }
     if !plan.voice {
         push("--audio=off");
     }
@@ -215,7 +222,7 @@ pub fn start_failed_fallback(codec: Codec, switched: bool, facts: ExitFacts) -> 
 }
 
 /// What the app hears about a call. Sent to the webview as `{"kind": ..., ...}`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Output {
     /// An engine started. `args` are its flags (never the secret).
@@ -238,6 +245,11 @@ pub enum Output {
 /// Where a call's output goes. Called from the call's own thread.
 pub type Sink = Arc<dyn Fn(Output) + Send + Sync>;
 
+/// Gives the environment for an engine that replaces the current one (the switch to H.264): a
+/// fresh call pass, since a pass is only good for joining for a few minutes. Called on the
+/// call's own thread; an error ends the call with that sentence.
+pub type EnvHook = Arc<dyn Fn() -> Result<Vec<(String, String)>, String> + Send + Sync>;
+
 /// How to start engines for a call.
 #[derive(Clone)]
 pub struct Launcher {
@@ -246,6 +258,8 @@ pub struct Launcher {
     pub env: Vec<(String, String)>,
     pub app_pid: u32,
     pub hooks: TestHooks,
+    /// For a replacement engine, a fresh environment instead of `env`.
+    pub refresh_env: Option<EnvHook>,
 }
 
 impl std::fmt::Debug for Launcher {
@@ -256,15 +270,28 @@ impl std::fmt::Debug for Launcher {
             .field("env", &env)
             .field("app_pid", &self.app_pid)
             .field("hooks", &self.hooks)
+            .field("refresh_env", &self.refresh_env.is_some())
             .finish()
     }
 }
 
 enum Msg {
-    Line { generation: u64, line: String },
-    Log { line: String },
-    Eof { generation: u64 },
+    Line {
+        generation: u64,
+        line: String,
+    },
+    Log {
+        line: String,
+    },
+    Eof {
+        generation: u64,
+    },
     Send(String),
+    /// Only for the engine of this generation; dropped if it has been replaced since.
+    SendFor {
+        generation: u64,
+        line: String,
+    },
     Leave,
     Shutdown,
 }
@@ -318,6 +345,19 @@ impl Call {
         let line = serde_json::to_string(command).map_err(|e| e.to_string())?;
         self.tx
             .send(Msg::Send(line))
+            .map_err(|_| "The call has ended.".to_owned())
+    }
+
+    /// Sends `command` only to the engine `engine` (1 for the call's first, counting each
+    /// `Started`), never to one that replaced it. For anything that answers or grants something
+    /// one engine asked about, or that must not outlive that engine (`trust_control`).
+    pub fn send_for(&self, command: &ipc::Command, engine: u64) -> Result<(), String> {
+        let line = serde_json::to_string(command).map_err(|e| e.to_string())?;
+        self.tx
+            .send(Msg::SendFor {
+                generation: engine,
+                line,
+            })
             .map_err(|_| "The call has ended.".to_owned())
     }
 
@@ -463,6 +503,9 @@ impl Controller {
     /// Replaces the engine with one sharing in H.264, for the rest of the call.
     fn switch(&mut self, why: Switch) -> Result<(), String> {
         self.retire();
+        if let Some(fresh) = &self.launcher.refresh_env {
+            self.launcher.env = fresh()?;
+        }
         self.switched = true;
         self.codec = Codec::H264;
         self.leave_sent = None;
@@ -545,6 +588,16 @@ impl Controller {
                 Some(Msg::Eof { .. }) => Ok(false),
                 Some(Msg::Send(line)) => {
                     self.write(&line);
+                    Ok(false)
+                }
+                Some(Msg::SendFor { generation, line }) => {
+                    if Some(generation) == current {
+                        self.write(&line);
+                    } else {
+                        self.emit(Output::Log {
+                            line: "(a command for the replaced engine was dropped)".into(),
+                        });
+                    }
                     Ok(false)
                 }
                 Some(Msg::Leave) => {
@@ -667,6 +720,7 @@ mod tests {
             name: "Alex".into(),
             quality,
             voice,
+            pass: false,
         }
     }
 
@@ -803,6 +857,7 @@ mod tests {
             env,
             app_pid: 1,
             hooks: TestHooks::default(),
+            refresh_env: None,
         };
         assert!(!format!("{launcher:?}").contains(SECRET));
     }
@@ -947,6 +1002,7 @@ mod tests {
             r#"#!/bin/sh
 echo '{"event":"hello","version":1,"role":"sharer","engine":"fake"}'
 [ -n "$TWINCURSOR_API_SECRET" ] && echo "a secret is set" >&2
+[ -n "$FAKE_PASS_LABEL" ] && echo "joined with $FAKE_PASS_LABEL" >&2
 case "$*" in
   *codec=h265*)
     if [ -n "$FAIL_HEVC" ]; then echo '{"event":"ended","reason":"failed"}'; exit 1; fi
@@ -975,6 +1031,7 @@ done
             env,
             app_pid: 7,
             hooks: TestHooks::default(),
+            refresh_env: None,
         };
         let call = Call::start(launcher, plan(Role::Share, Quality::K4, false), sink).unwrap();
         let mut seen = Vec::new();
@@ -1057,6 +1114,125 @@ done
         assert_eq!(seen.last(), Some(&Output::Exited { code: Some(0) }));
     }
 
+    #[test]
+    fn a_pass_needs_no_room_or_name() {
+        let none = TestHooks::default();
+        for role in [Role::Share, Role::Join] {
+            let mut p = plan(role, Quality::K4, false);
+            p.pass = true;
+            let a = engine_args(&p, Codec::H265, 4242, &none);
+            assert!(
+                !a.iter()
+                    .any(|f| f.starts_with("--room") || f.starts_with("--name")),
+                "{a:?}"
+            );
+            assert!(has(&a, "--audio=off"));
+            if role == Role::Share {
+                for flag in ["--allow-control", "--exclude-app-pid=4242", "--codec=h265"] {
+                    assert!(has(&a, flag), "{flag} in {a:?}");
+                }
+            }
+        }
+        // The webview can't ask for pass mode.
+        let p: Plan = serde_json::from_str(
+            r#"{"role":"share","room":"r","name":"n","quality":"4k","voice":true,"pass":true}"#,
+        )
+        .unwrap();
+        assert!(!p.pass);
+    }
+
+    /// The switch to H.264 starts the new engine with a fresh environment (a new pass), and a
+    /// command meant for the first engine never reaches the second.
+    #[cfg(unix)]
+    #[test]
+    fn a_replacement_engine_gets_a_fresh_pass_and_none_of_the_old_ones_commands() {
+        let (tx, rx) = mpsc::channel();
+        let sink: Sink = Arc::new(move |o| {
+            let _ = tx.send(o);
+        });
+        let fresh: EnvHook =
+            Arc::new(|| Ok(vec![("FAKE_PASS_LABEL".to_owned(), "pass-2".to_owned())]));
+        let launcher = Launcher {
+            exe: fake_engine("fresh"),
+            env: vec![("FAKE_PASS_LABEL".to_owned(), "pass-1".to_owned())],
+            app_pid: 7,
+            hooks: TestHooks::default(),
+            refresh_env: Some(fresh),
+        };
+        let mut p = plan(Role::Share, Quality::K4, false);
+        p.pass = true;
+        let call = Call::start(launcher, p, sink).unwrap();
+        let mut seen = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut sent = false;
+        while Instant::now() < deadline {
+            let Ok(output) = rx.recv_timeout(Duration::from_millis(50)) else {
+                continue;
+            };
+            let exited = matches!(output, Output::Exited { .. });
+            let second_up = matches!(&output, Output::Event { event } if event["event"] == "stats");
+            seen.push(output);
+            if exited {
+                break;
+            }
+            if second_up && !sent {
+                call.send_for(&ipc::Command::Mute, 1).unwrap();
+                call.send_for(&ipc::Command::Unmute, 2).unwrap();
+                call.leave();
+                sent = true;
+            }
+        }
+        let logs: Vec<&str> = seen
+            .iter()
+            .filter_map(|o| match o {
+                Output::Log { line } => Some(line.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(logs.contains(&"joined with pass-1"), "{logs:?}");
+        assert!(logs.contains(&"joined with pass-2"), "{logs:?}");
+        assert!(logs.contains(&r#"got {"cmd":"unmute"}"#), "{logs:?}");
+        assert!(!logs.contains(&r#"got {"cmd":"mute"}"#), "{logs:?}");
+        assert!(logs.contains(&"(a command for the replaced engine was dropped)"));
+        assert_eq!(seen.last(), Some(&Output::Exited { code: Some(0) }));
+    }
+
+    /// A fresh pass that can't be had ends the call instead of starting an engine without one.
+    #[cfg(unix)]
+    #[test]
+    fn no_fresh_pass_ends_the_call() {
+        let (tx, rx) = mpsc::channel();
+        let sink: Sink = Arc::new(move |o| {
+            let _ = tx.send(o);
+        });
+        let launcher = Launcher {
+            exe: fake_engine("nopass"),
+            env: Vec::new(),
+            app_pid: 7,
+            hooks: TestHooks::default(),
+            refresh_env: Some(Arc::new(|| Err("No pass.".to_owned()))),
+        };
+        let _call = Call::start(launcher, plan(Role::Share, Quality::K4, false), sink).unwrap();
+        let mut seen = Vec::new();
+        while let Ok(output) = rx.recv_timeout(Duration::from_secs(10)) {
+            let exited = matches!(output, Output::Exited { .. });
+            seen.push(output);
+            if exited {
+                break;
+            }
+        }
+        assert_eq!(
+            seen.iter()
+                .filter(|o| matches!(o, Output::Started { .. }))
+                .count(),
+            1
+        );
+        assert!(seen.iter().any(
+            |o| matches!(o, Output::Event { event } if event["event"] == "error" && event["message"] == "No pass.")
+        ));
+        assert_eq!(seen.last(), Some(&Output::Exited { code: None }));
+    }
+
     #[cfg(unix)]
     #[test]
     fn shutdown_closes_the_engine() {
@@ -1069,6 +1245,7 @@ done
             env: Vec::new(),
             app_pid: 7,
             hooks: TestHooks::default(),
+            refresh_env: None,
         };
         let call = Call::start(launcher, plan(Role::Join, Quality::P1080, true), sink).unwrap();
         // Wait for the engine to be up.

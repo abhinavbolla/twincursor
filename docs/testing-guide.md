@@ -1,18 +1,18 @@
 # Testing TwinCursor
 
-Thanks for trying TwinCursor. A call has two people: the **sharer**, on a Mac, shows their screen;
-the **guest**, on a Mac or a Windows PC, watches, talks, and can take control of the sharer's
-mouse and keyboard when the sharer allows it. There's no sign-up: whoever sent you the build
-also sent the server it uses.
+Thanks for trying TwinCursor. A call has two people: the **sharer** shows their Mac's screen; the
+**guest** watches, talks, and can use the sharer's mouse and keyboard when the sharer allows it.
+Both sign in with GitHub. The build you were sent already knows its server, so there is nothing
+to set up.
 
-## On a Mac (sharer or guest)
+You need an Apple silicon Mac (M1 or later) with macOS 15 Sequoia or later, and a GitHub account.
 
-You need an Apple silicon Mac (M1 or later) with macOS 15 Sequoia or later.
+## Install it
 
 1. Download `TwinCursor-<version>-macos-arm64.dmg` and open it.
 2. Drag **TwinCursor** onto **Applications**, then eject the disk image.
-3. Open TwinCursor from Applications. The test build isn't signed by Apple yet, so macOS stops
-   it the first time and says it can't verify the app. Click **Done** (not Move to Trash).
+3. Open TwinCursor from Applications. The build isn't signed by Apple yet, so macOS stops it the
+   first time and says it can't verify the app. Click **Done** (not Move to Trash).
 4. Choose Apple menu > **System Settings**, then click **Privacy & Security** in the sidebar
    (scroll down if you need to). Under **Security**, next to the message about TwinCursor, click
    **Open Anyway**, confirm with **Open Anyway** again, and enter your login password. The
@@ -25,72 +25,75 @@ it again:
 xattr -dr com.apple.quarantine /Applications/TwinCursor.app
 ```
 
-### Permissions
+TwinCursor lives in the menu bar: click its icon (two chevrons) to open the panel. During a
+call, a small bar stays on top of your screen.
 
-The start screen lists what TwinCursor can use, with a button to ask for each and one to open its
-page in System Settings. macOS asks once for each.
+## Sign in
 
-| Permission | Needed for | Why |
+Click **Sign in with GitHub** in the panel. Your browser opens GitHub; approve the app, and the
+page says you're signed in. The panel then shows your picture at the top. If it says "This build
+isn't connected to a server.", you have a build without a server: ask for another.
+
+## Permissions
+
+TwinCursor asks macOS for each permission the first time it needs it, and macOS asks you once
+for each. While one is missing, TwinCursor offers **Open Settings** to go to its page in System
+Settings.
+
+| Permission | Asked for | Why |
 | --- | --- | --- |
-| Screen & System Audio Recording | Sharing | To send your screen to the guest. |
-| Accessibility | Sharing, if you let a guest take control | To type and click for the guest while you allow it. |
-| Microphone | Voice (sharing or joining) | To send your voice. Turn Voice off to skip it. |
+| Screen & System Audio Recording | The first time you share | To send your screen to the guest. |
+| Microphone | When your first call starts | To send your voice. |
+| Accessibility | The first time you click **Let in with control** or **Give control** | To type and click for the guest while you allow it. |
 
-macOS applies some of these only after the app restarts; the start screen shows when a
-permission is in place.
+After allowing Screen Recording in System Settings, click **Share my screen** again.
 
-### Start a call
+## Start a call
 
-1. Type your name.
-2. **Sharer:** click **Make one** next to Room code, then **Copy**, and send the code to your
-   guest (chat or email). Anyone with the app and the code can join, so send it only to them.
-   **Guest:** paste the code you were sent.
-3. **Sharer:** pick a quality. 4K looks sharpest; 1080p needs the least bandwidth.
-4. **Sharer:** click **Share my screen**. **Guest:** click **Join**. The shared screen opens in
-   its own window on the guest's side.
+1. **Sharer:** click **Share my screen**. The call link goes on your clipboard: send it to your
+   guest (chat or email). The bar at the top of your screen says "Sharing your screen".
+2. **Guest:** copy the link you were sent, then click **Paste link** in the panel. The bar says
+   you're waiting to be let in.
+3. **Sharer:** the bar shows who is knocking. The buttons turn on after a second. Click **Let
+   in**, or **Let in with control** to let them take control whenever they like during this
+   call. **Turn away** says no.
 
-## On Windows (guest only)
-
-Windows can watch, talk and take control, but can't share its screen yet.
-
-1. Download `TwinCursor-viewer-<version>-windows-x64.zip`, right-click it and choose
-   **Extract All**.
-2. In the extracted folder, double-click **Join TwinCursor**. Windows may say it protected your
-   PC, because the build isn't signed: click **More info**, then **Run anyway**.
-3. Type your name and the room code the sharer sent you, and press Enter after each.
-
-The shared screen opens in its own window. The black window behind it shows what's happening;
-leave it open.
+The guest sees the sharer's screen in its own window, and you can both talk. After your first
+call, each of you appears under **People** in the other's panel: click **Call** to ring them.
+The person you ring sees "… is calling" in their panel, with **Join** and **Decline**.
 
 ## What to try
 
-1. **Watch.** Have the sharer share at 4K and move around: scroll, switch apps, play a video.
-   Is the text sharp? Does it keep up?
-2. **Talk.** Voice is on unless you turned it off. Mute with **M** in the guest's viewer window,
-   or ⌃⌥⌘M on the sharer's Mac, from any app.
-3. **Ask for control.** The guest clicks **Ask for control** in the app, or presses **F9** in the
-   viewer window.
-4. **Allow it.** The sharer's TwinCursor window comes to the front with the request; click
-   **Allow** (it turns on after a second). The guest clicks into the shared screen and uses it
-   like their own: type, click, scroll, use shortcuts.
+1. **Watch.** Have the sharer move around: scroll code, switch apps, play a video. Is the text
+   sharp? Does it keep up?
+2. **Talk.** Voice is always on. Mute with the mic button in the bar; the sharer can also press
+   ⌃⌥⌘M from any app, and the guest **M** in the viewer window.
+3. **Ask for control.** The guest clicks **Control** in the bar, or presses **F9** in the viewer
+   window.
+4. **Allow it.** If the guest was let in with control, they get it at once. Otherwise the
+   sharer's bar shows the request: click **Allow** (it turns on after a second) or **Deny**. The
+   guest clicks into the shared screen and uses it like their own: type, click, scroll, use
+   shortcuts. The sharer's bar turns red and says who is controlling.
 5. **Take it back.** The sharer presses **⌃⌥⌘R** (Control-Option-Command-R) from any app, or
-   clicks **Take back control**. The guest can also give it back with **F9**.
-6. **Leave.** Either side clicks **Leave**, or closes the viewer window.
+   clicks **Take back**. The guest can give it back with **Give back** or **F9**.
+6. **Leave.** The sharer clicks **Stop**; the guest clicks **Leave** or closes the viewer
+   window. When the sharer stops, the guest's call ends by itself.
 
 ## What to report
 
 - **What happened**, and what you expected instead. Screenshots or a screen recording help.
-- **The numbers.** During the call, on the Mac app, click **Copy numbers** and paste the line.
-- **The log.** On the Mac app, open **Details** at the bottom of the window and click **Copy**.
-  On Windows, copy the last lines of the black window.
-- Your Mac or PC model, your OS version, and your network (home Wi-Fi, office, mobile hotspot).
+- **The numbers.** During the call, click **⋯** (More) in the bar, then **Copy numbers**, and
+  paste what it copies.
+- Your Mac model, your macOS version, and your network (home Wi-Fi, office, mobile hotspot).
 
 ## Known limits
 
-- **Unsigned builds.** macOS and Windows warn before the first launch, as described above.
-- **Windows is viewer-only.** Sharing from Windows comes later. A Windows guest can't decode
-  HEVC, so a 4K share switches to H.264 when one joins; the picture pauses for a moment.
-- **The build carries the server's key.** Anyone who has the app or the zip can read it and start
-  calls on that server, so please don't pass them on.
+- **Unsigned builds.** macOS warns before the first launch, as described above.
+- **Ringing isn't instant.** Knocks and rings arrive within about two seconds.
+- **The server can see the call.** The screen and voice pass through the call server, which
+  could read them if whoever runs it wanted to. Don't share secrets on screen, and don't type
+  passwords while in control.
 - **4K takes a moment.** The first 20 seconds or so of a 4K share may run at 30 fps before
   reaching 60.
+- **Windows** has a viewer you run from a folder, without sign-in, for test servers only. If you
+  were sent one, its README explains it.

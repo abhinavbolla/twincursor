@@ -1,7 +1,8 @@
 # Roadmap
 
 TwinCursor is built in stages. Each one ends with something you can run and demo, and we work on
-one at a time. The first public release comes after the desktop app and self-hosting exist.
+one at a time. The first public release comes once builds are signed and the hands-on checks
+below pass.
 
 ## Done
 
@@ -10,60 +11,69 @@ native viewer, measured on real networks.
 
 - 1080p at 60 fps from Mac to Windows over home Wi-Fi, with sharp text
 - H.264 by default, VP8 as a fallback, and resolutions up to 1440p and native
+- 4K at 60 fps with HEVC ([numbers](performance.md#4k))
 - Auto-throttle that keeps text readable when bandwidth drops
+- Send only the size the viewer shows, so a 4K sharer doesn't spend 4K on a smaller window
+  ([numbers](performance.md#a-4k-sharer-and-a-smaller-viewer))
+- Share one app window instead of the whole screen (terminal tools), and leave our own windows
+  out of the capture
 - Call health stats and an on-screen HUD
 - Latency and text-quality measurement, and a Docker network lab with pass/fail targets
 
 The results are in [performance.md](performance.md).
 
+**Remote control on macOS.** The guest uses the sharer's Mac with their own mouse and keyboard,
+with consent built in.
+
+- The input path measured, and its transport chosen ([ADR 0003](adr/0003-input-transport.md))
+- Input event messages and the control session, with the keyboard model
+  ([ADR 0004](adr/0004-keyboard-model.md))
+- Grant and revoke control, with a global revoke hotkey (⌃⌥⌘R), and real input injection
+- A label and a name tag on the sharer's screen while a guest is in control
+- Trusted control: the sharer lets one guest take control without a prompt for the rest of the
+  call ([ADR 0010](adr/0010-trusted-control.md))
+
+**Voice.** Both sides talk through their mic and speakers, so pairing needs no second app
+([ADR 0006](adr/0006-voice.md)).
+
+- Voice latency measured without a mic, and the screen shown not to wait for the voice
+- Real mic and speakers on both sides, with device selection and devices that change mid-call
+- Echo cancellation and noise suppression, checked offline and through real speakers
+- Mute on both sides
+
+**The menu bar app.** A Tauri shell that starts the engine as a second process from inside the
+app bundle ([ADR 0007](adr/0007-shell-and-engine.md), [the UI](ui.md)).
+
+- A panel under the menu bar icon, and a call bar that stays on top during a call
+- Permissions asked for when first needed: Screen Recording, Microphone, Accessibility
+- Let in and Allow wait a second after appearing, so a stray click can't answer them
+- A bundled app and disk image, with a backend built in and no LiveKit secret
+- A Windows viewer package for the terminal, and a one-page guide for testers
+
+**Accounts and calls.** A Supabase backend instead of a server of our own
+([ADR 0011](adr/0011-accounts-and-call-passes.md)).
+
+- Sign in with GitHub
+- Call links: the host shares, the guest pastes the link and waits, the host lets them in, with
+  control or without
+- Contacts: people you've been in a call with, whom you can ring
+- Call passes: a short-lived LiveKit token for each person and call, so no secret ships in the
+  app
+- Self-hosting: a [guide](self-hosting.md) to running it all on your own Supabase project and
+  LiveKit server
+
 ## Now
 
-**Remote control on macOS.** The guest uses the sharer's Mac with their own mouse and keyboard, with consent built in. It's
-done when a guest can comfortably edit a file in the sharer's editor.
+**Hands-on checks.** Things only people at real machines can confirm.
 
-- [x] Measure the path input takes, and choose its transport (ADR 0003)
-- [x] Input event messages (`crates/protocol`) and the control session (`crates/control`), with
-  the keyboard model (ADR 0004)
-- [x] Viewer captures mouse, keyboard and scroll
-- [x] Grant and revoke control, with a global revoke hotkey
-- [x] Real input injection, with an Accessibility permission check
-- [x] Guest cursor overlay on the sharer's screen
-- [ ] Hands-on: edit a real file on the sharer's Mac from the Windows laptop
-
-**Voice.** Both sides talk through their mic and speakers, so pairing needs no second app. It's
-done when two people can talk over speakers, without headphones, while one controls the other's
-Mac. The design is in [ADR 0006](adr/0006-voice.md).
-
-- [x] Measure voice latency without a mic, and show the screen doesn't wait for the voice
-- [x] Real mic and speakers on both sides, with device selection
-- [x] Echo cancellation and noise suppression, checked offline and through real speakers
-- [x] Mute on both sides, and devices that can change mid-call
-- [ ] Hands-on: a call over speakers on both ends, between the Mac and the Windows laptop
-
-**Desktop app.** A Tauri shell with a tray icon, lobby, call panel and settings, plus onboarding
-for macOS permissions. The shell starts the engine as a second process
-([ADR 0007](adr/0007-shell-and-engine.md)). It's done when two people can start a call, talk and
-hand over control without a terminal.
-
-- [x] A shell that starts the engine from inside the app bundle, and an engine that leaves when
-  the shell does
-- [ ] Hands-on: the macOS permission prompts name TwinCursor, and the shell's windows stay out of
-  the shared screen
-- [x] The engine as a library, and an engine binary the shell drives with messages
-- [x] Share one app window instead of the whole screen
-- [x] Send the size the viewer shows, so a 4K sharer doesn't spend 4K on a smaller window
-  ([numbers](performance.md#a-4k-sharer-and-a-smaller-viewer))
-- [x] The sharer learns each viewer's name and decoders as it joins, also mid-call
-- [x] Lobby and call panel, with the control request as a window
-- [x] Permissions onboarding and settings
-- [x] A bundled app and disk image
-- [ ] A Windows viewer package, and a one-page guide for testers
-- [ ] Hands-on: a call between two laptops through LiveKit Cloud, at 4K
+- [ ] A call between two laptops on different networks, at 4K
+- [ ] The macOS permission prompts name TwinCursor in the bundled app, and its windows stay out
+  of the shared screen
+- [ ] Edit a real file on the sharer's Mac from another computer
+- [ ] A call over speakers on both ends, without headphones
+- [ ] The Windows viewer on a real PC: watch and talk with a Mac
 
 ## Next
-
-**Self-hosting.** An axum API for sign-in, teams, rooms and LiveKit tokens. Join calls by link, and
-run it all with one `docker compose up`.
 
 **First public release on macOS.**
 
@@ -71,13 +81,20 @@ run it all with one `docker compose up`.
 - [ ] Voice mouth to ear under 150 ms (about 180–190 ms today): 10 ms Opus frames and a smaller
   macOS audio device layer, both below the LiveKit SDK ([budget](performance.md#where-the-time-goes))
 - [ ] Live bitrate control without republishing the track, and FEC for lossy links
-- [x] 4K at 60 fps, with HEVC as an opt-in codec ([numbers](performance.md#4k))
-- [ ] 4K between two machines, and on a real 4K display
+- [ ] 4K on a real 4K display
 - [ ] Encoder tuning, sharpening and a faster Metal or wgpu viewer
 - [ ] Real-world checks: Mac to Mac, Mac on Ethernet, Network Link Conditioner profiles
 - [ ] True glass-to-glass latency with an on-screen marker (`--marker screen`)
-- [x] Exclude our own windows from capture
+- [ ] Presence and instant ringing, instead of polling every two seconds
+- [ ] Call links that open the app when clicked
 - [ ] Landing page
+
+**After that.**
+
+- [ ] Camera
+- [ ] End-to-end encryption, so the LiveKit server relays media it can't read
+- [ ] A Windows app with sign-in, and sharing from Windows
+- [ ] Teams
 
 ## Then: your own devices
 
@@ -95,5 +112,5 @@ latency and sharpness as pairing. The consent model is in
 
 ## Later
 
-Linux (Wayland and X11), a Windows sharer, camera, multiple cursors with three or more people,
-annotations, end-to-end encryption, and editor integrations.
+Linux (Wayland and X11), multiple cursors with three or more people, annotations, and editor
+integrations.
