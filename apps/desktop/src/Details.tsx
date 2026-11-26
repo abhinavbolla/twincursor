@@ -19,7 +19,7 @@ export function Details({ info, call }: { info: EngineInfo | null; call: CallSta
       <summary>Details</summary>
       <div className="row spread">
         <span className="muted">The engine's last {call.logs.length} log lines, for bug reports.</span>
-        <button type="button" className="secondary small" onClick={() => void copyText(text).then(setCopied)}>
+        <button type="button" className="small" onClick={() => void copyText(text).then(setCopied)}>
           {copied ? "Copied" : "Copy"}
         </button>
       </div>

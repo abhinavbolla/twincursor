@@ -228,6 +228,31 @@ export function statsLine(stats: Stats | null, role: CallRole | null): string {
   return parts.join(" · ");
 }
 
+export interface Readout {
+  label: string;
+  value: string;
+  unit: string | null;
+}
+
+/** The live numbers as separate figures, for the readout. */
+export function readouts(stats: Stats, role: CallRole | null): Readout[] {
+  const out: Readout[] = [
+    { label: "Resolution", value: `${stats.width}×${stats.height}`, unit: null },
+    { label: "Frame rate", value: stats.fps.toFixed(1), unit: "fps" },
+    { label: "Bitrate", value: String(Math.round(stats.kbps)), unit: "kbps" },
+    stats.rtt_ms === null
+      ? { label: "Round trip", value: "–", unit: null }
+      : { label: "Round trip", value: String(Math.round(stats.rtt_ms)), unit: "ms" },
+  ];
+  if (stats.codec !== null) {
+    out.push({ label: "Codec", value: codecLabel(stats.codec), unit: null });
+  }
+  if (role === "join" && stats.shown_pct !== null) {
+    out.push({ label: "Shown at", value: stats.shown_pct === 100 ? "1:1" : `${stats.shown_pct}%`, unit: null });
+  }
+  return out;
+}
+
 /** The numbers as a tester pastes them into a report. */
 export function numbersReport(state: CallState, now: Date): string {
   const s = state.stats;

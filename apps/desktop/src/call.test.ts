@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import eventLines from "../../../crates/ipc/fixtures/events.jsonl?raw";
-import { callReducer, endMessage, initialCall, numbersReport, statsLine, type CallState } from "./call";
+import { callReducer, endMessage, initialCall, numbersReport, readouts, statsLine, type CallState } from "./call";
 import { parseEvent, parseOutput, type EngineOutput } from "./ipc";
 
 const fixtures: unknown[] = eventLines
@@ -154,6 +154,20 @@ describe("engine events", () => {
       "1920×1080 · 59.8 fps · 2481 kbps · round trip – · HEVC",
     );
     expect(statsLine(null, "share")).toBe("Not sending video yet.");
+    expect(readouts(stats, "join").map((r) => `${r.label} ${r.value}${r.unit ?? ""}`)).toEqual([
+      "Resolution 1920×1080",
+      "Frame rate 59.8fps",
+      "Bitrate 2481kbps",
+      "Round trip 4ms",
+      "Codec H.264",
+      "Shown at 1:1",
+    ]);
+    expect(readouts({ ...stats, rtt_ms: null, codec: null }, "share").map((r) => r.value)).toEqual([
+      "1920×1080",
+      "59.8",
+      "2481",
+      "–",
+    ]);
     const s = run(initialCall, started("join"), ev({ event: "stats", ...stats }));
     const report = numbersReport(s, new Date("2026-11-19T10:00:00Z"));
     expect(report).toContain("1920x1080, 59.8 fps, 2481 kbps, round trip 4 ms, codec h264, shown 100%");
