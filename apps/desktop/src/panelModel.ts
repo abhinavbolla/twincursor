@@ -5,6 +5,7 @@ import { safeAvatar } from "./accountState";
 import type { CallState } from "./call";
 import type { HomeView, MemberState } from "./home";
 import { shortName, type Phrase } from "./people";
+import { RING_OUTCOME_LABEL, type RingOutcome } from "./ringOutcomes";
 
 export interface FaceView {
   name: string;
@@ -73,9 +74,11 @@ export interface PanelLocal {
   error: string | null;
   /** A sign-in this panel started is waiting for the browser. */
   signingIn: boolean;
+  /** Rings that just went unanswered or were declined, by user id, while they show. */
+  outcomes: ReadonlyMap<string, RingOutcome>;
 }
 
-export const NO_LOCAL: PanelLocal = { dismissed: new Set(), error: null, signingIn: false };
+export const NO_LOCAL: PanelLocal = { dismissed: new Set(), error: null, signingIn: false, outcomes: new Map() };
 
 const MEMBER_LABEL: Partial<Record<MemberState, string>> = {
   ringing: "Ringing…",
@@ -121,7 +124,7 @@ function mainOf(home: HomeView, call: CallState): PanelMain {
   }
 }
 
-function actionFor(home: HomeView, id: string): PersonAction {
+function actionFor(home: HomeView, id: string, outcomes: ReadonlyMap<string, RingOutcome>): PersonAction {
   switch (home.stage.kind) {
     case "idle":
       return { kind: "call", enabled: true };
@@ -130,7 +133,14 @@ function actionFor(home: HomeView, id: string): PersonAction {
     case "hosting": {
       const member = home.members.find((m) => m.user_id === id);
       const label = member === undefined ? undefined : MEMBER_LABEL[member.state];
-      return label === undefined ? { kind: "call", enabled: true } : { kind: "status", label };
+      if (label !== undefined) {
+        return { kind: "status", label };
+      }
+      // A ring that just went unanswered or was declined says so for a while, then Call is back.
+      const outcome = outcomes.get(id);
+      return outcome !== undefined && member?.state === outcome
+        ? { kind: "status", label: RING_OUTCOME_LABEL[outcome] }
+        : { kind: "call", enabled: true };
     }
     case "knocking":
     case "joined":
@@ -170,7 +180,7 @@ export function panelModel(home: HomeView | null, call: CallState, local: PanelL
       name: c.name,
       handle: c.handle,
       avatar: safeAvatar(c.avatar_url),
-      action: actionFor(home, c.id),
+      action: actionFor(home, c.id, local.outcomes),
     })),
     serverProblem: home.server_problem,
   };

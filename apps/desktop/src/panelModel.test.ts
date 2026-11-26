@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import { initialCall } from "./call";
 import { parseHomeView } from "./home";
-import { panelModel, type PanelModel } from "./panelModel";
+import { NO_LOCAL, panelModel, type PanelModel } from "./panelModel";
+import { RING_OUTCOME_MS, showingOutcomes, trackOutcomes } from "./ringOutcomes";
 import { phraseText } from "./people";
 import { findScenario, scenariosOf } from "./scenarios";
 import { replay } from "./useSurface";
@@ -26,7 +27,7 @@ function home(state: string): Extract<PanelModel, { kind: "home" }> {
 describe("panel scenarios", () => {
   it("has every state the dev page promises", () => {
     const names = scenariosOf("panel").map((s) => s.name);
-    for (const name of ["off", "out", "signing", "home", "empty", "many", "ring", "needs", "starting", "hosting", "knocking", "joined", "error", "offline"]) {
+    for (const name of ["off", "out", "signing", "home", "empty", "many", "ring", "needs", "starting", "hosting", "rang-missed", "rang-declined", "knocking", "joined", "error", "offline"]) {
       expect(names).toContain(name);
     }
   });
@@ -47,7 +48,7 @@ describe("the panel", () => {
     expect(model("off")).toEqual({ kind: "off" });
     expect(model("out")).toEqual({ kind: "signed_out", waiting: false });
     expect(model("signing")).toEqual({ kind: "signed_out", waiting: true });
-    expect(model("out", { dismissed: new Set(), error: null, signingIn: true })).toEqual({ kind: "signed_out", waiting: true });
+    expect(model("out", { ...NO_LOCAL, signingIn: true })).toEqual({ kind: "signed_out", waiting: true });
   });
 
   it("shows who is signed in", () => {
@@ -110,6 +111,27 @@ describe("the panel", () => {
     expect(byName["Priya Natarajan"]).toEqual({ kind: "call", enabled: true });
   });
 
+  it("says what happened to a ring for 10 s after it is first seen, then offers Call again", () => {
+    for (const [state, label] of [
+      ["rang-missed", "No answer"],
+      ["rang-declined", "Declined"],
+    ] as const) {
+      const s = findScenario("panel", state);
+      if (s === undefined) {
+        throw new Error(state);
+      }
+      const kim = (at: number, clocks = trackOutcomes(new Map(), s.home.members, 1000)) => {
+        const m = panelModel(s.home, replay(s.outputs), { ...NO_LOCAL, outcomes: showingOutcomes(clocks, at) });
+        return m.kind === "home" ? m.people.find((p) => p.name === "Kim Lee")?.action : undefined;
+      };
+      expect(kim(1000), state).toEqual({ kind: "status", label });
+      expect(kim(1000 + RING_OUTCOME_MS - 1), state).toEqual({ kind: "status", label });
+      expect(kim(1000 + RING_OUTCOME_MS), state).toEqual({ kind: "call", enabled: true });
+      // Without a clock (never seen) it's Call, as before.
+      expect(kim(1000, new Map()), state).toEqual({ kind: "call", enabled: true });
+    }
+  });
+
   it("waits to be let in, with Cancel, and no Call buttons", () => {
     const m = home("knocking");
     expect(m.main.kind === "call" && phraseText(m.main.line)).toBe("Waiting for Alex to let you in…");
@@ -131,9 +153,9 @@ describe("the panel", () => {
     if (s === undefined) {
       throw new Error("no error scenario");
     }
-    const closed = panelModel(s.home, initialCall, { dismissed: new Set(["That isn't a TwinCursor call link."]), error: null, signingIn: false });
+    const closed = panelModel(s.home, initialCall, { ...NO_LOCAL, dismissed: new Set(["That isn't a TwinCursor call link."]) });
     expect(closed.kind === "home" && closed.error).toBeNull();
-    const own = panelModel(s.home, initialCall, { dismissed: new Set(), error: "Sign in first.", signingIn: false });
+    const own = panelModel(s.home, initialCall, { ...NO_LOCAL, error: "Sign in first." });
     expect(own.kind === "home" && own.error).toBe("Sign in first.");
   });
 

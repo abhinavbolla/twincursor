@@ -221,6 +221,18 @@ export const SCENARIOS: readonly Scenario[] = [
     }),
     withSam(),
   ),
+  panel(
+    "rang-missed",
+    "Kim didn't answer the ring (shows for 10 s, then Call again)",
+    hosting({ members: [...admitted(SAM), { user_id: KIM.id, name: KIM.name, handle: KIM.handle, avatar_url: null, state: "missed" }] }),
+    withSam(),
+  ),
+  panel(
+    "rang-declined",
+    "Kim declined the ring (shows for 10 s, then Call again)",
+    hosting({ members: [...admitted(SAM), { user_id: KIM.id, name: KIM.name, handle: KIM.handle, avatar_url: null, state: "declined" }] }),
+    withSam(),
+  ),
   panel("knocking", "Waiting to be let in", guestHome({ kind: "knocking", host: ALEX })),
   panel("joined", "In Alex's call", guestHome({ kind: "joined", host: ALEX }), watching()),
   panel("error", "A paste that wasn't a link", homeView({ error: "That isn't a TwinCursor call link." })),

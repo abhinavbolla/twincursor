@@ -110,9 +110,9 @@ After section 5, each of you is in the other's **People**.
 | 7.1 | Both: open the panel | The other person is listed with their picture, name, @handle and **Call** |
 | 7.2 | A (not in a call): **Call** next to B | A starts sharing. A's row for B says "Ringing…". Within a few seconds B's panel opens by itself, without taking the keyboard: "<A> is calling", **Decline**, **Join** |
 | 7.3 | B: **Join** | B joins A's call without knocking; A's row says "In the call" |
-| 7.4 | Ring again; B: **Decline** | B's ring goes. A's row shows **Call** again |
-| 7.5 | Ring again; B does nothing for a minute | The ring goes from B's panel; A's row shows **Call** again |
-| 7.6 | Note for 7.4 and 7.5 | Whether A can tell a declined ring from a missed one. Today the row just goes back to **Call** |
+| 7.4 | Ring again; B: **Decline** | B's ring goes. A's row says "Declined" for about 10 seconds, then shows **Call** again |
+| 7.5 | Ring again; B does nothing for a minute | The ring goes from B's panel; A's row says "No answer" for about 10 seconds, then shows **Call** again |
+| 7.6 | Note for 7.4 and 7.5 | Whether A noticed the "Declined" or "No answer" in time (A's panel must be open to see it) |
 | 7.7 | B is in another call when A rings | Note what B sees |
 
 ## 8. The call bar

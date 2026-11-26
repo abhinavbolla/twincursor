@@ -3,7 +3,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { Avatar, NoticeRow, PhraseLine, useNoticeClock } from "./bits";
+import { Avatar, NoticeRow, PhraseLine, useNoticeClock, useRingOutcomes } from "./bits";
 import type { Bridge } from "./bridge";
 import type { CallState } from "./call";
 import { copyText } from "./clipboard";
@@ -31,6 +31,8 @@ interface Props {
   menuOpen?: boolean;
 }
 
+const NO_MEMBERS: HomeView["members"] = [];
+
 /** A flow's refusal, as the sentence the Rust side gave. */
 const sentence = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -42,7 +44,8 @@ export function Panel({ bridge, home, call, menuOpen = false }: Props) {
   const [guideError, setGuideError] = useState<string | null>(null);
   const [sharing, setSharing] = useState(false);
 
-  const model = panelModel(home, call, { dismissed, error, signingIn });
+  const outcomes = useRingOutcomes(home?.members ?? NO_MEMBERS);
+  const model = panelModel(home, call, { dismissed, error, signingIn, outcomes });
 
   /** Runs a flow; a refusal shows as the panel's one error line. */
   const run = useCallback((flow: () => Promise<unknown>) => {

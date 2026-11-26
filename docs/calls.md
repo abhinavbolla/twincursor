@@ -43,8 +43,9 @@ who hasn't arrived yet. These two are the only ways to trust anyone: the window 
 `trust_control` or `trust_on_arrival` to the engine itself ("Control is given with Let in with
 control or Give control."), so the Accessibility check always comes first.
 
-**Ring a contact.** Shares first if you aren't sharing, then rings them. You see whether it's
-ringing, missed, declined or answered.
+**Ring a contact.** Shares first if you aren't sharing, then rings them. Their row in People
+says "Ringing…", then "In the call" once they answer. A ring nobody answers in 60 seconds shows
+"No answer", and a declined one "Declined", for 10 seconds; then the row offers **Call** again.
 
 **Being rung.** You see who is calling. Accepting leaves any call you're in, then joins; declining
 tells the backend.

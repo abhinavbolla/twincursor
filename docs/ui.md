@@ -67,7 +67,7 @@ when they show is decided in `surfaces.rs`, as plain tested functions).
 | Home | Rings on top ("**Sam Rivera** is calling", **Decline**, **Join**); **Share my screen**; **Paste link** with "Join with a link someone sent you"; **People**, one 36 px row each with a **Call** button |
 | No people | "People you've been in a call with show up here." |
 | Starting | Share reads "Starting…", nothing moves |
-| Sharing | "You're sharing your screen" with **Stop sharing**, the call link with **Copy link**; Call rings people into the call, and rows say "Ringing…" or "In the call" |
+| Sharing | "You're sharing your screen" with **Stop sharing**, the call link with **Copy link**; Call rings people into the call, and rows say "Ringing…" or "In the call"; a ring that went unanswered or was declined says "No answer" or "Declined" (muted) for 10 s after the panel first sees it, then the row shows **Call** again (`ringOutcomes.ts`) |
 | Knocking | "Waiting for **Alex** to let you in…" with **Cancel** |
 | In a call | "In **Alex**'s call" with **Leave** |
 | Needs Screen Recording | "TwinCursor needs Screen Recording to share your screen." with **Open Settings** |
@@ -147,7 +147,8 @@ Sections under the row:
 `npm run dev` in `apps/desktop`, then open `http://localhost:5173/` with:
 
 - `?view=panel&state=<name>`: `off`, `out`, `out-menu`, `signing`, `home`, `empty`, `many`, `ring`, `rings`,
-  `needs`, `starting`, `hosting`, `knocking`, `joined`, `error`, `offline`
+  `needs`, `starting`, `hosting`, `rang-missed`, `rang-declined`, `knocking`, `joined`, `error`,
+  `offline`
 - `?view=bar&state=<name>`: `alone`, `knock`, `knock2`, `knock-nohandle`, `with`, `trusted`,
   `controlling`, `asked`, `needs`, `menu`, `notice`, `g-knocking`, `g-watching`, `g-asked`,
   `g-controlling`, `reconnecting`, `muted`, `long-trusted`, `long-controlling`,
