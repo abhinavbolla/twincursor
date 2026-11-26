@@ -377,6 +377,7 @@ export function createMock(params: URLSearchParams): LoadedBridge {
     url: "ws://localhost:7880",
     api_key: "devkey",
     has_secret: false,
+    has_pass: false,
     source: "dev",
   };
   const bridge: Bridge = {
