@@ -127,6 +127,12 @@ Fill these in as code lands; keep them accurate.
 - Accounts end to end (local Supabase + LiveKit, no GitHub): `bench/account-e2e.sh` (needs
   `supabase start`); by hand: `tc-account --session FILE sign-in|whoami|start-call|knock|pass …`
   with `TWINCURSOR_SUPABASE_URL`/`_KEY` set (docs/accounts.md)
+- Calls with accounts through the real app: `bench/app-accounts-e2e.sh` (needs `supabase start`;
+  starts `livekit-server --dev` if none runs; builds: `npm run build` in apps/desktop, then
+  `cargo build --release -p twincursor-desktop -p twincursor-engine-cli -p twincursor-media-spike
+  -p twincursor-account`). The app runs in script mode with `TWINCURSOR_SESSION_FILE`
+- One permission at a time: `tc-engine permissions --request screen_recording|accessibility|microphone`
+  (plain `--request` asks for everything missing)
 - Releases: `docs/RELEASING.md`; a `v*` tag builds archives and a draft release
 - Desktop app (`apps/desktop`, Node 20.19+): `npm ci`, then `npm run build` (UI into `dist`,
   which the app crate embeds: build it before `cargo clippy/test --workspace`), `npm run

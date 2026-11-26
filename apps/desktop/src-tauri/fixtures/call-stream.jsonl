@@ -1,0 +1,47 @@
+{"kind":"started","role":"share","codec":"h265","pid":101,"args":["share","--ipc","--resolution=2160","--codec=h265","--allow-control","--exclude-app-pid=7"]}
+{"kind":"log","line":"INFO engine starting"}
+{"kind":"event","event":{"event":"hello","version":1,"role":"sharer","engine":"0.1.0"}}
+{"kind":"log","line":"INFO step 0"}
+{"kind":"event","event":{"event":"connection","state":"connecting"}}
+{"kind":"event","event":{"event":"connection","state":"connected"}}
+{"kind":"event","event":{"event":"connection","state":"reconnecting"}}
+{"kind":"event","event":{"event":"participants","participants":[{"identity":"guest-1f2e3d4c","name":"Sam","role":"guest","decoders":["h264","h265","vp8","vp9","av1"]}]}}
+{"kind":"log","line":"INFO step 4"}
+{"kind":"event","event":{"event":"participants","participants":[]}}
+{"kind":"event","event":{"event":"control_asked","request":1,"identity":"guest-1f2e3d4c","name":"Sam","platform":"macos"}}
+{"kind":"event","event":{"event":"control","state":"asked","by":{"identity":"guest-1f2e3d4c","name":"Sam"},"trusted":[]}}
+{"kind":"event","event":{"event":"control","state":"controlling","by":{"identity":"guest-1f2e3d4c","name":"Sam"},"trusted":[{"identity":"guest-1f2e3d4c","name":"Sam"}]}}
+{"kind":"log","line":"INFO step 8"}
+{"kind":"event","event":{"event":"control","state":"none","by":null,"trusted":[{"identity":"guest-1f2e3d4c","name":"Sam"}]}}
+{"kind":"event","event":{"event":"control","state":"none","by":null,"trusted":[]}}
+{"kind":"event","event":{"event":"voice","sending":true,"muted":false,"mic":"MacBook Pro Microphone","speaker":"MacBook Pro Speakers"}}
+{"kind":"event","event":{"event":"voice","sending":false,"muted":false,"mic":null,"speaker":null}}
+{"kind":"log","line":"INFO step 12"}
+{"kind":"event","event":{"event":"stats","width":1920,"height":1080,"fps":59.8,"kbps":2480.5,"rtt_ms":4.2,"codec":"h264","shown_pct":100}}
+{"kind":"event","event":{"event":"stats","width":3840,"height":2160,"fps":60.0,"kbps":9800.0,"rtt_ms":null,"codec":"h265","shown_pct":null}}
+{"kind":"event","event":{"event":"error","message":"No one is asking for control right now."}}
+{"kind":"event","event":{"event":"ended","reason":"left"}}
+{"kind":"log","line":"INFO step 16"}
+{"kind":"event","event":{"event":"ended","reason":"disconnected"}}
+{"kind":"event","event":{"event":"connection","state":"connected"}}
+{"kind":"event","event":{"event":"participants","participants":[{"identity":"guest-2b","name":"Ana","role":"guest","decoders":["h264"]}]}}
+{"kind":"event","event":{"event":"control_asked","request":2,"identity":"guest-2b","name":"Ana","platform":"macos"}}
+{"kind":"event","event":{"event":"control","state":"asked","by":{"identity":"guest-2b","name":"Ana"},"trusted":[]}}
+{"kind":"restarting","codec":"h264","message":"Ana's computer can't decode HEVC; switched to H.264."}
+{"kind":"started","role":"share","codec":"h264","pid":102,"args":["share","--ipc","--resolution=2160","--codec=h264","--allow-control","--exclude-app-pid=7"]}
+{"kind":"event","event":{"event":"hello","version":1,"role":"sharer","engine":"0.1.1"}}
+{"kind":"event","event":{"event":"connection","state":"connecting"}}
+{"kind":"log","line":"INFO second engine"}
+{"kind":"event","event":{"event":"connection","state":"connected"}}
+{"kind":"event","event":{"event":"participants","participants":[{"identity":"guest-2b","name":"Ana","role":"guest","decoders":["h264"]}]}}
+{"kind":"event","event":{"event":"voice","sending":false,"muted":false,"mic":null,"speaker":null}}
+{"kind":"event","event":{"event":"stats","width":3840,"height":2160,"fps":59.9,"kbps":8100.0,"rtt_ms":3.1,"codec":"h264","shown_pct":null}}
+{"kind":"event","event":{"event":"control_asked","request":1,"identity":"guest-2b","name":"Ana","platform":"macos"}}
+{"kind":"event","event":{"event":"control","state":"asked","by":{"identity":"guest-2b","name":"Ana"},"trusted":[]}}
+{"kind":"event","event":{"event":"control_asked","request":2,"identity":"guest-2b","name":"Ana","platform":"macos"}}
+{"kind":"event","event":{"event":"control","state":"controlling","by":{"identity":"guest-2b","name":"Ana"},"trusted":[]}}
+{"kind":"event","event":{"event":"error","message":"That control request is no longer open."}}
+{"kind":"event","event":{"event":"control","state":"none","by":null,"trusted":[]}}
+{"kind":"event","event":{"event":"connection","state":"disconnected"}}
+{"kind":"event","event":{"event":"ended","reason":"left"}}
+{"kind":"exited","code":0}

@@ -89,21 +89,32 @@ The Rust core is split into crates:
 only text and controls; the shared screen is the engine's own native window (ADR 0007, and
 [the IPC protocol](ipc.md)).
 
-- **Rust side** (`src-tauri`). `engine.rs` builds the engine's flags from the person's choices
-  (role, room, name, quality, voice), starts it with its stdin held open for the call, reads
+- **Rust side** (`src-tauri`). `engine.rs` builds the engine's flags (role, quality, voice, and
+  the room and name for a room-code call), starts it with its stdin held open for the call, reads
   every stdout line as an event and every stderr line as a log line, and ends it: `leave`, then
   closing stdin, then killing it, each only if the step before didn't work within a few seconds.
   It holds no Tauri types, so its lifecycle is tested against a stand-in engine script. A
   sharer's engine always gets `--allow-control` (requests reach the window; nothing is granted
   until the person clicks Allow for that request) and `--exclude-app-pid` with the app's own
   process id, so the window is never in the picture. A control request brings the window to the
-  front, and Allow stays off for its first second, so a click or key press already on its way
-  to another app can't grant control. The window's commands are typed (`ipc::Command`), so only commands the protocol knows
+  front. The window's commands are typed (`ipc::Command`), so only commands the protocol knows
   reach the engine.
-- **Quality.** 1080p and 1440p share with H.264; 4K with HEVC. When a guest announces decoders
-  without HEVC, the app restarts its engine with H.264 (same room, name and resolution) and stays
-  on H.264 for the rest of the call; a guest that hasn't announced yet changes nothing. An HEVC
-  engine that fails before sending any video falls back the same way, once.
+- **Calls with accounts** (`calls.rs`, [calls](calls.md)). Share, join by link, let in, ring and
+  leave run in the Rust side, which calls the backend through `crates/account`, starts every
+  engine with a call pass in its environment (no `--room` or `--name`), and keeps one view of it
+  all that it sends to the window on every change (the `home` event). It enforces arming: a
+  knock can't be let in, and a control request can't be allowed, within a second of the window
+  first showing it, so a click or key press already on its way can't do it. For "Let in with
+  control" it sends the engine `trust_on_arrival` once, and the engine keeps that promise, so
+  every revoke cancels it; the window itself can't send a trust. It polls the backend every two
+  seconds while signed in (the host's heartbeat and the guest's knock), backing off to ten after
+  repeated network failures.
+- **Quality.** 1080p and 1440p share with H.264; 4K with HEVC, which calls with accounts always
+  use. When a guest announces decoders without HEVC, the app restarts its engine with H.264 (same
+  room, name and resolution; a fresh call pass for a call with accounts) and stays on H.264 for
+  the rest of the call; a guest that hasn't announced yet changes nothing. An HEVC engine that
+  fails before sending any video falls back the same way, once. Control doesn't carry over to the
+  new engine, and a command meant for the old one never reaches it.
 - **Getting into a room.** The engine joins with a **call pass** when its environment has one
   (`TWINCURSOR_PASS`): a LiveKit token the account server signed for one identity
   (`sharer-<account id>` or `guest-<account id>`), one name and one room. The engine reads the
@@ -119,13 +130,17 @@ only text and controls; the shared screen is the engine's own native window (ADR
   a fresh process every two seconds, since macOS applies a new grant only to processes started
   after it. Each row opens its System Settings pane, and Ask runs `tc-engine permissions
   --request`. Sharing is blocked only by a missing Screen Recording grant; joining never is.
+  Calls with accounts ask for one permission when it is first needed (`tc-engine permissions
+  --request screen_recording` on Share, `accessibility` on giving control).
 - **Webview** (`src`, React). A pure reducer turns the engine's output into call state; it is
   tested against `crates/ipc/fixtures`. Outside Tauri, in development builds only, a mock engine
   plays a call so the window can be checked in a browser.
 - **Script mode.** `twincursor-desktop --script PATH --report PATH` shares the synthetic pattern
-  with voice off and input recorded, answers control requests as the script says, and writes what
-  it sees as JSON lines. It is the only path that answers a request without a click, exists only
-  behind that flag, and can't inject real input. `bench/app-e2e.sh` uses it.
+  with voice off and input recorded, uses a clipboard in memory, answers knocks and control
+  requests as the script says (through the same arming checks as a click), and writes what it
+  sees as JSON lines, including every `home` view. It is the only path that answers a request
+  without a click, exists only behind that flag, and can't inject real input or touch the real
+  clipboard. `bench/app-e2e.sh` and `bench/app-accounts-e2e.sh` use it.
 
 ### 2. WebRTC through LiveKit (self-hostable SFU)
 - LiveKit's Rust SDK (`livekit` crate, built on libwebrtc) gives us congestion control,

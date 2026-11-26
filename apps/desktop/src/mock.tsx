@@ -8,10 +8,13 @@
 //   add &account=off for a build without an account backend, &account=in to start signed in
 //
 // The panel in the corner makes things happen: a control request, a guest without HEVC, an
-// error, a dropped connection, the engine crashing, and permissions changing.
+// error, a dropped connection, the engine crashing, and permissions changing; and for calls
+// with accounts, someone knocking or ringing, the host letting you in or turning you away, the
+// call ending on the server, the server going away, and a permission that is missing.
 
 import type { AccountState } from "./accountState";
 import type { Bridge, EngineConfig, LoadedBridge, SettingsChange, SettingsView } from "./bridge";
+import type { HomeView, Person } from "./home";
 import type { EngineCommand, EngineOutput, Participant, Plan } from "./ipc";
 import type { Access, PermissionName, PermissionStatus } from "./permissions";
 
@@ -382,7 +385,240 @@ class MockEngine {
   }
 }
 
-function MockPanel({ engine }: { engine: MockEngine }) {
+
+const ARMING_MS = 1000;
+const MOCK_CODE = "0123456789abcdef0123456789abcdef";
+const LINK = /^\s*(?:twincursor:\/\/call\/)?[0-9a-f]{32}\s*$/;
+const SAM_PERSON: Person = { id: "u2", name: "Sam Example", handle: "sam", avatar_url: null };
+
+/** Pretend account flows, as the Rust side runs them (src-tauri/src/calls.rs). */
+class MockCalls {
+  private listeners = new Set<(home: HomeView) => void>();
+  private shown = new Map<string, number>();
+  private missingPermission: HomeView["needs"] = null;
+  /** What "Paste link" finds on the pretend clipboard. */
+  clipboard: string = `twincursor://call/${MOCK_CODE}`;
+  home: HomeView;
+
+  constructor(
+    private engine: MockEngine,
+    private account: () => AccountState,
+  ) {
+    this.home = {
+      account: account(),
+      stage: { kind: "idle" },
+      contacts: [SAM_PERSON],
+      rings: [],
+      knocks: [],
+      members: [],
+      notice: null,
+      error: null,
+      needs: null,
+      server_problem: null,
+    };
+    window.setInterval(() => this.tick(), 500);
+  }
+
+  on(f: (home: HomeView) => void): () => void {
+    this.listeners.add(f);
+    return () => this.listeners.delete(f);
+  }
+
+  private set(change: Partial<HomeView>): HomeView {
+    this.home = { ...this.home, ...change, account: this.account() };
+    for (const f of this.listeners) {
+      f(this.home);
+    }
+    return this.home;
+  }
+
+  /** Knocks arm a second after they were first shown. */
+  private tick(): void {
+    const now = Date.now();
+    const knocks = this.home.knocks.map((k) => ({ ...k, armed: now - (this.shown.get(k.user_id) ?? now) >= ARMING_MS }));
+    if (knocks.some((k, i) => k.armed !== this.home.knocks[i]?.armed) || this.home.account.signed_in !== this.account().signed_in) {
+      this.set({ knocks });
+    }
+  }
+
+  private check(): string | null {
+    if (!this.account().signed_in) {
+      return "Sign in first.";
+    }
+    if (this.home.stage.kind !== "idle" || this.engine.inCall) {
+      return "You're already in a call. Leave it first.";
+    }
+    return null;
+  }
+
+  private startEngine(role: "share" | "join"): void {
+    this.engine.start({ role, room: "", name: role === "share" ? "Alex" : "Sam", quality: "4k", voice: false });
+  }
+
+  share(): Promise<HomeView> {
+    const problem = this.check();
+    if (problem !== null) {
+      return Promise.reject(problem);
+    }
+    if (this.missingPermission === "screen_recording") {
+      this.set({ needs: "screen_recording" });
+      return Promise.reject(
+        "TwinCursor needs Screen Recording to share your screen. Turn it on in System Settings, then try again.",
+      );
+    }
+    this.startEngine("share");
+    return Promise.resolve(
+      this.set({
+        stage: { kind: "hosting", call_id: "c1", link: `twincursor://call/${MOCK_CODE}` },
+        notice: "The call link is on your clipboard.",
+        error: null,
+        needs: null,
+      }),
+    );
+  }
+
+  joinLink(text: string): Promise<HomeView> {
+    if (!LINK.test(text)) {
+      return Promise.reject(text.trim() === "" ? "There's no call link to join. Copy the link first." : "That isn't a TwinCursor call link.");
+    }
+    const problem = this.check();
+    if (problem !== null) {
+      return Promise.reject(problem);
+    }
+    return Promise.resolve(this.set({ stage: { kind: "knocking", host: SAM_PERSON }, notice: null, error: null }));
+  }
+
+  joinFromClipboard(): Promise<HomeView> {
+    return this.joinLink(this.clipboard);
+  }
+
+  cancelKnock(): Promise<HomeView> {
+    if (this.home.stage.kind !== "knocking") {
+      return Promise.reject("You aren't waiting to join a call.");
+    }
+    return Promise.resolve(this.set({ stage: { kind: "idle" } }));
+  }
+
+  answerKnock(userId: string, letIn: boolean, control: boolean): Promise<HomeView> {
+    const knock = this.home.knocks.find((k) => k.user_id === userId);
+    if (knock === undefined) {
+      return Promise.reject("That person isn't waiting to join any more.");
+    }
+    if (letIn && Date.now() - (this.shown.get(userId) ?? Date.now()) < ARMING_MS) {
+      return Promise.reject("Too soon. Try again.");
+    }
+    this.shown.delete(userId);
+    const withoutControl = control && this.missingPermission === "accessibility";
+    return Promise.resolve(
+      this.set({
+        knocks: this.home.knocks.filter((k) => k.user_id !== userId),
+        members: [
+          ...this.home.members,
+          { user_id: knock.user_id, name: knock.name, handle: knock.handle, avatar_url: knock.avatar_url, state: letIn ? "admitted" : "turned_away" },
+        ],
+        notice: withoutControl ? `${knock.name} was let in without control: TwinCursor needs Accessibility to give control.` : null,
+        needs: withoutControl ? "accessibility" : this.home.needs,
+      }),
+    );
+  }
+
+  giveControl(identity: string): Promise<HomeView> {
+    if (this.home.stage.kind !== "hosting") {
+      return Promise.reject("You aren't sharing a call.");
+    }
+    if (this.missingPermission === "accessibility") {
+      this.set({ needs: "accessibility" });
+      return Promise.reject("TwinCursor needs Accessibility to give control. Turn it on in System Settings, then try again.");
+    }
+    this.engine.command({ cmd: "trust_control", identity });
+    return Promise.resolve(this.home);
+  }
+
+  async ring(userId: string): Promise<HomeView> {
+    if (this.home.stage.kind !== "hosting") {
+      await this.share();
+    }
+    const contact = this.home.contacts.find((c) => c.id === userId);
+    if (contact === undefined) {
+      return Promise.reject("You can only ring someone who has you as a contact too.");
+    }
+    const others = this.home.members.filter((m) => m.user_id !== userId);
+    return this.set({
+      members: [...others, { user_id: contact.id, name: contact.name, handle: contact.handle, avatar_url: contact.avatar_url, state: "ringing" }],
+    });
+  }
+
+  async answerRing(callId: string, accept: boolean): Promise<HomeView> {
+    const ring = this.home.rings.find((r) => r.call_id === callId);
+    if (ring === undefined) {
+      return Promise.reject("That call isn't ringing you any more.");
+    }
+    const rings = this.home.rings.filter((r) => r.call_id !== callId);
+    if (!accept) {
+      return this.set({ rings });
+    }
+    if (this.home.stage.kind !== "idle") {
+      await this.end();
+    }
+    this.startEngine("join");
+    return this.set({ rings, stage: { kind: "joined", host: ring.host } });
+  }
+
+  end(): Promise<HomeView> {
+    if (this.engine.inCall) {
+      this.engine.command({ cmd: "leave" });
+    }
+    return Promise.resolve(this.set({ stage: { kind: "idle" }, knocks: [], members: [] }));
+  }
+
+  // What the dev panel can make happen.
+
+  knock(): void {
+    if (this.home.stage.kind !== "hosting" || this.home.knocks.some((k) => k.user_id === SAM_PERSON.id)) {
+      return;
+    }
+    this.shown.set(SAM_PERSON.id, Date.now());
+    this.set({
+      knocks: [...this.home.knocks, { user_id: SAM_PERSON.id, name: SAM_PERSON.name, handle: SAM_PERSON.handle, avatar_url: null, armed: false }],
+    });
+  }
+
+  ringMe(): void {
+    if (!this.home.rings.some((r) => r.call_id === "c2")) {
+      this.set({ rings: [...this.home.rings, { call_id: "c2", host: SAM_PERSON }] });
+    }
+  }
+
+  admitted(): void {
+    if (this.home.stage.kind === "knocking") {
+      const host = this.home.stage.host;
+      this.startEngine("join");
+      this.set({ stage: { kind: "joined", host } });
+    }
+  }
+
+  turnedAway(): void {
+    if (this.home.stage.kind === "knocking") {
+      this.set({ stage: { kind: "idle" }, notice: `${this.home.stage.host.name} didn't let you in.` });
+    }
+  }
+
+  serverEnds(): void {
+    if (this.home.stage.kind === "joined" || this.home.stage.kind === "hosting") {
+      void this.end().then(() => this.set({ notice: "The call ended." }));
+    }
+  }
+
+  offline(): void {
+    this.set({ server_problem: this.home.server_problem === null ? "Can't reach the server." : null });
+  }
+
+  missing(which: "screen_recording" | "accessibility"): void {
+    this.missingPermission = this.missingPermission === which ? null : which;
+  }
+}
+
+function MockPanel({ engine, calls }: { engine: MockEngine; calls: MockCalls }) {
   const buttons: [string, () => void][] = [
     ["A guest asks for control", () => engine.guestAsks()],
     ["The guest withdraws", () => engine.guestWithdraws()],
@@ -393,6 +629,14 @@ function MockPanel({ engine }: { engine: MockEngine }) {
     ["The server ends the call", () => engine.serverEnds()],
     ["The engine fails", () => engine.failToStart()],
     ["The engine crashes", () => engine.crash()],
+    ["Sam knocks on your call", () => calls.knock()],
+    ["Sam rings you", () => calls.ringMe()],
+    ["The host lets you in", () => calls.admitted()],
+    ["The host turns you away", () => calls.turnedAway()],
+    ["The call ends on the server", () => calls.serverEnds()],
+    ["The server can't be reached", () => calls.offline()],
+    ["Screen Recording is missing", () => calls.missing("screen_recording")],
+    ["Accessibility is missing", () => calls.missing("accessibility")],
   ];
   const set = (access: Access) => {
     engine.permissions = { screen_recording: access, accessibility: access, microphone: access };
@@ -433,7 +677,11 @@ class MockAccount {
   static readonly ME = { id: "u1", name: "Alex Example", handle: "alex", avatar_url: null };
 
   get(): Promise<AccountState> {
-    return Promise.resolve({ ...this.state });
+    return Promise.resolve(this.snapshot());
+  }
+
+  snapshot(): AccountState {
+    return { ...this.state };
   }
 
   signIn(): Promise<AccountState> {
@@ -473,6 +721,7 @@ class MockAccount {
 export function createMock(params: URLSearchParams): LoadedBridge {
   const engine = new MockEngine();
   const account = new MockAccount(params.get("account"));
+  const calls = new MockCalls(engine, () => account.snapshot());
   const view = (): SettingsView => ({
     url: engine.settings.url,
     api_key: engine.settings.api_key,
@@ -542,6 +791,18 @@ export function createMock(params: URLSearchParams): LoadedBridge {
     cancelSignIn: () => account.cancel(),
     signOut: () => account.signOut(),
     onOutput: (f) => engine.on(f),
+    homeState: () => Promise.resolve(calls.home),
+    callSnapshot: () => Promise.resolve([]),
+    share: () => calls.share(),
+    joinFromClipboard: () => calls.joinFromClipboard(),
+    joinLink: (text) => calls.joinLink(text),
+    cancelKnock: () => calls.cancelKnock(),
+    answerKnock: (userId, letIn, control) => calls.answerKnock(userId, letIn, control),
+    giveControl: (identity) => calls.giveControl(identity),
+    ring: (userId) => calls.ring(userId),
+    answerRing: (callId, accept) => calls.answerRing(callId, accept),
+    end: () => calls.end(),
+    onHome: (f) => calls.on(f),
   };
   const role = params.get("mock");
   if (role === "share" || role === "join") {
@@ -553,5 +814,5 @@ export function createMock(params: URLSearchParams): LoadedBridge {
       voice: params.get("voice") !== "off",
     };
   }
-  return { bridge, DevPanel: () => <MockPanel engine={engine} /> };
+  return { bridge, DevPanel: () => <MockPanel engine={engine} calls={calls} /> };
 }

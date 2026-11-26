@@ -22,6 +22,15 @@ twincursor-account = { path = "../../../crates/account" }
 tauri = { version = "2.12.5", features = [] }
 serde.workspace = true
 serde_json.workspace = true
+# The call flows' background poll and timers. Already in the tree (Tauri's own runtime).
+tokio.workspace = true
+
+# The clipboard (NSPasteboard) for call links, and keeping the app out of App Nap during a call
+# (NSProcessInfo). Already in the tree through Tauri, with these features on.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6.5", default-features = false, features = ["std"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSProcessInfo"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSPasteboard"] }
 
 [dev-dependencies]
-tokio.workspace = true
+twincursor-account = { path = "../../../crates/account", features = ["fake"] }

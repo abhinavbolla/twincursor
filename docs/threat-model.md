@@ -44,6 +44,14 @@ weaken them won't be merged.
   engine's stdin); no message from a guest or the server can, and it is never stored. The guest
   still has to ask each time, one controller at a time, and the label shows every grant. Any
   revoke, even with nobody in control, takes every trust back.
+- **A request can't be answered by a stray click.** A knock or a control request can appear
+  while you're typing or about to click something else. The app's Rust side refuses to let
+  someone in until a second after it first showed you their knock, and refuses an Allow until a
+  second after it showed you that request ("Too soon. Try again."), whatever the window does.
+  An Allow names its request and reaches only the engine that asked. Turning away and denying
+  are never delayed. "Let in with control" trusts that one identity if they join within a
+  minute, a promise kept in the engine, so any revoke (the hotkey included, even before they
+  join), the end of the call or a restart of the engine cancels it ([calls](calls.md#arming-why-let-in-and-allow-wait-a-second)).
 - **Names come from the token.** The name in "Sam wants control", in "Sam is controlling" and in
   the list of trusted guests is the one in that person's token, not the one their own app sends.
   With a call pass, that is the account's name, signed by the account server. Without one, it is
@@ -95,9 +103,16 @@ hotkey, the on-screen label, and real input on macOS.*
   document what we find.
 - **Guests shouldn't type passwords during control.** They go to the sharer's machine, and through
   the server, like every other keystroke.
+- **A call link lets anyone signed in knock.** The link's code is 128 random bits; knowing it
+  lets someone ask to join, not join: the host lets each person in, and the backend signs a pass
+  only for those. Share the link only with the person you're calling. The app puts it on your
+  clipboard when you share, where other apps you run can read it, as they can anything you copy.
+  Paste link reads the clipboard only when you click it, in the app's Rust side; what it finds
+  goes to the link parser and nowhere else (never to the window or a log), and anything over 256
+  characters isn't looked at.
 - **A room code is the only key to a call.** Anyone with the app, the server it uses and the
   code can join. The app makes codes from 80 random bits and says to share them only with the
-  person you're calling; accounts and invitations come with the server.
+  person you're calling. Calls with accounts don't have this problem: see the call link above.
 - **A test build with a baked-in server carries its secret.** `tc-engine` can be built with a
   server's URL, API key and secret (`crates/engine-cli/build.rs`), so testers need no setup.
   Anyone who has that build can read the secret out of the binary and mint tokens for any room on

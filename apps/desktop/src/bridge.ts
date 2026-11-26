@@ -8,6 +8,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { ComponentType } from "react";
 
 import { parseAccountState, type AccountState } from "./accountState";
+import { parseHomeView, type HomeView } from "./home";
 import type { EngineCommand, EngineOutput, Plan } from "./ipc";
 import { parseOutput } from "./ipc";
 import type { PermissionName } from "./permissions";
@@ -66,6 +67,29 @@ export interface Bridge {
   signOut(): Promise<AccountState>;
   /** Everything the Rust side says about the call. Returns a function that stops listening. */
   onOutput(f: (output: EngineOutput) => void): () => void;
+
+  // Calls with accounts. Each flow resolves with the home view after it, or rejects with a
+  // sentence. The Rust side keeps every token and pass, and reads the clipboard itself.
+
+  /** The home view now (what a window opened later starts from). */
+  homeState(): Promise<HomeView>;
+  /** The current call's engine output, to replay through `callReducer` in a late window. */
+  callSnapshot(): Promise<EngineOutput[]>;
+  /** Share my screen; the call link goes on the clipboard. */
+  share(): Promise<HomeView>;
+  /** Paste link: the Rust side reads the clipboard; only the outcome comes back. */
+  joinFromClipboard(): Promise<HomeView>;
+  joinLink(text: string): Promise<HomeView>;
+  cancelKnock(): Promise<HomeView>;
+  /** Refused with "Too soon. Try again." within a second of the knock being shown. */
+  answerKnock(userId: string, letIn: boolean, control: boolean): Promise<HomeView>;
+  giveControl(identity: string): Promise<HomeView>;
+  ring(userId: string): Promise<HomeView>;
+  answerRing(callId: string, accept: boolean): Promise<HomeView>;
+  /** Stop sharing, or leave. */
+  end(): Promise<HomeView>;
+  /** The home view on every change. Returns a function that stops listening. */
+  onHome(f: (home: HomeView) => void): () => void;
 }
 
 export interface LoadedBridge {
@@ -81,6 +105,29 @@ function accountAnswer(value: unknown): AccountState {
     throw new Error("The app's account answer couldn't be read.");
   }
   return state;
+}
+
+/** The Rust side's home view, checked. */
+export function homeAnswer(value: unknown): HomeView {
+  const home = parseHomeView(value);
+  if (home === null) {
+    throw new Error("The app's answer about calls couldn't be read.");
+  }
+  return home;
+}
+
+/** The Rust side's call snapshot, checked. */
+export function snapshotAnswer(value: unknown): EngineOutput[] {
+  if (!Array.isArray(value)) {
+    throw new Error("The app's call snapshot couldn't be read.");
+  }
+  return value.map((v) => {
+    const output = parseOutput(v);
+    if (output === null) {
+      throw new Error("The app's call snapshot couldn't be read.");
+    }
+    return output;
+  });
 }
 
 function tauriBridge(): Bridge {
@@ -103,6 +150,28 @@ function tauriBridge(): Bridge {
         const output = parseOutput(e.payload);
         if (output !== null) {
           f(output);
+        }
+      });
+      return () => void stop.then((unlisten) => unlisten());
+    },
+    homeState: () => invoke<unknown>("home_state").then(homeAnswer),
+    callSnapshot: () => invoke<unknown>("call_snapshot").then(snapshotAnswer),
+    share: () => invoke<unknown>("share").then(homeAnswer),
+    joinFromClipboard: () => invoke<unknown>("join_from_clipboard").then(homeAnswer),
+    joinLink: (text) => invoke<unknown>("join_link", { text }).then(homeAnswer),
+    cancelKnock: () => invoke<unknown>("cancel_knock").then(homeAnswer),
+    answerKnock: (userId, letIn, control) =>
+      invoke<unknown>("answer_knock", { user_id: userId, let_in: letIn, control }).then(homeAnswer),
+    giveControl: (identity) => invoke<unknown>("give_control", { identity }).then(homeAnswer),
+    ring: (userId) => invoke<unknown>("ring", { user_id: userId }).then(homeAnswer),
+    answerRing: (callId, accept) =>
+      invoke<unknown>("answer_ring", { call_id: callId, accept }).then(homeAnswer),
+    end: () => invoke<unknown>("end").then(homeAnswer),
+    onHome: (f) => {
+      const stop = listen<unknown>("home", (e) => {
+        const home = parseHomeView(e.payload);
+        if (home !== null) {
+          f(home);
         }
       });
       return () => void stop.then((unlisten) => unlisten());
