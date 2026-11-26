@@ -64,6 +64,17 @@ That writes `TwinCursor-viewer-<ref>-windows-x64-tester.zip` next to the input a
 contents, size and SHA-256, never the values. The env file can use either the build names or the
 runtime ones (`TWINCURSOR_SERVER_URL`, `TWINCURSOR_API_KEY`, `TWINCURSOR_API_SECRET`).
 
+## The app icon
+
+`apps/desktop/src-tauri/icons/icon.svg` is the source. After changing it, regenerate the files
+the bundle uses and copy them over the ones in that folder:
+
+```bash
+cd apps/desktop && npx tauri icon src-tauri/icons/icon.svg -o /tmp/twincursor-icons
+```
+
+The bundle needs `32x32.png`, `128x128.png`, `128x128@2x.png` and `icon.icns`.
+
 ## Not done yet
 
 Builds aren't signed or notarized. That needs an Apple Developer ID, and it's required before the
