@@ -13,14 +13,20 @@ tc-engine share --ipc --room ROOM --name "Alex" [--resolution 720|1080|1440|2160
                 [--codec h264|h265] [--audio mic|off] [--mic DEVICE] [--speaker DEVICE]
                 [--window ID|TEXT | --app NAME] [--allow-control] [--exclude-app-pid PID]
 tc-engine view  --ipc --room ROOM --name "Sam" [--audio mic|off] [--mic DEVICE] [--speaker DEVICE]
-tc-engine permissions [--request]     # one JSON object: Screen Recording, Accessibility, Microphone
+tc-engine permissions [--request [screen_recording|accessibility|microphone]]
+                                      # one JSON object: Screen Recording, Accessibility, Microphone
 tc-engine devices                     # {"mics": [...], "speakers": [...]}
 tc-engine windows                     # [{"id", "app", "pid", "title", "pixels"}, ...]
 tc-engine config                      # {"url", "api_key", "has_secret", "has_pass", "source"}
 ```
 
 With a call pass in `TWINCURSOR_PASS`, `share` and `view` need neither `--room` nor `--name`
-(see [Getting into the room](#getting-into-the-room)).
+(see [Getting into the room](#getting-into-the-room)). This is how the desktop app starts every
+call with accounts ([calls](calls.md)): the pass and its server in the environment, no room or
+name in the flags, and for a share `--allow-control`, `--exclude-app-pid` and 4K with HEVC.
+
+`permissions --request` asks macOS for everything missing; naming one permission asks for that
+one only, which is what the app does when a call first needs it.
 
 `--window` and `--app` share one window or one app instead of the display, and are refused with
 `--allow-control`: control maps the guest's pointer onto the whole display.
@@ -194,4 +200,10 @@ connecting.
 
 `bench/app-e2e.sh` runs the real desktop app instead, in its test-only script mode, against a
 headless guest: a deny, an allow with recorded typing, a revoke and a leave, then the switch from
-HEVC to H.264 and the engine exiting when the app is killed.
+HEVC to H.264 and the engine exiting when the app is killed. `bench/app-accounts-e2e.sh` does the
+same for calls with accounts, against the local backend ([calls](calls.md#checking-it)).
+
+The app refuses an `allow_control` from its window that comes less than a second after it showed
+that request, and sends an allow only to the engine process that asked
+([calls](calls.md#arming-why-let-in-and-allow-wait-a-second)). The engine's own rules above don't
+depend on that.

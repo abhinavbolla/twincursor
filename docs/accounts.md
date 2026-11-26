@@ -7,6 +7,8 @@ never sees the call's screen, voice or input, and it never decides remote contro
 sharer's app does.
 
 The code is in `crates/account` (no Tauri in it) and `apps/desktop/src-tauri/src/accounts.rs`.
+What the app does with an account (sharing, joining by link, letting people in, ringing) is in
+[calls](calls.md).
 
 ## Signing in
 
@@ -88,6 +90,9 @@ The app looks in this order, each value separately:
    ```
 
 3. Neither: the app has no account features and shows nothing about accounts.
+
+`TWINCURSOR_SESSION_FILE`, if set, is where the app keeps the session instead of its config
+folder, for tests that sign in with `tc-account` first.
 
 The URL must be `https://`, except `http://` on `127.0.0.1` or `localhost` for a local stack.
 
