@@ -172,13 +172,39 @@ Read the numbers in **⋯** on both sides. The calls with accounts share at 4K w
 | 12.3 | Sharer: Wi-Fi off for a minute | The call ends with a sentence saying why |
 | 12.4 | Guest: Wi-Fi off while waiting to be let in | After a while: "Can't reach the server, so you stopped waiting to join." |
 
-## Windows viewer
+## Windows guest
 
-The Windows viewer has no accounts and can't join a call started from the menu bar app. It is a
-terminal viewer that joins a room by code on a LiveKit server whose key and secret are in its
-`server.txt` ([Releasing](RELEASING.md#builds-with-a-livekit-key-legacy)). A Mac sharer for it
-runs `tc-engine share --room CODE --name NAME` from a terminal against the same server, which
-can't answer control requests; so this pass covers watching and voice only.
+The Windows app joins calls as a guest (it can't share). The sharer is a Mac running the menu
+bar app built for the same backend. Note the Windows version (**Settings > System > About**), the
+display's resolution and scale, and where the taskbar is. After each failure, send the last
+lines of `%LOCALAPPDATA%\dev.twincursor.desktop\logs\twincursor.log`.
+
+| # | Do | Expect |
+|---|---|---|
+| WG.1 | Extract the zip to a short path, double-click **TwinCursor.exe** | SmartScreen warns once; **More info > Run anyway**. The panel opens by the tray icon, standing on the taskbar; no taskbar button appears |
+| WG.2 | Click the tray icon twice; click elsewhere while the panel is open | The panel closes and opens; it closes when it loses focus. Right-click gives **Open** and **Quit TwinCursor** |
+| WG.3 | The icon on a light and on a dark taskbar | Readable on both (white mark on indigo) |
+| WG.4 | **Sign in with GitHub** | The browser opens GitHub; after approving, the panel shows your picture. The log says "sign-in: signed in" |
+| WG.5 | Look at the signed-in panel | "Sharing from Windows isn't available yet. You can join a call with a link." where Share would be; **Paste link** is the main button; **People** has no **Call** buttons |
+| WG.6 | Copy the sharer's link, click **Paste link** | "Waiting for … to let you in…" in the panel and in the bar; the sharer sees the knock |
+| WG.7 | Sharer lets you in | The shared screen opens in its own window; the sharer's bar says HEVC was switched to H.264 for you (at 4K); text is readable |
+| WG.8 | Talk; mute with the bar and with **M** | Both hear each other; Windows asks for the microphone at most once |
+| WG.9 | **Control** in the bar (or **F9**), sharer allows | You type and click on the Mac; **F9** or **Give back** returns it; the sharer's ⌃⌥⌘R takes it back |
+| WG.10 | The sharer rings you from **People** | "… is calling" with **Join** and **Decline** in the panel, which comes up without taking the keyboard |
+| WG.11 | Drag the bar elsewhere, end the call, start another | The bar comes back where you left it, on top of other windows |
+| WG.12 | **Leave**; then **Quit TwinCursor** | The viewer closes; Task Manager shows no `tc-engine.exe` left running |
+| WG.13 | At 125 % or 150 % display scale, and with a second display | The panel stands on the taskbar by the icon, the right size, on the display with the taskbar |
+
+Numbers to send: **Copy numbers** from the bar on both sides during WG.7 (resolution, frame rate,
+bitrate, round trip).
+
+## Windows terminal viewer
+
+The terminal viewer (`TwinCursor-terminal-viewer-…zip`) has no accounts and can't join a call
+started from the menu bar app. It joins a room by code on a LiveKit server whose key and secret
+are in its `server.txt` ([Releasing](RELEASING.md#builds-with-a-livekit-key-legacy)). A Mac
+sharer for it runs `tc-engine share --room CODE --name NAME` from a terminal against the same
+server, which can't answer control requests; so this pass covers watching and voice only.
 
 | # | Do | Expect |
 |---|---|---|
@@ -186,8 +212,8 @@ can't answer control requests; so this pass covers watching and voice only.
 | W.2 | Enter the code the sharer used | The sharer's screen opens in its own window; text is readable |
 | W.3 | Talk; press **M** in the viewer | Both hear each other; M mutes |
 
-The Windows viewer can't decode HEVC, and only the menu bar app switches a call to H.264 for
-it, so the terminal sharer uses the default H.264.
+Windows doesn't decode HEVC here. The menu bar app switches a call to H.264 for such a guest; the
+terminal sharer uses the default H.264.
 
 ## What to send back
 

@@ -6,6 +6,7 @@ Both sign in with GitHub. The build you were sent already knows its server, so t
 to set up.
 
 You need an Apple silicon Mac (M1 or later) with macOS 15 Sequoia or later, and a GitHub account.
+A guest can also join from Windows 10 or 11: see [Windows](#windows).
 
 ## Install it
 
@@ -79,6 +80,46 @@ The person you ring sees "… is calling" in their panel, with **Join** and **De
 6. **Leave.** The sharer clicks **Stop**; the guest clicks **Leave** or closes the viewer
    window. When the sharer stops, the guest's call ends by itself.
 
+## Windows
+
+On Windows, TwinCursor is a guest: it joins a call, watches, talks and takes control, but can't
+share its own screen yet. Someone on a Mac shares; you paste their link or answer their ring.
+This is a new build that has been built and started automatically, but not yet used on a real
+PC, so tell us everything that looks wrong.
+
+1. Download `TwinCursor-<version>-windows-x64.zip`. Right-click it, **Extract All**, and extract
+   to a short path such as `C:\TwinCursor`. Running it from inside the zip doesn't work.
+2. Double-click **TwinCursor.exe**. The build isn't signed, so Windows may say "Windows
+   protected your PC". Click **More info**, then **Run anyway**. You only do this once.
+3. TwinCursor lives in the notification area at the bottom right of the taskbar. If you don't
+   see its icon (two white chevrons on an indigo square), click the **^** arrow beside the
+   clock. Click the icon to open or close the panel; right-click it for **Quit TwinCursor**.
+4. Click **Sign in with GitHub**. Your browser opens; approve the app there, then come back to
+   the panel (click the icon again if it closed).
+5. **Join.** Copy the link the sharer sent you and click **Paste link**, then wait for them to
+   let you in. Or, when someone rings you, click **Join** on the card at the top of the panel.
+   Where a Mac shows **Share my screen**, the Windows panel says sharing isn't available yet,
+   and there are no **Call** buttons under **People**.
+6. **Watch and talk.** The sharer's screen opens in its own window. A bar on top of your screen
+   shows the call. The first time, Windows may ask whether TwinCursor may use the microphone.
+   If nobody hears you, check **Settings > Privacy > Microphone**, and that "Allow desktop apps
+   to access your microphone" is on.
+7. **Control.** Click **Control** in the bar, or press **F9** in the viewer window. Once the
+   sharer allows it, click into the shared screen and use it like your own. **Give back** or
+   **F9** gives it back; **M** (F8 while in control) mutes.
+8. **Leave** with **Leave** in the bar, or by closing the viewer window.
+
+TwinCursor needs the Microsoft Edge WebView2 Runtime, which Windows 11 has and most Windows 10
+PCs have through Edge. Without it, TwinCursor says so when it starts: install the Evergreen
+Bootstrapper from [Microsoft's WebView2 page](https://developer.microsoft.com/microsoft-edge/webview2/)
+and start it again.
+
+When something goes wrong, send the last lines of the log,
+`%LOCALAPPDATA%\dev.twincursor.desktop\logs\twincursor.log` (paste the path into the File
+Explorer address bar). It never holds your sign-in or a call link. Also say which Windows
+version you have (**Settings > System > About**), your display's resolution and scale, and where
+your taskbar is.
+
 ## What to report
 
 - **What happened**, and what you expected instead. Screenshots or a screen recording help.
@@ -95,5 +136,7 @@ The person you ring sees "… is calling" in their panel, with **Join** and **De
   passwords while in control.
 - **4K takes a moment.** The first 20 seconds or so of a 4K share may run at 30 fps before
   reaching 60.
-- **Windows** has a viewer you run from a folder, without sign-in, for test servers only. If you
-  were sent one, its README explains it.
+- **Windows can't share.** A Windows PC joins calls as a guest only.
+- **The Windows terminal viewer** (`TwinCursor-terminal-viewer-…zip`) is a different thing: it
+  joins a room by code on a test server, without sign-in. If you were sent one, its README
+  explains it; otherwise use the app above.

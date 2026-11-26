@@ -114,16 +114,16 @@ hotkey, the on-screen label, and real input on macOS.*
 - **Anyone with a GitHub account can sign up** on a backend that allows sign-ups. An account
   alone can knock only with a link and ring only mutual contacts. Whoever runs the backend can
   turn sign-ups off ([self-hosting](self-hosting.md#7-what-you-are-responsible-for)).
-- **A room code is the only key to a room-code call.** The terminal tools and the Windows viewer
+- **A room code is the only key to a room-code call.** The terminal tools and the Windows terminal viewer
   join rooms by name on a server whose key they hold; anyone with that key and the code can
   join. The menu bar app doesn't start such calls.
 - **A build with a baked-in LiveKit server carries its secret.** `tc-engine` can be built with a
   server's URL, API key and secret (`crates/engine-cli/build.rs`), for test rounds with the
-  Windows viewer (`package.sh --legacy-keys`). `package.sh` refuses to combine that with a
+  Windows terminal viewer (`package.sh --legacy-keys`). `package.sh` refuses to combine that with a
   backend, and checks that an app built for a backend has no server key in its engine.
   Anyone who has that build can read the secret out of the binary and mint tokens for any room on
   that server. Give such builds only to people you'd give the key to, and rotate the key when a
-  test round ends. `tc-engine config` never prints the secret. A Windows viewer zip with a
+  test round ends. `tc-engine config` never prints the secret. A Windows terminal viewer zip with a
   `server.txt` (`packaging/windows/assemble.sh`) carries the secret in plain text, with the same
   rules. In pass mode no secret ships in the app at all: the account server signs a call pass
   for each person and call, and the engine only reads who the pass is for (it can't verify the
@@ -144,7 +144,11 @@ hotkey, the on-screen label, and real input on macOS.*
   the server and deletes the file (even when the server can't be reached; an access token already
   issued then still works until it expires, within the hour). Other users of the Mac can't read
   it; software running as you can. Once builds are signed, the session moves to the Keychain; an
-  unsigned build would make macOS ask for Keychain access on every update. The window never
+  unsigned build would make macOS ask for Keychain access on every update. On Windows the file is
+  in `%LOCALAPPDATA%\dev.twincursor.desktop\`, protected only by that folder's permissions
+  (your user, SYSTEM and administrators; no file mode exists there), not encrypted, and not
+  roamed to other PCs. Other standard users of the PC can't read it; administrators, software
+  running as you, and anyone who reads the disk without Windows running (no BitLocker) can. The window never
   receives a token: it learns only whether you're signed in and your name, handle and picture.
 - **The sign-in callback listens on your machine for a few minutes.** During a sign-in, and only
   then, the app listens on `127.0.0.1:53682` (never another interface) for the browser's return

@@ -12,8 +12,9 @@ something worth downloading.
    git push origin vx.y.z
    ```
 
-3. The [release workflow](../.github/workflows/release.yml) builds macOS and Windows archives, adds
-   checksums and build provenance, and creates a **draft** release from the changelog.
+3. The [release workflow](../.github/workflows/release.yml) builds the terminal tools for macOS
+   and Windows, the Windows app and the Windows terminal viewer, adds checksums and build
+   provenance, and creates a **draft** release from the changelog.
 4. Download the archives, try them, and publish the draft.
 
 To check a download's provenance:
@@ -82,6 +83,39 @@ carries no LiveKit key or secret; …".
 Without a file, `package.sh` builds an app with no backend, which says it isn't connected to a
 server. That is the right build for trying the app's packaging, not for people.
 
+## The Windows app
+
+`TwinCursor-<version>-windows-x64.zip` holds `TwinCursor.exe` (the app, its page built in),
+`tc-engine.exe`, `README.txt` and `LICENSE.txt`. People unzip it and run `TwinCursor.exe`; there
+is no installer yet. It is built by
+[`packaging/windows/package-app.sh`](../packaging/windows/package-app.sh), on Windows in Git
+Bash, in three places:
+
+- **CI** (`windows-app` job, every pull request and push to `main`): no backend, then started by
+  `bench/windows-smoke.sh`. The zip is the run's artifact `TwinCursor-windows-x64-no-backend`.
+- **By hand**: Actions > **Windows package** > Run workflow. The artifact is `windows-x64-app`.
+- **Releases**: the release workflow calls the same workflow for every tag.
+
+The last two bake in the backend from two **repository variables** (Settings > Secrets and
+variables > Actions > Variables), which are public values and must not be secrets:
+
+| Variable | Value |
+|---|---|
+| `TWINCURSOR_BUILD_SUPABASE_URL` | The project's URL, `https://….supabase.co` |
+| `TWINCURSOR_BUILD_SUPABASE_KEY` | Its publishable key (`sb_publishable_…`) or the anon key |
+
+Unset, the zip has no backend and the app says it isn't connected to a server. Set only one,
+or a secret key, and the build stops. The script clears every LiveKit and server variable
+before building, and checks the result as `package.sh` does on the Mac: the engine has no
+server of its own, no LiveKit value from the environment is in either binary, and the backend's
+URL and key are in the app and not in the engine. Windows release builds carry no debug info
+(`CARGO_PROFILE_RELEASE_DEBUG=0`).
+
+The app needs the Microsoft Edge WebView2 Runtime: Windows 11 has it, and most Windows 10 PCs
+have it through Edge. Without it the app shows Tauri's message linking to Microsoft's download
+and exits; an installer with the WebView2 bootstrapper would remove that step, once there is
+one. The build is unsigned, so SmartScreen warns on first run (**More info > Run anyway**).
+
 **Which example file is which:**
 
 | File | For | Holds |
@@ -91,7 +125,7 @@ server. That is the right build for trying the app's packaging, not for people.
 
 ## Builds with a LiveKit key (legacy)
 
-The Windows viewer has no accounts: it joins a room by code on a LiveKit server whose key and
+The Windows terminal viewer has no accounts: it joins a room by code on a LiveKit server whose key and
 secret it has. For a test round with it, a Mac sharer runs `tc-engine` from the terminal against
 the same server. `package.sh` can still bake such a server into `tc-engine`:
 
@@ -107,17 +141,19 @@ server's API secret out of it (see [the threat model](threat-model.md)): give it
 you'd give the key to, and rotate the key when the round ends. Afterwards, run `package.sh`
 again without `--legacy-keys` so the binaries left in `target` don't carry the secret.
 
-**Windows viewer.** The [release workflow](../.github/workflows/release.yml) builds
-`TwinCursor-viewer-<ref>-windows-x64.zip` (`tc-engine.exe`, `Join TwinCursor.cmd`, a README and
+**Windows terminal viewer.** Not the app: it can't sign in or open a call link, and is only for
+a room-code call on a test server whose key it carries. The
+[release workflow](../.github/workflows/release.yml) builds
+`TwinCursor-terminal-viewer-<ref>-windows-x64.zip` (`tc-engine.exe`, `Join TwinCursor.cmd`, a README and
 `server.txt.example`) on every tag and on pull requests that change it or `packaging/`. It holds
 no server settings. Download it from the run's artifacts (`windows-x64`), then add a `server.txt`
 on a Mac:
 
 ```bash
-packaging/windows/assemble.sh TwinCursor-viewer-<ref>-windows-x64.zip path/to/testbuild.env
+packaging/windows/assemble.sh TwinCursor-terminal-viewer-<ref>-windows-x64.zip path/to/testbuild.env
 ```
 
-That writes `TwinCursor-viewer-<ref>-windows-x64-tester.zip` next to the input and prints its
+That writes `TwinCursor-terminal-viewer-<ref>-windows-x64-tester.zip` next to the input and prints its
 contents, size and SHA-256, never the values. The env file can use either the build names or the
 runtime ones (`TWINCURSOR_SERVER_URL`, `TWINCURSOR_API_KEY`, `TWINCURSOR_API_SECRET`).
 
@@ -130,7 +166,8 @@ the bundle uses and copy them over the ones in that folder:
 cd apps/desktop && npx tauri icon src-tauri/icons/icon.svg -o /tmp/twincursor-icons
 ```
 
-The bundle needs `32x32.png`, `128x128.png`, `128x128@2x.png` and `icon.icns`.
+The bundle needs `32x32.png`, `128x128.png`, `128x128@2x.png` and `icon.icns`, and the Windows
+build `icon.ico` (Tauri puts it in the exe; the build fails without it).
 
 ## Not done yet
 
@@ -139,7 +176,6 @@ first public release. Until then macOS stops the app the first time it opens (**
 System Settings > Privacy & Security lets it through), refuses a downloaded `tc-spike` until you
 clear its quarantine flag, and Windows may show a SmartScreen warning.
 
-The release workflow builds the terminal tools and the Windows viewer, not the Mac app. Building
-the app there would take the backend's two public values from repository variables (not
-secrets), and make an app with no backend when they're unset; until that exists, the disk image
-is made by hand as above.
+The release workflow builds the Windows app but not the Mac app. Building the Mac app there
+would take the same two repository variables; until that exists, the disk image is made by hand
+as above.

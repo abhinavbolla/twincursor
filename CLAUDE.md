@@ -49,7 +49,7 @@ crates/account/      accounts: GitHub sign-in via Supabase Auth, session, backen
 supabase/            the backend: migration, call-pass Edge Function, tests
 bench/               latency, quality, control and end-to-end scripts; netlab/ (Docker)
 deploy/dev/          docker compose for a local LiveKit dev server
-packaging/windows/   the Windows viewer zip for testers
+packaging/windows/   the Windows app zip (package-app.sh) and the terminal viewer zip
 docs/                product, architecture, roadmap, research, ADRs
 ```
 
@@ -153,10 +153,22 @@ Fill these in as code lands; keep them accurate.
   outside the repo, e.g. `~/.config/twincursor/backend.conf`); without it the app has no backend.
   It clears every LiveKit variable from the build and fails if the bundled `tc-engine config`
   reports a key source other than `dev`. `--legacy-keys testbuild.env` bakes a LiveKit key and
-  secret into `tc-engine` instead (no backend; only for the Windows viewer's test server; rerun
-  without it afterwards). Windows viewer zip: built by `release.yml`, then
+  secret into `tc-engine` instead (no backend; only for the Windows terminal viewer's test server;
+  rerun without it afterwards). Windows terminal viewer zip: built by `release.yml`, then
   `packaging/windows/assemble.sh VIEWER.zip testbuild.env` adds `server.txt`. Testers read
   `docs/testing-guide.md`
+- Windows app (a guest: joins, watches, talks, takes control; never shares): on Windows in Git
+  Bash, `packaging/windows/package-app.sh` → `dist/TwinCursor-<version>-windows-x64.zip`
+  (backend from `TWINCURSOR_BUILD_SUPABASE_URL`/`_KEY`, else none). By hand: `npm ci && npm run
+  build` in `apps/desktop`, then `cargo build --release -p twincursor-engine-cli` and `cargo build
+  --release -p twincursor-desktop --features tauri/custom-protocol` (without the feature the page
+  comes from a dev server and the windows are blank); set `CARGO_PROFILE_RELEASE_DEBUG=0` there.
+  Its log: `%LOCALAPPDATA%\dev.twincursor.desktop\logs\twincursor.log` (`TWINCURSOR_LOG_FILE`
+  anywhere). Platform code: `src-tauri/src/platform.rs` and `native.rs`. Dev page: add
+  `&platform=windows`. Cross-check from the Mac is possible with `cargo check --target
+  x86_64-pc-windows-msvc` only with stand-in C headers and tools; CI is the real check
+- Windows smoke test: `bench/windows-smoke.sh` (CI's `windows-app` job; `LIVEKIT=…exe` adds a
+  guest joining an empty room)
 - Desktop dev in a browser, no engine: `npm run dev` in `apps/desktop`, then
   `http://localhost:5173/?view=panel&state=home` or `?view=bar&state=knock` (every state is
   listed in `docs/ui.md`; `?view=gallery&of=bar` shows them all; add `&theme=light|dark`,
@@ -172,7 +184,9 @@ Fill these in as code lands; keep them accurate.
   HEVC share switching to H.264 for a guest without HEVC, and the engine dying with the app.
   Needs `livekit-server --dev`; no permissions, sound or unlocked screen)
 - CI: `.github/workflows/ci.yml` runs fmt, clippy and tests on `macos-26` for every PR and
-  push to `main`. Keep it green; run the same three commands locally before pushing.
+  push to `main`, plus `windows-viewer` (the engine builds on Windows) and `windows-app` (the
+  Windows app: UI tests, the zip, Windows-applicable Rust tests, the smoke test; the zip is an
+  artifact). Keep it green; run the same three commands locally before pushing.
 - Building needs **Xcode 26** (macOS 26 SDK): `screencapturekit`'s `apple-metal` Swift bridge
   uses macOS 26 Metal APIs and fails to compile with Xcode 16 (this broke CI on `macos-15`).
 
