@@ -6,14 +6,17 @@
 
 pub mod app;
 mod error;
+pub mod focus;
 mod guest;
 pub mod hotkey;
 mod hud;
 pub mod input;
 mod overlay;
 pub mod permission;
+pub mod screen;
 pub mod sharer;
 pub mod view;
 
 pub use error::{Error, ScriptError};
+pub use guest::{read_script, Step};
 pub use overlay::OverlayHandle;

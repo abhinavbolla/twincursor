@@ -49,6 +49,13 @@ pub trait Injector {
     /// Where the pointer is now, so the session can tell when the sharer moves their own mouse.
     /// `None` if the platform can't say.
     fn pointer(&self) -> Option<Point>;
+
+    /// Whether the display this injector maps onto (the shared one) has gone away, so input
+    /// can't go where the guest sees it any more. Once true, it stays true. Injectors that touch
+    /// no display never lose it.
+    fn display_gone(&mut self) -> bool {
+        false
+    }
 }
 
 impl<I: Injector + ?Sized> Injector for Box<I> {
@@ -58,6 +65,10 @@ impl<I: Injector + ?Sized> Injector for Box<I> {
 
     fn pointer(&self) -> Option<Point> {
         (**self).pointer()
+    }
+
+    fn display_gone(&mut self) -> bool {
+        (**self).display_gone()
     }
 }
 

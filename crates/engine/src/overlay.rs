@@ -103,17 +103,42 @@ const TAG_TITLE: &str = "TwinCursor guest pointer";
 /// The overlay's windows, owned by the main thread.
 pub struct Overlay {
     state: Arc<Mutex<OverlayState>>,
+    /// The shared display (`CGDirectDisplayID`): the label and the tag go on it, the display the
+    /// guest sees and controls, whichever display is the main one.
+    display: u32,
+    /// Its place and scale when last seen, in case it is mid-change or gone.
+    last: Option<Place>,
     label: Option<Panel>,
     tag: Option<Panel>,
 }
 
+/// Where a display is: top left and size in global points, and its scale.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Place {
+    origin: (f64, f64),
+    size: (f64, f64),
+    scale: f64,
+}
+
 impl Overlay {
-    pub fn new(state: Arc<Mutex<OverlayState>>) -> Self {
+    pub fn new(state: Arc<Mutex<OverlayState>>, display: u32) -> Self {
         Self {
             state,
+            display,
+            last: None,
             label: None,
             tag: None,
         }
+    }
+
+    /// The shared display as it is now (its bounds follow a new resolution or arrangement), or
+    /// as it was last seen. The tag is placed only on the display as it is now.
+    fn place(&mut self, event_loop: &ActiveEventLoop) -> (Option<Place>, bool) {
+        let now = display_place(event_loop, self.display);
+        if now.is_some() {
+            self.last = now;
+        }
+        (self.last, now.is_some())
     }
 
     /// Creates both panels, hidden. Call it before screen capture starts: ScreenCaptureKit only
@@ -129,12 +154,16 @@ impl Overlay {
     /// Brings the windows in line with the current state.
     pub fn update(&mut self, event_loop: &ActiveEventLoop) {
         let state = self.state.lock().unwrap().clone();
-        let Some(display) = event_loop.primary_monitor() else {
+        let (Some(at), here) = self.place(event_loop) else {
+            tracing::warn!(
+                display = self.display,
+                "the shared display isn't there; no overlay"
+            );
             return;
         };
-        let scale = display.scale_factor();
-        let screen: LogicalSize<f64> = display.size().to_logical(scale);
-        let origin: LogicalPosition<f64> = display.position().to_logical(scale);
+        let scale = at.scale;
+        let screen = LogicalSize::new(at.size.0, at.size.1);
+        let origin = LogicalPosition::new(at.origin.0, at.origin.1);
 
         match label(&state) {
             Some((text, bg)) => {
@@ -152,7 +181,7 @@ impl Overlay {
             }
         }
 
-        match (&state.controller, state.pointer) {
+        match (&state.controller, state.pointer.filter(|_| here)) {
             (Some(name), Some(p)) => {
                 let panel = self
                     .tag
@@ -169,6 +198,36 @@ impl Overlay {
             }
         }
     }
+}
+
+/// Where display `id` is now, in global points, and its scale. `None` if it isn't connected.
+#[cfg(target_os = "macos")]
+fn display_place(event_loop: &ActiveEventLoop, id: u32) -> Option<Place> {
+    use winit::platform::macos::MonitorHandleExtMacOS;
+    let display = control::macos::display(id).ok()?;
+    // winit knows each screen's scale; CoreGraphics' bounds are already in points.
+    let scale = event_loop
+        .available_monitors()
+        .find(|m| m.native_id() == id)
+        .map_or(1.0, |m| m.scale_factor());
+    Some(Place {
+        origin: (display.x, display.y),
+        size: (display.width, display.height),
+        scale,
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn display_place(event_loop: &ActiveEventLoop, _id: u32) -> Option<Place> {
+    let monitor = event_loop.primary_monitor()?;
+    let scale = monitor.scale_factor();
+    let size: LogicalSize<f64> = monitor.size().to_logical(scale);
+    let origin: LogicalPosition<f64> = monitor.position().to_logical(scale);
+    Some(Place {
+        origin: (origin.x, origin.y),
+        size: (size.width, size.height),
+        scale,
+    })
 }
 
 struct Panel {
@@ -239,8 +298,8 @@ impl Panel {
     }
 }
 
-/// Puts a panel's top-left corner at (`x`, `y`), in logical points from the top-left of the
-/// main display.
+/// Puts a panel's top-left corner at (`x`, `y`), in global points (from the top-left of the
+/// main display, as CoreGraphics measures, whichever display that lands on).
 fn place(window: &Window, x: f64, y: f64) {
     #[cfg(target_os = "macos")]
     macos::place(window, x, y);

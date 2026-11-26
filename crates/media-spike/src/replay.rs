@@ -63,8 +63,9 @@ pub fn run(sent: &Path, actions: &Path, revoked: bool) -> anyhow::Result<()> {
 pub fn run_probe(sent: &Path, probe: &Path) -> anyhow::Result<()> {
     let messages: Vec<Message> =
         read_lines(sent).with_context(|| format!("reading {}", sent.display()))?;
-    let received: Vec<InputEvent> =
+    let lines: Vec<crate::probe::ProbeLine> =
         read_lines(probe).with_context(|| format!("reading {}", probe.display()))?;
+    let received = probe_events(&lines).map_err(|e| anyhow::anyhow!("FAIL: {e}"))?;
     let sent: Vec<InputEvent> = messages
         .into_iter()
         .filter_map(|m| match m {
@@ -82,6 +83,30 @@ pub fn run_probe(sent: &Path, probe: &Path) -> anyhow::Result<()> {
         }
         Err(e) => anyhow::bail!("FAIL: {e}"),
     }
+}
+
+/// The input a probe received, if it was ready before any arrived and stayed in front until it
+/// closed: otherwise what it recorded can't be trusted to be all that was injected.
+pub fn probe_events(lines: &[crate::probe::ProbeLine]) -> Result<Vec<InputEvent>, String> {
+    use crate::probe::ProbeLine;
+    if !matches!(lines.first(), Some(ProbeLine::Ready { ready: true, .. })) {
+        return Err("the probe never said it was ready".into());
+    }
+    let mut events = Vec::new();
+    for line in lines {
+        match line {
+            ProbeLine::Event(event) => events.push(event.clone()),
+            ProbeLine::LostFocus { lost_focus } => {
+                return Err(format!(
+                    "the probe lost focus during the run ({}), so input went elsewhere",
+                    lost_focus.problems()
+                ))
+            }
+            ProbeLine::NotReady { not_ready } => return Err(not_ready.clone()),
+            ProbeLine::Ready { .. } | ProbeLine::Closed { .. } => {}
+        }
+    }
+    Ok(events)
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -416,6 +441,22 @@ mod tests {
             Ok(4),
             "the revoke landed after the last message"
         );
+    }
+
+    #[test]
+    fn a_probe_recording_counts_only_if_ready_first_and_never_lost() {
+        let parse = |text: &str| -> Vec<crate::probe::ProbeLine> {
+            text.lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect()
+        };
+        let ready = r#"{"ready":true,"display":{"id":1,"x":0.0,"y":0.0,"width":1512.0,"height":982.0,"main":true},"frame":{"x":0.0,"y":0.0,"width":1.0,"height":1.0},"key":true,"frontmost":true}"#;
+        let click = r#"{"kind":"button","button":"left","pressed":true,"x":0.5,"y":0.5}"#;
+        let lost = r#"{"lost_focus":{"on_target":true,"key":false,"frontmost":true,"frame":null}}"#;
+        let ok = parse(&format!("{ready}\n{click}\n{{\"closed\":true}}"));
+        assert_eq!(probe_events(&ok).unwrap().len(), 1);
+        assert!(probe_events(&parse(click)).is_err(), "never ready");
+        assert!(probe_events(&parse(&format!("{ready}\n{click}\n{lost}"))).is_err());
     }
 
     #[test]

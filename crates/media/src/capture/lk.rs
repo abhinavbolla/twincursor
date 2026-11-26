@@ -48,7 +48,33 @@ pub fn start(
                 )));
                 return;
             };
-            let source = capturer.get_source_list().into_iter().next();
+            // The share's display, by id (on macOS a screen source's id is its
+            // CGDirectDisplayID), never just the first source listed. libwebrtc's ScreenCaptureKit
+            // capturer lists no sources at all (seen on macOS 26) and then captures its own
+            // default: that is taken only for the main display, the one it is assumed to pick.
+            let sources = capturer.get_source_list();
+            let listed: Vec<String> = sources
+                .iter()
+                .map(|s| format!("{} ({})", s.id(), s.title()))
+                .collect();
+            let empty = sources.is_empty();
+            let source = config
+                .display
+                .and_then(|id| sources.into_iter().find(|s| s.id() == u64::from(id)));
+            let default_is_ok = empty && config.display.is_some() && config.display == main_id();
+            if source.is_none() && !default_is_ok {
+                tracing::warn!("screen sources: [{}]", listed.join(", "));
+                let _ = ready_tx.send(Err(match config.display {
+                    Some(id) => CaptureError::DisplayNotListed(id),
+                    None => CaptureError::NoDisplayChosen,
+                }));
+                return;
+            }
+            if source.is_none() {
+                tracing::warn!(
+                    "libwebrtc lists no screens; capturing its default, taken to be the main display"
+                );
+            }
             capturer.start_capture(source, move |result| {
                 if let Ok(frame) = result {
                     sink(to_frame(&frame, config.width, config.height));
@@ -72,6 +98,18 @@ pub fn start(
         running,
         thread: Some(thread),
     })
+}
+
+/// The main display's id, where the platform has one.
+fn main_id() -> Option<u32> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(super::sck::main_display_id())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
 }
 
 fn to_frame(frame: &DesktopFrame, width: u32, height: u32) -> Frame {

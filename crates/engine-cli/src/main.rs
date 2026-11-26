@@ -25,7 +25,7 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use engine::app::{self, Events};
-use engine::sharer::{Answer, Consent, Inject, Sharer};
+use engine::sharer::{Answer, Consent, Inject, Sharer, Surface};
 use engine::{hotkey, view};
 use ipc::{Command, ConnectionState, EndReason, Event, Role};
 use livekit::options::VideoCodec;
@@ -173,6 +173,9 @@ enum Cmd {
     Devices,
     /// Print the windows `share --window` can share as JSON: id, app, pid, title, pixels.
     Windows,
+    /// Print the displays as JSON: id (what `share --display` takes), main, capturable, their
+    /// place in points and their pixels. `share` shares the main one unless told otherwise.
+    Displays,
     /// Print the server a call would use, as JSON: url, api_key, has_secret, has_pass and
     /// source (`env`, `build` or `dev`). Never prints the secret or the pass.
     Config,
@@ -398,7 +401,7 @@ enum Resolution {
 
 #[derive(Clone, Copy, ValueEnum)]
 enum CaptureSource {
-    /// The main display (ScreenCaptureKit).
+    /// A display (ScreenCaptureKit): `--display`, else the main one.
     Screen,
     /// A synthetic picture, for tests: needs no Screen Recording permission.
     Pattern,
@@ -418,8 +421,14 @@ struct ShareArgs {
     /// Share one app: the display with only this app's windows on it (name or bundle id).
     #[arg(long)]
     app: Option<String>,
+    /// The display to share, by id (see `displays`). Default: the main display, the one with
+    /// the menu bar. Remote control goes to the same display.
+    #[arg(long)]
+    display: Option<u32>,
     /// Let guests ask for control. Each request goes to the app as `control_asked`, and nothing
     /// is granted until it answers `allow_control`. Without this, requests are turned down.
+    /// With --window or --app every request is turned down, with a reason: input can't follow
+    /// one window yet.
     #[arg(long)]
     allow_control: bool,
     /// What granted input does: `real` input (macOS, needs Accessibility), or `log` it, or
@@ -489,6 +498,10 @@ fn main() -> anyhow::Result<()> {
         Cmd::Windows => {
             let (windows, _) = capture::shareable().context("listing windows")?;
             print_line(&serde_json::to_string(&windows)?);
+            Ok(())
+        }
+        Cmd::Displays => {
+            print_line(&serde_json::to_string(&engine::screen::list())?);
             Ok(())
         }
         Cmd::Config => {
@@ -669,7 +682,12 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
         state: ConnectionState::Connecting,
     });
     let setup = share_config(&args).map_err(|e| failed_early(&events, e))?;
-    let (config, voice) = setup;
+    let (config, voice, display) = setup;
+    let surface = if config.capture.source.is_whole_display() {
+        Surface::Display(display)
+    } else {
+        Surface::Window
+    };
     let revoke = control::RevokeSwitch::default();
     if args.headless {
         anyhow::ensure!(
@@ -686,7 +704,7 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
     let ui = if args.headless {
         None
     } else {
-        let mut ui = hotkey::SharerUi::new()?;
+        let mut ui = hotkey::SharerUi::new(display)?;
         // The voice reporter tells the app; nothing may print to stdout.
         ui.on_mute(Arc::new(|_| {}));
         Some(ui)
@@ -697,6 +715,7 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
     };
     let (sharer, link) = Sharer::start(
         &inject,
+        surface,
         revoke.clone(),
         ui.as_ref().map(|ui| ui.overlay()),
         consent,
@@ -793,14 +812,11 @@ fn device_ref(name: String) -> DeviceRef {
     name.parse().unwrap_or(DeviceRef::Name(name))
 }
 
-fn share_config(args: &ShareArgs) -> anyhow::Result<(ShareConfig, Arc<VoiceState>)> {
+/// The share's settings, its voice, and its display ([`engine::screen::choose`]): the one the
+/// capture shows and the one control input goes to.
+fn share_config(args: &ShareArgs) -> anyhow::Result<(ShareConfig, Arc<VoiceState>, u32)> {
     // First, so a pass that doesn't fit fails before anything else is set up.
     let token = args.call.join(Role::Sharer)?.token;
-    anyhow::ensure!(
-        !(args.allow_control && (args.window.is_some() || args.app.is_some())),
-        "{}",
-        select::CONTROL_NEEDS_DISPLAY
-    );
     let (source, source_pixels) = if args.window.is_none() && args.app.is_none() {
         (Source::Display, None)
     } else {
@@ -826,9 +842,10 @@ fn share_config(args: &ShareArgs) -> anyhow::Result<(ShareConfig, Arc<VoiceState
         Resolution::P2160 => Tier::P2160,
         Resolution::Native => Tier::Native,
     };
+    let display = engine::screen::choose(backend, args.display).map_err(anyhow::Error::msg)?;
     let screen = match backend {
         Backend::Pattern => Some(capture::PATTERN_DISPLAY),
-        _ => source_pixels.or_else(capture::display_pixels),
+        _ => source_pixels.or_else(|| capture::display_pixels(display.id)),
     }
     .unwrap_or(capture::FALLBACK_DISPLAY);
     let (width, height) = tier.size(screen);
@@ -840,6 +857,7 @@ fn share_config(args: &ShareArgs) -> anyhow::Result<(ShareConfig, Arc<VoiceState
         fit_viewport: true,
         capture: CaptureConfig {
             source,
+            display: Some(display.id),
             width,
             height,
             max_fps: 60,
@@ -869,7 +887,7 @@ fn share_config(args: &ShareArgs) -> anyhow::Result<(ShareConfig, Arc<VoiceState
         screen.1,
         config.codec
     );
-    Ok((config, Arc::new(VoiceState::default())))
+    Ok((config, Arc::new(VoiceState::default()), display.id))
 }
 
 /// The voice when it changes, and the video sent about once a second.
