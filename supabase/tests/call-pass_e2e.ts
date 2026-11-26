@@ -1,6 +1,7 @@
 // End-to-end check of the call-pass function against the local stack. Run it with
 // supabase/tests/call-pass.sh, which serves the function with made-up LiveKit settings and passes
-// the local keys in the environment.
+// the local keys in the environment. It also serves two bare copies whose environment has no
+// SUPABASE_ANON_KEY (BARE_URL), and no LiveKit settings either (BARE_UNCONFIGURED_URL).
 
 import { assert, assertEquals } from "@std/assert";
 import { jwtVerify } from "jose";
@@ -16,16 +17,22 @@ const serviceKey = env("SERVICE_ROLE_KEY");
 const livekitKey = env("TEST_LIVEKIT_API_KEY");
 const livekitSecret = new TextEncoder().encode(env("TEST_LIVEKIT_API_SECRET"));
 const livekitUrl = env("TEST_LIVEKIT_URL");
+const bareUrl = env("BARE_URL");
+const bareUnconfiguredUrl = env("BARE_UNCONFIGURED_URL");
 
 const run = crypto.randomUUID().slice(0, 8);
 const created: string[] = [];
 
-async function call(path: string, init: RequestInit & { token?: string; key?: string } = {}) {
+async function call(
+  path: string,
+  init: RequestInit & { token?: string; key?: string | null; base?: string } = {},
+) {
   const headers = new Headers(init.headers);
-  headers.set("apikey", init.key ?? anonKey);
+  // `key: null` sends no apikey at all.
+  if (init.key !== null) headers.set("apikey", init.key ?? anonKey);
   if (init.token) headers.set("authorization", `Bearer ${init.token}`);
   if (init.body) headers.set("content-type", "application/json");
-  const res = await fetch(`${api}${path}`, { ...init, headers });
+  const res = await fetch(`${init.base ?? api}${path}`, { ...init, headers });
   const text = await res.text();
   return { status: res.status, body: text ? JSON.parse(text) : null };
 }
@@ -55,6 +62,10 @@ const rpc = (fn: string, token: string, args: unknown = {}) =>
 
 const pass = (token: string | undefined, body: unknown) =>
   call("/functions/v1/call-pass", { method: "POST", token, body: JSON.stringify(body) });
+
+/** The same request to one of the bare copies, which have no SUPABASE_ANON_KEY. */
+const barePass = (base: string, token: string | undefined, body: unknown, key?: string | null) =>
+  call("", { base, method: "POST", token, key, body: JSON.stringify(body) });
 
 async function claims(token: string) {
   const { payload } = await jwtVerify(token, livekitSecret, { issuer: livekitKey, algorithms: ["HS256"] });
@@ -119,6 +130,45 @@ Deno.test("call-pass gives passes only to the host and admitted members", async 
       assertEquals(c.video.room, res.body.room);
       assertEquals(c.video.canPublishSources, undefined);
       assertEquals((c.exp as number) - (c.nbf as number), 600);
+    });
+
+    await t.step("without SUPABASE_ANON_KEY, the request's apikey is enough", async () => {
+      const res = await barePass(bareUrl, host.token, { call_id });
+      assertEquals(res.status, 200, JSON.stringify(res.body));
+      assertEquals(res.body.role, "sharer");
+      assertEquals((await claims(res.body.token)).sub, `sharer-${host.id}`);
+      assertEquals((await barePass(bareUrl, knocker.token, { call_id })).status, 403);
+      const publishable = Deno.env.get("PUBLISHABLE_KEY");
+      if (publishable) {
+        const res = await barePass(bareUrl, host.token, { call_id }, publishable);
+        assertEquals(res.status, 200, `with the publishable key: ${JSON.stringify(res.body)}`);
+      }
+    });
+
+    await t.step("no apikey and no SUPABASE_ANON_KEY: 401", async () => {
+      const res = await barePass(bareUrl, host.token, { call_id }, null);
+      assertEquals(res.status, 401);
+      assertEquals(res.body, { error: "not_signed_in" });
+    });
+
+    await t.step("a made-up apikey never makes the function fail", async () => {
+      // A hosted gateway rejects an unknown key (the function then answers 401, see pass_test.ts);
+      // the local one lets it through, and the user's own token still decides.
+      const res = await barePass(bareUrl, host.token, { call_id }, "sb_publishable_made_up");
+      assert(res.status === 401 || res.status === 200, `HTTP ${res.status}`);
+      const anon = await barePass(bareUrl, anonKey, { call_id }, "sb_publishable_made_up");
+      assertEquals(anon.status, 401);
+    });
+
+    await t.step("LiveKit not configured: 500 for a user, 401 for an anonymous caller", async () => {
+      const user = await barePass(bareUnconfiguredUrl, host.token, { call_id });
+      assertEquals(user.status, 500);
+      assertEquals(user.body, { error: "server_error" });
+      assertEquals((await barePass(bareUnconfiguredUrl, anonKey, { call_id })).status, 401);
+      assertEquals((await barePass(bareUnconfiguredUrl, undefined, { call_id })).status, 401);
+      assertEquals((await barePass(bareUnconfiguredUrl, host.token, { call_id }, null)).status, 401);
+      // The caller's mistakes still come first.
+      assertEquals((await barePass(bareUnconfiguredUrl, host.token, { call: call_id })).status, 400);
     });
 
     await t.step("once admitted, the knocker gets a guest pass", async () => {

@@ -132,8 +132,8 @@ jobs:
       - name: Check formatting and lint the function
         working-directory: supabase
         run: |
-          deno fmt --check --config functions/call-pass/deno.json functions tests/call-pass_e2e.ts
-          deno lint --config functions/call-pass/deno.json functions tests/call-pass_e2e.ts
+          deno fmt --check --config functions/call-pass/deno.json functions tests/call-pass_e2e.ts tests/call-pass_serve.ts
+          deno lint --config functions/call-pass/deno.json functions tests/call-pass_e2e.ts tests/call-pass_serve.ts
 
       - name: Unit-test the function
         working-directory: supabase/functions/call-pass

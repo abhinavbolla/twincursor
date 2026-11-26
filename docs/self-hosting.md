@@ -97,7 +97,9 @@ supabase secrets set --env-file ~/.config/twincursor/livekit.env --project-ref Y
 ```
 
 Or add them one by one in the dashboard's Edge Functions secrets. Supabase gives the function
-`SUPABASE_URL` and `SUPABASE_ANON_KEY` itself.
+`SUPABASE_URL` itself. The function asks Auth and the database with the public key the app sends
+in its request, so it works with the new publishable keys and doesn't need `SUPABASE_ANON_KEY`
+(it uses that only for a request that carries no key).
 
 On LiveKit Cloud, the project's settings create an API key and secret and show the project's
 URL ([keys and tokens](https://docs.livekit.io/home/cloud/keys-and-tokens/)). Without the
