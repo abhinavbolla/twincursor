@@ -5,6 +5,7 @@
 //! show. That keeps the rules in `docs/threat-model.md` ("How control works") testable with
 //! scripted traces, in `tests.rs`.
 
+pub mod display;
 pub mod guest;
 mod held;
 mod injector;

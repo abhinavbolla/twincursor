@@ -70,4 +70,7 @@ pub enum ScriptError {
     /// Control ended (a revoke, say) before the script had sent everything.
     #[error("control ended while the script was still running")]
     Ended,
+    /// A `gate` step wasn't opened: control was given back and the rest of the script not sent.
+    #[error("stopped at a gate: {0}")]
+    Gated(String),
 }

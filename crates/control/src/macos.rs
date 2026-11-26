@@ -20,6 +20,7 @@ use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use enigo::{Axis, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings};
 use protocol::{Button, ScrollUnit};
 
+use crate::display::{input_target, Display, NoTarget};
 use crate::{Action, Injector, Point};
 
 /// How long a lock-screen check or the display's bounds are trusted before asking again.
@@ -45,7 +46,7 @@ pub enum MacError {
 
 pub struct MacInjector {
     enigo: Enigo,
-    /// The main display in global points: x, y, width, height.
+    /// The display input goes to ([`input_display`]) in global points: x, y, width, height.
     bounds: (f64, f64, f64, f64),
     bounds_at: Instant,
     locked: bool,
@@ -72,9 +73,12 @@ impl MacInjector {
             enigo::NewConError::NoPermission => MacError::NoPermission,
             other => MacError::Setup(other.to_string()),
         })?;
+        let bounds = input_display()
+            .map_err(|e| MacError::Setup(format!("can't tell which display input goes to: {e}")))?
+            .bounds();
         Ok(Self {
             enigo,
-            bounds: main_bounds(),
+            bounds,
             bounds_at: Instant::now(),
             locked: false,
             locked_at: None,
@@ -103,7 +107,11 @@ impl MacInjector {
 
     fn display(&mut self) -> (f64, f64, f64, f64) {
         if self.bounds_at.elapsed() >= BOUNDS_RECHECK {
-            self.bounds = main_bounds();
+            // Displays come and go; mid-change, keep the last answer.
+            match input_display() {
+                Ok(display) => self.bounds = display.bounds(),
+                Err(e) => tracing::debug!("display layout unsettled ({e}); keeping the last one"),
+            }
             self.bounds_at = Instant::now();
         }
         self.bounds
@@ -218,12 +226,34 @@ impl Drop for MacInjector {
     }
 }
 
-fn main_bounds() -> (f64, f64, f64, f64) {
-    let b = CGDisplay::main().bounds();
-    (b.origin.x, b.origin.y, b.size.width, b.size.height)
+/// The active displays, in global points.
+pub fn displays() -> Vec<Display> {
+    let main = CGDisplay::main().id;
+    CGDisplay::active_displays()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|id| {
+            let b = CGDisplay::new(id).bounds();
+            Display {
+                id,
+                x: b.origin.x,
+                y: b.origin.y,
+                width: b.size.width,
+                height: b.size.height,
+                main: id == main,
+            }
+        })
+        .collect()
 }
 
-/// A point on the shared surface (the main display) in global display points.
+/// The display real input goes to on this Mac right now ([`input_target`]). The injector and
+/// the `tc-spike probe` test window both ask this, so the window covers the display the input
+/// lands on.
+pub fn input_display() -> Result<Display, NoTarget> {
+    input_target(&displays())
+}
+
+/// A point on the shared surface (the input display) in global display points.
 fn to_points(p: Point, (x0, y0, w, h): (f64, f64, f64, f64)) -> (i32, i32) {
     // The last point is width - 1: a pointer at x = width would be on the next display.
     let x = x0 + (p.x * w).min(w - 1.0);

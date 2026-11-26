@@ -99,9 +99,12 @@ Fill these in as code lands; keep them accurate.
 - Remote control by hand: `tc-spike share --allow-control` and `tc-spike view`; F9 in the viewer
   asks for control and gives it back, F10 toggles the HUD while in control. The sharer injects
   real input by default (`--inject log` to only log); its terminal needs Accessibility
-- Real injection, read back: `bench/control-inject.sh` (screen unlocked, hands off for ~15 s; a
-  full-screen `tc-spike probe` window records what arrives). Nothing is injected while the screen
-  is locked
+- Real injection, read back: `bench/control-inject.sh` (screen unlocked, hands off for ~20 s,
+  nothing full-screen on the main display; a full-screen `tc-spike probe` window on the display
+  input goes to records what arrives, and nothing is sent until it says it is ready and has seen
+  a first pointer move). Nothing is injected while the screen is locked. Dry run with no real
+  input: `INJECT=record:FILE bench/control-inject.sh` (must abort at the canary; `DRY_FAKE=canary`,
+  `canary,lost` or `canary,buttons` fake probe records to take it further)
 - Remote-control checks that need someone at the Mac, in one go: `bench/control-acceptance.sh` (`STEPS="2 3"` for some)
   (hotkey, injection readback, overlay screenshot vs stream frame, capture latency)
 - Remote control under bad networks: `bench/netlab/control.sh [profile ...]` (Docker; the

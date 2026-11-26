@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# The remote-control checks that need someone at the Mac: an unlocked screen, and hands off the
-# mouse and keyboard for about two minutes. Everything else runs headless in bench/control-e2e.sh.
+# The remote-control checks that need someone at the Mac: an unlocked screen, nothing
+# full-screen on the main display, and hands off the mouse and keyboard for about two minutes. Everything else runs headless in bench/control-e2e.sh.
 #
 #   1. The revoke hotkey, pressed for real mid-typing (REVOKE=hotkey bench/control-e2e.sh).
-#   2. Real injection read back by a full-screen probe window (bench/control-inject.sh).
+#   2. Real injection read back by a full-screen probe window (bench/control-inject.sh), which
+#      sends nothing until the probe is in front on the display input goes to and has seen a
+#      first pointer move, and stops at once if it loses focus.
 #   3. The overlay: a screenshot of your screen during control (label and name tag visible), and
 #      a frame of what the guest received (neither visible).
 #   4. Capture latency with and without --allow-control, which leaves the app's windows out.

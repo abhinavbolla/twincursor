@@ -5,6 +5,7 @@ mod echo;
 mod listen;
 mod permissions;
 mod probe;
+mod probe_gate;
 mod replay;
 mod view_args;
 mod voice;
@@ -61,6 +62,9 @@ enum Command {
     Listen(listen::ListenArgs),
     /// A full-screen window that records the input it receives, to check real injection.
     Probe(probe::ProbeArgs),
+    /// Wait until a `probe` window's records show a step of a gated control script arrived
+    /// (exit 0), went wrong (1) or didn't come in time (2). For bench/control-inject.sh.
+    ProbeGate(probe_gate::ProbeGateArgs),
     /// Check that the actions a sharer recorded match the messages a viewer sent.
     Replay {
         /// The viewer's `--sent-log`.
@@ -252,6 +256,7 @@ fn main() -> anyhow::Result<()> {
         Command::Permissions(args) => permissions::run(args),
         Command::Listen(args) => listen::run(args),
         Command::Probe(args) => probe::run(args),
+        Command::ProbeGate(args) => probe_gate::run(args),
         Command::Replay {
             sent,
             actions,

@@ -214,7 +214,8 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
   thread then revokes properly, telling the guest and releasing everything held.
 - On macOS, `control::macos::MacInjector` posts real events through `enigo` (CGEvent). Events
   come from a private event source, so the sharer's own held keys don't leak into the guest's
-  input. Positions map onto the main display in global points; fractional scroll is carried
+  input. Positions map onto one display in global points, the one `control::display::input_target`
+  picks: the main display (the one with the menu bar), wherever the others are. Fractional scroll is carried
   over, so slow trackpad scrolls aren't lost. Keys go as Mac virtual key codes from a table of
   `KeyboardEvent.code` names. Nothing but releases is injected while the screen is locked (see
   the threat model). It is made at the first grant (or the first trust), not when sharing
@@ -227,6 +228,16 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
   scrolls that arrive. The probe measures clicks against the display, not its own window: on a
   Mac with a notch, a full-screen window starts below the camera housing (32 pt on a 14-inch
   MacBook Pro), so window-relative positions read a few percent too high.
+- Real input lands wherever the pointer and the key window are, so that check sends nothing on
+  trust. The probe opens on the display the injector targets (it asks `input_display`, the
+  injector's own function: a full-screen window otherwise opens wherever macOS likes, and once
+  opened on an external display above the laptop's while the input went to the laptop's), and
+  its first record says it is the key window of the frontmost app and covers that display. It
+  records `lost_focus` the moment that stops being true. The guest's script holds at two gates
+  (`{"do": "gate"}`): after one pointer move, which must reach the probe where it was aimed,
+  and after the clicks, which must all arrive in place, before any key is sent. A watcher takes
+  control back at the first `lost_focus`. The sharer's own process doesn't take focus at
+  launch (winit activates an app by default, and did take the keyboard from the probe).
 - `bench/control-e2e.sh` runs a sharer and a scripted headless guest on one machine. The sharer
   records what it would inject, and `tc-spike replay` checks it against what the guest sent:
   every key, click, scroll and character once and in order, and pointer moves never invented
