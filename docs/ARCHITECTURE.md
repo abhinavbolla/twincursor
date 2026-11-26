@@ -173,6 +173,14 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
   rejects malformed or out-of-range messages, and `crates/control` decides what gets through:
   the consent state, held keys and the deadman, stale moves, and the sharer winning the pointer.
   It has no network or platform code, so its tests are scripted traces on a fake clock.
+- Consent: a request becomes a prompt (`control_asked` to the app, or `tc-spike`'s terminal), and
+  only the sharer's answer to that request grants it. The one other grant is the sharer's own
+  standing one, `trust_control` from the app ([ADR 0010](adr/0010-trusted-control.md)): for the
+  rest of the call that guest's requests are granted without a prompt. `Controller` keeps the
+  trusted identities; any revoke clears them all, in every state, and leaving clears that
+  guest's. Trust is never written anywhere and no protocol message carries it. The names in the
+  prompt, the label and the app's events come from each guest's token (with a call pass, the
+  account's name), not from the guest's own hello.
 - Media doesn't know what the bytes mean. `media::link` carries the `tc.control` topic both ways
   on tasks of its own, with its own copy of the room's events, so input never waits behind stats
   polls or republishing. It starts after the room is joined, so it reports the participants and

@@ -30,7 +30,8 @@ export interface CallState {
   args: string[];
   connection: ConnectionState | null;
   participants: Participant[];
-  control: { state: ControlState; by: Peer | null };
+  /** `trusted`: sharer, the guests who may take control without asking, until a revoke. */
+  control: { state: ControlState; by: Peer | null; trusted: Peer[] };
   /** Sharer: a request waiting for Allow or Deny. */
   asked: ControlAsked | null;
   voice: Voice | null;
@@ -53,7 +54,7 @@ export type CallAction =
   | { type: "start_failed"; message: string }
   | { type: "dismiss" };
 
-const noControl = { state: "none" as const, by: null };
+const noControl: CallState["control"] = { state: "none", by: null, trusted: [] };
 
 export const initialCall: CallState = {
   phase: "idle",
@@ -132,7 +133,7 @@ function onEvent(state: CallState, raw: unknown): CallState {
     case "control":
       return {
         ...state,
-        control: { state: event.state, by: event.by },
+        control: { state: event.state, by: event.by, trusted: event.trusted },
         // Granted, refused, withdrawn or over: there's nothing left to answer.
         asked: event.state === "asked" ? state.asked : null,
       };

@@ -14,7 +14,8 @@
 //! is a UUID, dashes and all), and the name is that account's display name. Without one, the
 //! engine mints its own token: the identity is [`new_identity`]'s and the name is whatever the
 //! person typed, so it is shown, never trusted. Either way the name in a guest's control `Hello`
-//! is the guest's own claim, not the token's.
+//! is the guest's own claim, not the token's, so the sharer shows the token's name instead
+//! (`control::Controller::joined`).
 
 use std::collections::BTreeMap;
 use std::hash::{BuildHasher, Hasher};

@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use protocol::{Button, InputEvent, Message, Platform, ScrollUnit};
 
-use crate::{Action, Config, Controller, Effect, EndReason, Guest, Injector, Point};
+use crate::{Action, Config, Controller, Effect, EndReason, Guest, Injector, Point, Refusal};
 
 const GUEST: &str = "alice";
 const OTHER: &str = "bob";
@@ -401,6 +401,327 @@ fn guests_cannot_send_sharer_messages() {
     }
     assert!(t.c.controller().is_none());
     assert!(t.c.requester().is_some());
+}
+
+// Trusted control: the sharer's standing grant for one call (docs/adr/0010-trusted-control.md).
+
+fn grant_to(to: &str) -> Vec<Effect> {
+    vec![Effect::Send {
+        to: to.into(),
+        message: Message::Grant,
+    }]
+}
+
+fn deny_to(to: &str) -> Vec<Effect> {
+    vec![Effect::Send {
+        to: to.into(),
+        message: Message::Deny,
+    }]
+}
+
+fn trusted(t: &Trace) -> Vec<String> {
+    t.c.trusted().into_iter().map(|g| g.identity).collect()
+}
+
+fn asks(effects: &[Effect], who: &str) -> bool {
+    matches!(effects, [Effect::Ask(g)] if g.identity == who)
+}
+
+impl Trace {
+    /// Alice and Bob are in the call, under their tokens' names, and have said hello.
+    fn in_call() -> Self {
+        let mut t = Self::new();
+        t.c.joined(GUEST, "Alice");
+        t.c.joined(OTHER, "Bob");
+        t.msg(GUEST, hello("Alice", Platform::Macos), 0);
+        t.msg(OTHER, hello("Bob", Platform::Linux), 0);
+        t
+    }
+
+    fn trust(&mut self, who: &str, ms: u64) -> Vec<Effect> {
+        let at = self.at(ms);
+        self.c.trust(who, at)
+    }
+}
+
+#[test]
+fn a_trusted_guest_is_granted_without_a_prompt() {
+    let mut t = Trace::in_call();
+    assert!(
+        t.trust(GUEST, 0).is_empty(),
+        "trusting grants nothing by itself"
+    );
+    assert!(t.c.controller().is_none() && t.c.requester().is_none());
+    assert_eq!(trusted(&t), [GUEST]);
+    // Trust is no grant: input before a request goes nowhere.
+    t.send(key("KeyA", true, Some("a")), 5);
+    assert!(t.take().is_empty());
+
+    let effects = t.msg(GUEST, Message::RequestControl, 10);
+    assert_eq!(effects, grant_to(GUEST), "granted, and nobody asked");
+    let controller = t.c.controller().unwrap();
+    assert_eq!(
+        (controller.identity.as_str(), controller.name.as_str()),
+        (GUEST, "Alice")
+    );
+    t.send(key("KeyB", true, Some("b")), 20);
+    assert_eq!(t.take(), vec![text("b")]);
+}
+
+#[test]
+fn trusting_a_guest_who_is_asking_grants_at_once() {
+    let mut t = Trace::in_call();
+    assert!(asks(&t.msg(GUEST, Message::RequestControl, 0), GUEST));
+    assert_eq!(t.trust(GUEST, 10), grant_to(GUEST));
+    assert!(t.c.requester().is_none());
+    assert_eq!(t.c.controller().map(|g| g.identity.as_str()), Some(GUEST));
+    // The prompt it answered is gone: a grant now changes nothing.
+    assert!(t.c.grant(t.at(20)).is_empty());
+}
+
+#[test]
+fn trusting_is_refused_for_someone_not_in_the_call() {
+    let mut t = Trace::new();
+    // A hello alone isn't being in the call: the room reports who joined.
+    t.msg(GUEST, hello("Alice", Platform::Macos), 0);
+    assert_eq!(t.trust(GUEST, 0), vec![Effect::Refused(Refusal::NotInCall)]);
+    assert_eq!(
+        t.trust("sharer", 0),
+        vec![Effect::Refused(Refusal::NotInCall)]
+    );
+    assert!(trusted(&t).is_empty());
+    assert!(asks(&t.msg(GUEST, Message::RequestControl, 10), GUEST));
+}
+
+#[test]
+fn trusting_is_refused_while_someone_else_controls() {
+    let mut t = Trace::in_call();
+    t.msg(OTHER, Message::RequestControl, 0);
+    t.c.grant(t.at(0));
+    assert_eq!(
+        t.trust(GUEST, 10),
+        vec![Effect::Refused(Refusal::SomeoneElseControls)]
+    );
+    assert!(trusted(&t).is_empty());
+    // Bob gives control back: Alice was never trusted, so she is asked about.
+    t.msg(OTHER, Message::ReleaseControl, 20);
+    assert!(asks(&t.msg(GUEST, Message::RequestControl, 30), GUEST));
+
+    // Trusting the guest who is in control is fine: they may take it again after giving it back.
+    let mut t = Trace::in_call();
+    t.msg(GUEST, Message::RequestControl, 0);
+    t.c.grant(t.at(0));
+    assert!(t.trust(GUEST, 10).is_empty());
+    assert_eq!(trusted(&t), [GUEST]);
+    t.msg(GUEST, Message::ReleaseControl, 20);
+    assert_eq!(t.msg(GUEST, Message::RequestControl, 30), grant_to(GUEST));
+}
+
+#[test]
+fn one_controller_at_a_time_even_when_trusted() {
+    let mut t = Trace::in_call();
+    t.trust(GUEST, 0);
+    // Bob asks and the sharer lets him in.
+    assert!(asks(&t.msg(OTHER, Message::RequestControl, 10), OTHER));
+    // Alice's request while Bob is only asking is turned down, as any second request is.
+    assert_eq!(t.msg(GUEST, Message::RequestControl, 15), deny_to(GUEST));
+    t.c.grant(t.at(20));
+    // While Bob controls, trusted Alice is turned down too.
+    assert_eq!(t.msg(GUEST, Message::RequestControl, 30), deny_to(GUEST));
+    t.send_from(GUEST, key("KeyA", true, Some("a")), 30, 40);
+    assert!(t.take().is_empty());
+    // Bob gives control back. Nobody is put in control: Alice has to ask herself.
+    t.msg(OTHER, Message::ReleaseControl, 50);
+    assert!(t.c.controller().is_none() && t.c.requester().is_none());
+    t.tick(60);
+    assert!(t.c.controller().is_none());
+    assert_eq!(t.msg(GUEST, Message::RequestControl, 70), grant_to(GUEST));
+}
+
+#[test]
+fn giving_control_back_keeps_the_trust() {
+    let mut t = Trace::in_call();
+    t.trust(GUEST, 0);
+    for round in 0..3 {
+        let ms = 100 * round;
+        assert_eq!(t.msg(GUEST, Message::RequestControl, ms), grant_to(GUEST));
+        t.msg(GUEST, Message::ReleaseControl, ms + 50);
+        assert!(t.c.controller().is_none());
+        assert_eq!(trusted(&t), [GUEST]);
+    }
+}
+
+#[test]
+fn a_request_loop_from_a_trusted_guest_is_granted_once() {
+    let mut t = Trace::in_call();
+    t.trust(GUEST, 0);
+    let grants = (0..200)
+        .flat_map(|ms| t.msg(GUEST, Message::RequestControl, ms))
+        .collect::<Vec<_>>();
+    assert_eq!(grants, grant_to(GUEST));
+}
+
+#[test]
+fn revoking_takes_back_every_trust_in_every_phase() {
+    // Idle: trusted, then revoked before the guest ever asked.
+    let mut t = Trace::in_call();
+    t.trust(GUEST, 0);
+    t.trust(OTHER, 0);
+    assert!(t.c.revoke().is_empty());
+    assert!(trusted(&t).is_empty());
+    assert!(asks(&t.msg(GUEST, Message::RequestControl, 10), GUEST));
+
+    // Someone else asking.
+    let mut t = Trace::in_call();
+    t.trust(GUEST, 0);
+    t.msg(OTHER, Message::RequestControl, 10);
+    assert_eq!(t.c.revoke(), deny_to(OTHER));
+    assert!(trusted(&t).is_empty());
+    assert!(asks(&t.msg(GUEST, Message::RequestControl, 20), GUEST));
+
+    // The trusted guest in control.
+    let mut t = Trace::in_call();
+    t.trust(GUEST, 0);
+    t.msg(GUEST, Message::RequestControl, 10);
+    t.send(key("ShiftLeft", true, None), 20);
+    t.take();
+    assert_eq!(
+        t.c.revoke(),
+        vec![Effect::Send {
+            to: GUEST.into(),
+            message: Message::Revoke
+        }]
+    );
+    assert_eq!(t.take(), vec![code("ShiftLeft", false)]);
+    assert!(trusted(&t).is_empty());
+    // The next request is a prompt, and nothing gets in meanwhile.
+    assert!(asks(&t.msg(GUEST, Message::RequestControl, 40), GUEST));
+    t.send(key("KeyA", true, Some("a")), 50);
+    assert!(t.take().is_empty());
+}
+
+#[test]
+fn leaving_ends_the_trust_and_a_returning_guest_is_asked() {
+    let mut t = Trace::in_call();
+    t.trust(GUEST, 0);
+    t.c.left(GUEST);
+    assert!(trusted(&t).is_empty());
+    // The same identity comes back, as a guest with a call pass does.
+    t.c.joined(GUEST, "Alice");
+    t.msg(GUEST, hello("Alice", Platform::Macos), 100);
+    assert!(asks(&t.msg(GUEST, Message::RequestControl, 110), GUEST));
+
+    // Leaving while in control, then coming back.
+    let mut t = Trace::in_call();
+    t.trust(GUEST, 0);
+    t.msg(GUEST, Message::RequestControl, 10);
+    t.c.left(GUEST);
+    t.c.joined(GUEST, "Alice");
+    assert!(asks(&t.msg(GUEST, Message::RequestControl, 110), GUEST));
+
+    // Someone else leaving while they ask leaves the trusted guest's trust alone, and puts
+    // nobody in control.
+    let mut t = Trace::in_call();
+    t.trust(GUEST, 0);
+    t.msg(OTHER, Message::RequestControl, 10);
+    t.c.left(OTHER);
+    assert!(t.c.controller().is_none() && t.c.requester().is_none());
+    assert_eq!(trusted(&t), [GUEST]);
+    // And a guest who left can't be trusted until the room says they're back.
+    assert_eq!(
+        t.trust(OTHER, 20),
+        vec![Effect::Refused(Refusal::NotInCall)]
+    );
+}
+
+#[test]
+fn nothing_a_guest_sends_creates_or_restores_trust() {
+    let mut t = Trace::in_call();
+    // Every message there is, hellos again (as after a reconnect) included, in a tight loop.
+    for ms in 0..20 {
+        for message in [
+            hello("Alice", Platform::Macos),
+            Message::HelloAck,
+            Message::Grant,
+            Message::Deny,
+            Message::Revoke,
+            Message::Released,
+            Message::ReleaseControl,
+            Message::Viewport {
+                width: 1920,
+                height: 1080,
+            },
+            Message::Heartbeat {
+                sent_at_us: GUEST_CLOCK_US,
+            },
+        ] {
+            t.msg(GUEST, message, ms);
+        }
+    }
+    assert!(trusted(&t).is_empty());
+    assert!(asks(&t.msg(GUEST, Message::RequestControl, 30), GUEST));
+
+    // A revoked trust doesn't come back with a reconnect's hello either.
+    let mut t = Trace::in_call();
+    t.trust(GUEST, 0);
+    t.c.revoke();
+    t.msg(GUEST, hello("Alice", Platform::Macos), 10);
+    assert!(trusted(&t).is_empty());
+    assert!(asks(&t.msg(GUEST, Message::RequestControl, 20), GUEST));
+}
+
+#[test]
+fn trust_belongs_to_an_identity_not_a_name() {
+    let mut t = Trace::in_call();
+    t.trust(GUEST, 0);
+    // Bob says he is Alice. He is still Bob, and still asked about.
+    t.msg(OTHER, hello("Alice", Platform::Macos), 10);
+    let effects = t.msg(OTHER, Message::RequestControl, 20);
+    assert!(asks(&effects, OTHER), "{effects:?}");
+    t.c.deny();
+    // Input from Bob while Alice controls goes nowhere.
+    t.msg(GUEST, Message::RequestControl, 30);
+    t.send_from(OTHER, key("KeyA", true, Some("a")), 30, 40);
+    assert!(t.take().is_empty());
+}
+
+// Names.
+
+#[test]
+fn the_token_name_is_shown_not_the_hello() {
+    let mut t = Trace::new();
+    t.c.joined(GUEST, "Alice Account");
+    // The guest's own app claims another name.
+    t.msg(GUEST, hello("Mallory", Platform::Windows), 0);
+    let effects = t.msg(GUEST, Message::RequestControl, 0);
+    let alice = Guest {
+        identity: GUEST.into(),
+        name: "Alice Account".into(),
+        platform: Platform::Windows,
+    };
+    assert_eq!(effects, vec![Effect::Ask(alice.clone())]);
+    t.c.trust(GUEST, t.at(5));
+    assert_eq!(
+        t.c.controller(),
+        Some(&alice),
+        "the label shows the token's name"
+    );
+    assert_eq!(t.c.trusted(), vec![alice]);
+
+    // A token with no name: the hello's name, then the identity.
+    let mut t = Trace::new();
+    t.c.joined(GUEST, "");
+    t.msg(GUEST, hello("Alice", Platform::Macos), 0);
+    let Effect::Ask(guest) = &t.msg(GUEST, Message::RequestControl, 0)[0] else {
+        panic!()
+    };
+    assert_eq!(guest.name, "Alice");
+    let mut t = Trace::new();
+    t.c.joined(GUEST, "");
+    let Effect::Ask(guest) = &t.msg(GUEST, Message::RequestControl, 0)[0] else {
+        panic!()
+    };
+    assert_eq!(guest.name, GUEST);
 }
 
 // Held input and stalls.
