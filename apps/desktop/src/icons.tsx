@@ -73,14 +73,6 @@ export function MoreIcon() {
   );
 }
 
-export function BackIcon() {
-  return (
-    <Icon>
-      <polyline points="10,3.5 5.5,8 10,12.5" />
-    </Icon>
-  );
-}
-
 export function CloseIcon() {
   return (
     <Icon size={12}>

@@ -160,7 +160,7 @@ impl AccountShell {
     }
 }
 
-/// Opens the sign-in page in the default browser.
+/// Opens a page in the default browser: the sign-in page, or the self-hosting guide.
 pub fn open_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -177,7 +177,7 @@ pub fn open_browser(url: &str) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = url;
-        Err("Signing in is only built for macOS so far.".into())
+        Err("Opening the browser is only built for macOS so far.".into())
     }
 }
 

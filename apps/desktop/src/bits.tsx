@@ -2,10 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import type { MemberView } from "./home";
 import { CloseIcon } from "./icons";
 import { due, nextDue, pause, resume, track, type Clock, type ShownLine } from "./notices";
 import { initials, type Phrase } from "./people";
 import type { FaceView } from "./panelModel";
+import { nextOutcomeDue, showingOutcomes, trackOutcomes, type OutcomeClock, type RingOutcome } from "./ringOutcomes";
 
 /** A round avatar: the photo, or initials on a neutral circle. */
 export function Avatar({ face, size }: { face: FaceView; size: 24 | 28 | 36 }) {
@@ -123,4 +125,28 @@ export function useNoticeClock(showing: readonly ShownLine[], close: (text: stri
     clocks.current = over ? pause(clocks.current, text, now) : resume(clocks.current, text, now);
     setTick((t) => t + 1);
   };
+}
+
+/**
+ * The ring outcomes ("No answer", "Declined") to show now, by user id: each for
+ * `RING_OUTCOME_MS` after it is first seen in `members`, then gone (ringOutcomes.ts).
+ */
+export function useRingOutcomes(members: readonly MemberView[]): ReadonlyMap<string, RingOutcome> {
+  const clocks = useRef<Map<string, OutcomeClock>>(new Map());
+  const [tick, setTick] = useState(0);
+  const now = performance.now();
+  // Keeps clocks it already has, so running it again in the same render changes nothing.
+  clocks.current = trackOutcomes(clocks.current, members, now);
+  const showing = showingOutcomes(clocks.current, now);
+  const key = members.map((m) => `${m.user_id}:${m.state}`).join(",");
+  useEffect(() => {
+    const wait = nextOutcomeDue(clocks.current, performance.now());
+    if (wait === null) {
+      return;
+    }
+    const timer = window.setTimeout(() => setTick((t) => t + 1), wait + 16);
+    return () => window.clearTimeout(timer);
+    // `key` stands for `members`.
+  }, [key, tick]);
+  return showing;
 }

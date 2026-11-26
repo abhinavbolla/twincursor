@@ -197,7 +197,7 @@ impl Windows {
             .separator()
             .item(&quit)
             .build()?;
-        // Settings has text fields: copy and paste need the Edit menu's shortcuts.
+        // The panel's sign-in and join fields need the Edit menu's shortcuts for copy and paste.
         let edit = SubmenuBuilder::new(app, "Edit")
             .undo()
             .redo()

@@ -6,7 +6,9 @@ members = ["crates/*", "apps/desktop/src-tauri"]
 edition = "2021"
 license = "AGPL-3.0-only"
 repository = "https://github.com/abhinavbolla/twincursor"
-rust-version = "1.89"
+# The oldest Rust the whole workspace builds with: Tauri 2.12 (the desktop app) needs 1.90. CI's
+# msrv job builds every crate with exactly this version.
+rust-version = "1.90"
 
 [workspace.dependencies]
 livekit = { version = "0.9.7", features = ["rustls-tls-native-roots"] }

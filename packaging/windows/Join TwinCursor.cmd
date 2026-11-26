@@ -53,8 +53,10 @@ if not "!NAME:~64!"=="" (
 set "ROOM="
 set /p "ROOM=Room code (like 7kq2-m9xd-p4tz-hc3w): "
 if not defined ROOM goto ask_room
-rem The app's rules (apps/desktop/src/room.ts): case, spaces and dashes don't matter, o reads
-rem as 0, i and l as 1, and what's left is 16 characters of Crockford's base32.
+rem The room-code format the desktop app once made codes in, kept here because the sharer
+rem starts the call from a terminal with a code like this (tc-engine itself takes any room
+rem name): case, spaces and dashes don't matter, o reads as 0, i and l as 1, and what's left
+rem is 16 characters of Crockford's base32.
 set "CODE=!ROOM: =!"
 if defined CODE set "CODE=!CODE:-=!"
 if not defined CODE goto bad_room

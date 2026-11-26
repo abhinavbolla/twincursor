@@ -107,6 +107,10 @@ fn let_in_without_control(name: &str) -> String {
     format!("{name} was let in without control: TwinCursor needs Accessibility to give control.")
 }
 
+fn not_given_control(name: &str) -> String {
+    format!("{name} wasn't given control: TwinCursor needs Accessibility.")
+}
+
 fn restarted(message: &str) -> String {
     format!("{message} Control was reset: anyone you gave it to has to be given it again.")
 }
@@ -268,8 +272,9 @@ struct State {
     gen: u64,
     /// `Started` outputs seen from it: 1 for its first process, 2 after a restart.
     proc: u64,
-    /// Which control requests the window was shown, when first, and by which engine process.
-    asked_seen: HashMap<u64, (Instant, u64)>,
+    /// Which control requests the window was shown, when first, by which engine process, and
+    /// who asked.
+    asked_seen: HashMap<u64, (Instant, u64, String)>,
     /// Whether the call bar can be seen, for arming.
     sight: Sight,
     participants: Vec<ipc::Participant>,
@@ -957,8 +962,13 @@ impl Calls {
             "control_asked" => {
                 if let Some(request) = event.get("request").and_then(Value::as_u64) {
                     let proc = s.proc;
+                    let name = event
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Someone")
+                        .to_owned();
                     // First delivery: the window hears it right after this.
-                    s.asked_seen.entry(request).or_insert((now, proc));
+                    s.asked_seen.entry(request).or_insert((now, proc, name));
                 }
             }
             "participants" => {
@@ -1015,28 +1025,73 @@ impl Calls {
     /// A command from the window for the engine. An allow must name a request the window was
     /// shown at least [`ARMING`] ago, and goes only to the engine that asked. Trusting someone
     /// isn't a window command: `trust_control` and `trust_on_arrival` are refused here.
-    pub fn send_command(&self, command: &ipc::Command) -> Result<(), String> {
+    pub async fn send_command(&self, command: &ipc::Command) -> Result<(), String> {
+        if let ipc::Command::AllowControl { request } = command {
+            return self.allow_control(*request).await;
+        }
         let s = self.lock();
-        let now = self.now();
         let running = s
             .engine
             .as_ref()
             .filter(|r| !r.handle.is_done())
             .ok_or(NO_CALL)?;
         match command {
-            ipc::Command::AllowControl { request } => {
-                let (seen, proc) = *s.asked_seen.get(request).ok_or(REQUEST_NOT_OPEN)?;
-                if !armed(now, seen, s.sight) {
-                    return Err(TOO_SOON.into());
-                }
-                running.handle.send_for(command, proc)
-            }
             // Only Let in with control and Give control trust anyone, after their checks.
             ipc::Command::TrustControl { .. } | ipc::Command::TrustOnArrival { .. } => {
                 Err(TRUST_FROM_WINDOW.into())
             }
             _ => running.handle.send(command),
         }
+    }
+
+    /// Allow on a control request: armed first, then Accessibility, as Let in with control and
+    /// Give control check it. Without Accessibility macOS is asked (once per run), the request
+    /// is turned down so the guest isn't left waiting, and the notice says why; they can ask
+    /// again once it is granted.
+    async fn allow_control(&self, request: u64) -> Result<(), String> {
+        let (proc, name) = self.open_request(request)?;
+        if !self.ensure(Permission::Accessibility).await? {
+            {
+                let mut s = self.lock();
+                if let Some(running) = s.engine.as_ref().filter(|r| !r.handle.is_done()) {
+                    let _ = running
+                        .handle
+                        .send_for(&ipc::Command::DenyControl { request }, proc);
+                }
+                s.asked_seen.remove(&request);
+                s.notice = Some(not_given_control(&name));
+            }
+            self.trace(json!({ "kind": "allow_refused", "why": "accessibility" }));
+            self.emit();
+            return Ok(());
+        }
+        // Asking macOS can take a while: the request must still be open, from the same engine.
+        let s = self.lock();
+        let running = s
+            .engine
+            .as_ref()
+            .filter(|r| !r.handle.is_done())
+            .ok_or(NO_CALL)?;
+        if s.asked_seen.get(&request).map(|a| a.1) != Some(proc) {
+            return Err(REQUEST_NOT_OPEN.into());
+        }
+        running
+            .handle
+            .send_for(&ipc::Command::AllowControl { request }, proc)
+    }
+
+    /// The engine process that showed `request` and who asked, if it is open and armed.
+    fn open_request(&self, request: u64) -> Result<(u64, String), String> {
+        let s = self.lock();
+        s.engine
+            .as_ref()
+            .filter(|r| !r.handle.is_done())
+            .ok_or(NO_CALL)?;
+        let (seen, proc, name) = s.asked_seen.get(&request).ok_or(REQUEST_NOT_OPEN)?;
+        if !armed(self.now(), *seen, s.sight) {
+            return Err(TOO_SOON.into());
+        }
+        Ok((*proc, name.clone()))
     }
 
     /// Leaves the engine's call from the call screen. If it was an account call, the backend is

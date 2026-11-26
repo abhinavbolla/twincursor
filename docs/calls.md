@@ -43,8 +43,9 @@ who hasn't arrived yet. These two are the only ways to trust anyone: the window 
 `trust_control` or `trust_on_arrival` to the engine itself ("Control is given with Let in with
 control or Give control."), so the Accessibility check always comes first.
 
-**Ring a contact.** Shares first if you aren't sharing, then rings them. You see whether it's
-ringing, missed, declined or answered.
+**Ring a contact.** Shares first if you aren't sharing, then rings them. Their row in People
+says "Ringing…", then "In the call" once they answer. A ring nobody answers in 60 seconds shows
+"No answer", and a declined one "Declined", for 10 seconds; then the row offers **Call** again.
 
 **Being rung.** You see who is calling. Accepting leaves any call you're in, then joins; declining
 tells the backend.
@@ -96,8 +97,11 @@ for the old engine never reaches the new one.
 Sharing needs Screen Recording. The first time you share without it, the app asks macOS
 (`tc-engine permissions --request screen_recording`), which shows its prompt; if it still isn't
 granted, the share doesn't start and the app says Screen Recording is needed, so the window can
-offer to open System Settings. Giving control needs Accessibility, asked the same way. Letting
-someone in "with control" without it still lets them in, without control, and says why. The
+offer to open System Settings. Giving control needs Accessibility, asked the same way, on Let in
+with control, Give control and Allow alike. Letting someone in "with control" without it still
+lets them in, without control, and says why. Allow on a control request without it turns that
+request down, so the guest isn't left waiting, and says why ("Sam wasn't given control:
+TwinCursor needs Accessibility."); they can ask again once it is granted. The
 microphone is asked for by the engine when a call starts.
 
 ## What the window gets

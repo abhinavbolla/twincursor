@@ -705,19 +705,21 @@ async fn an_allow_needs_a_second_after_the_request_was_shown() {
     let asked = json!({ "event": "control_asked", "request": 1, "identity": format!("guest-{SAM}"), "name": "Sam", "platform": "macos" });
     w.event(0, asked.clone());
     let allow = ipc::Command::AllowControl { request: 1 };
-    assert_eq!(w.calls.send_command(&allow).unwrap_err(), TOO_SOON);
+    assert_eq!(w.calls.send_command(&allow).await.unwrap_err(), TOO_SOON);
     // A deny is never delayed.
     w.calls
         .send_command(&ipc::Command::DenyControl { request: 1 })
+        .await
         .unwrap();
     w.clock.advance(Duration::from_millis(999));
-    assert_eq!(w.calls.send_command(&allow).unwrap_err(), TOO_SOON);
+    assert_eq!(w.calls.send_command(&allow).await.unwrap_err(), TOO_SOON);
     w.clock.advance(Duration::from_millis(1));
-    w.calls.send_command(&allow).unwrap();
+    w.calls.send_command(&allow).await.unwrap();
     // A request never shown can't be allowed.
     assert_eq!(
         w.calls
             .send_command(&ipc::Command::AllowControl { request: 7 })
+            .await
             .unwrap_err(),
         REQUEST_NOT_OPEN
     );
@@ -741,10 +743,13 @@ async fn an_allow_needs_a_second_after_the_request_was_shown() {
         pid: 2,
         args: vec![],
     });
-    assert_eq!(w.calls.send_command(&allow).unwrap_err(), REQUEST_NOT_OPEN);
+    assert_eq!(
+        w.calls.send_command(&allow).await.unwrap_err(),
+        REQUEST_NOT_OPEN
+    );
     w.event(0, asked);
     w.clock.advance(ARMING);
-    w.calls.send_command(&allow).unwrap();
+    w.calls.send_command(&allow).await.unwrap();
     assert_eq!(w.sent(0).last().unwrap(), &(allow, Some(2)));
 }
 
@@ -794,19 +799,103 @@ async fn an_allow_waits_for_the_bar_to_have_been_on_screen_a_second() {
     w.event(0, asked);
     w.clock.advance(ARMING * 2);
     let allow = ipc::Command::AllowControl { request: 1 };
-    assert_eq!(w.calls.send_command(&allow).unwrap_err(), TOO_SOON);
+    assert_eq!(w.calls.send_command(&allow).await.unwrap_err(), TOO_SOON);
     w.calls.set_bar_visible(true);
     w.clock.advance(Duration::from_millis(999));
-    assert_eq!(w.calls.send_command(&allow).unwrap_err(), TOO_SOON);
+    assert_eq!(w.calls.send_command(&allow).await.unwrap_err(), TOO_SOON);
     w.clock.advance(Duration::from_millis(1));
-    w.calls.send_command(&allow).unwrap();
+    w.calls.send_command(&allow).await.unwrap();
     // Hidden again: refused until it has been back on screen for a second.
     w.calls.set_bar_visible(false);
-    assert_eq!(w.calls.send_command(&allow).unwrap_err(), TOO_SOON);
+    assert_eq!(w.calls.send_command(&allow).await.unwrap_err(), TOO_SOON);
     // Denying is never delayed, seen or not.
     w.calls
         .send_command(&ipc::Command::DenyControl { request: 1 })
+        .await
         .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_allow_without_accessibility_asks_once_and_turns_the_request_down() {
+    let w = world(true).await;
+    w.permits
+        .missing
+        .lock()
+        .unwrap()
+        .insert(Permission::Accessibility);
+    w.host().await;
+    let asked = |request: u64| json!({ "event": "control_asked", "request": request, "identity": format!("guest-{SAM}"), "name": "Sam", "platform": "macos" });
+    w.event(0, asked(1));
+    let allow = |request: u64| ipc::Command::AllowControl { request };
+
+    // The arming rule still comes first: too soon is refused without asking macOS.
+    assert_eq!(w.calls.send_command(&allow(1)).await.unwrap_err(), TOO_SOON);
+    assert!(w.permits.requests.lock().unwrap().is_empty());
+    assert!(w.sent(0).is_empty());
+
+    // Armed, but no Accessibility: macOS is asked, the request is turned down, the bar says why.
+    w.clock.advance(ARMING);
+    w.calls.send_command(&allow(1)).await.unwrap();
+    assert_eq!(
+        *w.permits.requests.lock().unwrap(),
+        [Permission::Accessibility]
+    );
+    assert_eq!(
+        w.sent(0),
+        [(ipc::Command::DenyControl { request: 1 }, Some(1))],
+        "no allow, and the guest isn't left waiting"
+    );
+    let view = w.calls.home();
+    assert_eq!(
+        view.notice.as_deref(),
+        Some("Sam wasn't given control: TwinCursor needs Accessibility.")
+    );
+    assert_eq!(view.needs, Some(Permission::Accessibility));
+    // That request is closed now.
+    assert_eq!(
+        w.calls.send_command(&allow(1)).await.unwrap_err(),
+        REQUEST_NOT_OPEN
+    );
+
+    // They ask again while it's still missing: macOS isn't asked a second time.
+    w.event(0, asked(2));
+    w.clock.advance(ARMING);
+    w.calls.send_command(&allow(2)).await.unwrap();
+    assert_eq!(w.permits.requests.lock().unwrap().len(), 1);
+    assert_eq!(
+        w.sent(0).last().unwrap(),
+        &(ipc::Command::DenyControl { request: 2 }, Some(1))
+    );
+
+    // Granted in System Settings: the next request is allowed and the bar stops asking.
+    w.permits.missing.lock().unwrap().clear();
+    w.event(0, asked(3));
+    w.clock.advance(ARMING);
+    w.calls.send_command(&allow(3)).await.unwrap();
+    assert_eq!(w.sent(0).last().unwrap(), &(allow(3), Some(1)));
+    assert_eq!(w.calls.home().needs, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_allow_with_accessibility_doesnt_ask_or_say_anything() {
+    let w = world(true).await;
+    w.host().await;
+    w.event(
+        0,
+        json!({ "event": "control_asked", "request": 1, "identity": format!("guest-{SAM}"), "name": "Sam", "platform": "macos" }),
+    );
+    w.clock.advance(ARMING);
+    let allow = ipc::Command::AllowControl { request: 1 };
+    w.calls.send_command(&allow).await.unwrap();
+    assert!(w.permits.requests.lock().unwrap().is_empty());
+    assert_eq!(w.sent(0), [(allow, Some(1))]);
+    let view = w.calls.home();
+    assert_eq!(view.needs, None);
+    assert_eq!(
+        view.notice.as_deref(),
+        Some(LINK_COPIED),
+        "only sharing's own notice"
+    );
 }
 
 // Control on arrival.
@@ -835,7 +924,10 @@ async fn let_in_with_control_asks_the_engine_once_after_the_backend_lets_them_in
         1
     );
     // A revoke goes to the engine as it is: there is nothing left in the shell to clear.
-    w.calls.send_command(&ipc::Command::RevokeControl).unwrap();
+    w.calls
+        .send_command(&ipc::Command::RevokeControl)
+        .await
+        .unwrap();
     assert_eq!(
         w.sent(0).last().unwrap(),
         &(ipc::Command::RevokeControl, None)
@@ -919,7 +1011,7 @@ async fn the_window_cant_trust_anyone_directly() {
         },
     ] {
         assert_eq!(
-            w.calls.send_command(&command).unwrap_err(),
+            w.calls.send_command(&command).await.unwrap_err(),
             TRUST_FROM_WINDOW
         );
     }

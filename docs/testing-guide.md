@@ -44,7 +44,7 @@ Settings.
 | --- | --- | --- |
 | Screen & System Audio Recording | The first time you share | To send your screen to the guest. |
 | Microphone | When your first call starts | To send your voice. |
-| Accessibility | The first time you click **Let in with control** or **Give control** | To type and click for the guest while you allow it. |
+| Accessibility | The first time you click **Let in with control**, **Give control** or **Allow** | To type and click for the guest while you allow it. |
 
 After allowing Screen Recording in System Settings, click **Share my screen** again.
 

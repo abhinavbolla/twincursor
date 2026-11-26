@@ -9,7 +9,7 @@ host's app.
 |---|---|
 | `config.toml` | The local stack (`supabase start`) |
 | `migrations/` | Tables, access rules and the RPC functions the app calls |
-| `functions/call-pass/` | Mints a LiveKit token ("call pass") for someone allowed into a call |
+| `functions/call-pass/` | Mints a LiveKit token ("call pass") for someone allowed into a call (`handler.ts` the request checks, `pass.ts` the token) |
 | `tests/database/` | pgTAP tests of the access rules (`supabase test db`) |
 | `tests/call-pass.sh` | End-to-end check of the function against the local stack |
 
@@ -117,8 +117,17 @@ read-only.
 `POST /functions/v1/call-pass` with the user's access token and `{ "call_id": "<uuid>" }`.
 Answers `200 { url, token, room, identity, name, role }`, `400` for a bad body, `401` without a
 signed-in user, `403 { "error": "not_allowed" }` when `pass_claims` refuses, and `500` if the
-function isn't configured. It needs `LIVEKIT_URL`, `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET`
-as function secrets.
+function isn't configured. The caller's mistakes are checked first, in this order: method (`405`),
+a Bearer token (`401`), the body (`400`), who the user is (`401`); only then the LiveKit settings
+(`500`), and last `pass_claims` (`403`). A request without a user session gets `401` even from a
+function that isn't configured.
+
+It needs `LIVEKIT_URL`, `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` as function secrets, and
+`SUPABASE_URL`, which Supabase sets. It asks Auth and the database with the public key from the
+request's `apikey` header (the app sends its publishable or anon key there), so it doesn't need
+`SUPABASE_ANON_KEY`; it falls back to that only for a request without `apikey`, and answers `401`
+when there is neither. The key is public: the user's own token is what authorizes, and a wrong
+key only makes those calls fail (`401`).
 
 ## Running it locally
 
@@ -135,7 +144,9 @@ supabase stop
 ```
 
 `call-pass.sh` serves the function itself and stops it when done; run `supabase start` again
-afterwards if you want the function served by the stack.
+afterwards if you want the function served by the stack. It also runs two copies with plain Deno
+(ports 54426 and 54427) whose environment holds nothing but what each check needs: one without
+`SUPABASE_ANON_KEY`, and one without the LiveKit settings either.
 
 GitHub sign-in needs an OAuth app whose callback is `http://127.0.0.1:54421/auth/v1/callback`. Put
 its credentials in `supabase/.env` (git-ignored), which the CLI reads:
