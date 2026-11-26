@@ -126,7 +126,10 @@ Fill these in as code lands; keep them accurate.
   server
 - IPC end to end: `bench/engine-e2e.sh` (a scripted app drives a sharer and a headless guest:
   request, allow, typing recorded not injected, revoke, leave, and the engine exiting when its
-  stdin closes; pattern capture and `--audio off`, so no permissions or unlocked screen needed)
+  stdin closes; pattern capture and `--audio off`, so no permissions or unlocked screen needed).
+  Its last step shares a window it makes itself (`bench/control/test-window.swift`, small, behind
+  everything, never focused) and is skipped without Screen Recording. Benches never capture a
+  window found on screen
 - Call passes: `TWINCURSOR_PASS=$(target/release/tc-engine dev-pass --room R --role sharer
   --name Alex) tc-engine share --ipc ...` joins with a pass instead of a key and secret (no
   `--room`/`--name`); `bench/engine-e2e.sh` runs a call both ways

@@ -79,7 +79,8 @@ The Rust core is split into crates:
   reconfigured for it and the send size changes through the same path the auto-throttle uses.
   A minimised window leaves the last picture on screen until it comes back, and closing the
   window (or quitting its app) ends the share with a message. A query that matches no window,
-  or several, lists them and exits rather than guessing.
+  or several, lists them and exits rather than guessing. A number is only ever a window id: if
+  no window has it, the share fails without falling back to a title that contains the number.
 - **One app** (`share --app`): the display filter that includes only that app's windows, at the
   display's size.
 - **No control while one window or app is shared.** Input is mapped onto a whole display, so a

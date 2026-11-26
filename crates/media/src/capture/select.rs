@@ -113,13 +113,15 @@ fn narrow<T>(items: &[T], matches: impl Fn(&T) -> bool, exact: impl Fn(&T) -> bo
 
 /// The window `query` means: a window id, or text the window's title or app name contains
 /// (ignoring case). When several contain it, one whose title or app name is exactly `query`
-/// wins.
+/// wins. A number is only ever an id: a window that went away never turns into some other
+/// window whose title happens to contain the number.
 pub fn pick_window<'a>(windows: &'a [WindowInfo], query: &str) -> Pick<&'a WindowInfo> {
     let query = query.trim();
     if let Ok(id) = query.parse::<u32>() {
-        if let Some(w) = windows.iter().find(|w| w.id == id) {
-            return Pick::One(w);
-        }
+        return match windows.iter().find(|w| w.id == id) {
+            Some(w) => Pick::One(w),
+            None => Pick::None,
+        };
     }
     if query.is_empty() {
         return Pick::None;
@@ -188,6 +190,11 @@ pub fn resolve(
                 tracing::info!("sharing window {} ({}: {:?})", w.id, w.app, w.title);
                 Ok((Source::Window(w.id), Some(w.pixels)))
             }
+            // An id names one window: listing the others (their titles) helps nobody.
+            Pick::None if query.trim().parse::<u32>().is_ok() => Err(format!(
+                "no shareable window has id {}; `windows` lists them",
+                query.trim()
+            )),
             Pick::None => Err(format!(
                 "no window matches {query:?}. Shareable windows:\n{}",
                 window_table(windows)
@@ -373,8 +380,10 @@ mod tests {
     fn a_window_id_picks_that_window() {
         let w = windows();
         assert_eq!(pick_window(&w, "12"), Pick::One(&w[1]));
-        // A number that isn't an id is matched as text.
-        assert_eq!(pick_window(&w, "80"), Pick::One(&w[0]));
+        // A number that isn't an id matches nothing, not a title with the number in it.
+        assert_eq!(pick_window(&w, "80"), Pick::None);
+        let err = resolve(&w, &[], Some("80"), None).unwrap_err();
+        assert!(!err.contains("zsh"), "an id's error lists no titles: {err}");
     }
 
     #[test]
