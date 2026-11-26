@@ -82,8 +82,7 @@ export function SettingsPanel({ bridge, inCall }: { bridge: Bridge; inCall: bool
         />
       </label>
       <p className="hint">
-        Saved in this Mac's app settings, readable only by you, and handed to the engine privately.
-        The secret isn't shown again after saving.
+        Saved on this Mac, readable only by you. The secret isn't shown again after saving.
       </p>
       <div className="row">
         <button

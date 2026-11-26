@@ -70,7 +70,7 @@ describe("engine events", () => {
     expect(s.ended).toBe("disconnected");
     s = run(s, { kind: "exited", code: 0 });
     expect(s.phase).toBe("idle");
-    expect(s.endMessage).toBe("The call ended: the connection to the server closed.");
+    expect(s.endMessage).toBe("The call ended. The connection to the server closed.");
   });
 
   it("keeps a control request until it's answered or over", () => {

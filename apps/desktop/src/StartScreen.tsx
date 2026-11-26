@@ -14,10 +14,10 @@ import {
 import { makeRoomCode, normalizeRoomCode } from "./room";
 import { remember, remembered } from "./storage";
 
-const QUALITIES: { value: Quality; label: string; detail: string }[] = [
-  { value: "1080p", label: "1080p", detail: "H.264" },
-  { value: "1440p", label: "1440p", detail: "H.264" },
-  { value: "4k", label: "4K", detail: "HEVC, or H.264 if a guest can't decode HEVC" },
+const QUALITIES: { value: Quality; label: string }[] = [
+  { value: "1080p", label: "1080p" },
+  { value: "1440p", label: "1440p" },
+  { value: "4k", label: "4K" },
 ];
 
 const asQuality = (v: string): Quality => (v === "1440p" || v === "4k" ? v : "1080p");
@@ -44,7 +44,7 @@ export function StartScreen(props: Props) {
   const go = (role: Plan["role"]) => {
     const trimmed = name.trim();
     if (trimmed === "") {
-      setProblem("Type your name first: it's what the other person sees.");
+      setProblem("Type your name first. The other person sees it.");
       return;
     }
     let code = normalizeRoomCode(room);
@@ -56,14 +56,14 @@ export function StartScreen(props: Props) {
       setProblem(
         room.trim() === ""
           ? "Paste the room code the sharer sent you."
-          : "That isn't a room code: it should be 16 letters and digits, like 7kq2-m9xd-p4tz-hc3w.",
+          : "That isn't a room code. It should be 16 letters and digits, like 7kq2-m9xd-p4tz-hc3w.",
       );
       return;
     }
     const blocked = blockers(role, props.permissions);
     if (blocked.length > 0) {
       setProblem(
-        `Sharing needs ${blocked.map((b) => PERMISSION_LABELS[b]).join(" and ")}: allow it below first.`,
+        `Sharing needs ${blocked.map((b) => PERMISSION_LABELS[b]).join(" and ")}. Allow it below first.`,
       );
       return;
     }
@@ -155,9 +155,7 @@ export function StartScreen(props: Props) {
                   checked={quality === q.value}
                   onChange={() => setQuality(q.value)}
                 />
-                <span>
-                  {q.label} <span className="muted">({q.detail})</span>
-                </span>
+                <span>{q.label}</span>
               </label>
             ))}
           </div>
@@ -169,8 +167,8 @@ export function StartScreen(props: Props) {
             Voice{" "}
             <span className="muted">
               {voice
-                ? "on: your mic is live from the start, and you hear the other side."
-                : "off: no mic and no sound in this call."}
+                ? "Your mic is on from the start, and you hear the other side."
+                : "No mic and no sound in this call."}
             </span>
           </span>
         </label>
@@ -212,13 +210,9 @@ function Permissions(props: {
   const need = needs(props.voice);
   const rows: PermissionName[] = ["screen_recording", "accessibility", "microphone"];
   const usedBy = (name: PermissionName): string => {
-    const share = need.share.find((n) => n.name === name);
-    const join = need.join.find((n) => n.name === name);
-    if (share !== undefined && join !== undefined) {
-      return `Sharing and joining, ${share.why}`;
-    }
-    if (share !== undefined) {
-      return `Sharing, ${share.why}`;
+    const why = need.share.find((n) => n.name === name)?.why;
+    if (why !== undefined) {
+      return why;
     }
     return name === "microphone" ? "Only with voice on" : "Not needed";
   };
@@ -226,7 +220,7 @@ function Permissions(props: {
     <section className="card">
       <h2>Permissions</h2>
       <p className="hint">
-        macOS asks once for each. Joining needs only the microphone, and only with voice on.
+        Only sharing needs Screen Recording and Accessibility.
       </p>
       {props.error !== null && <p className="bad">Couldn't read them: {props.error}</p>}
       <ul className="permissions">

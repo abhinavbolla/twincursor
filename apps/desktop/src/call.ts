@@ -93,7 +93,7 @@ export function endMessage(ended: EndReason | null, error: string | null, code: 
     case "left":
       return "You left the call.";
     case "disconnected":
-      return "The call ended: the connection to the server closed.";
+      return "The call ended. The connection to the server closed.";
     case "failed":
       return `The call stopped: ${error ?? "the engine failed."}`;
     case null:

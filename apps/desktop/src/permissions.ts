@@ -67,17 +67,17 @@ export function describeAccess(a: Access): string {
 
 export interface Need {
   name: PermissionName;
-  /** Why, in a few words. */
+  /** Why, in a few words, as the window shows it. */
   why: string;
 }
 
 /** What sharing needs, and what joining needs, for this voice choice. */
 export function needs(voice: boolean): { share: Need[]; join: Need[] } {
-  const mic: Need[] = voice ? [{ name: "microphone", why: "for voice" }] : [];
+  const mic: Need[] = voice ? [{ name: "microphone", why: "For voice" }] : [];
   return {
     share: [
-      { name: "screen_recording", why: "to share your screen" },
-      { name: "accessibility", why: "to let a guest control it" },
+      { name: "screen_recording", why: "To share your screen" },
+      { name: "accessibility", why: "To let a guest control your Mac" },
       ...mic,
     ],
     join: mic,
