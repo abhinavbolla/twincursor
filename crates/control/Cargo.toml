@@ -5,6 +5,7 @@ publish = false
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+rust-version.workspace = true
 description = "TwinCursor remote-control sessions: consent, input checks and safety on the sharer, and the guest's side"
 
 [lib]

@@ -63,7 +63,8 @@ jobs:
       - name: Test
         run: cargo test --locked --release --workspace
 
-  # Builds with the oldest Rust the workspace promises to support (`rust-version` in Cargo.toml).
+  # Builds every crate with the oldest Rust the workspace promises to support (`rust-version` in
+  # Cargo.toml, which every crate inherits).
   msrv:
     runs-on: macos-26
     timeout-minutes: 45
@@ -82,8 +83,19 @@ jobs:
         with:
           triple: mac-arm64-release
 
+      # The desktop app embeds the built UI (apps/desktop/dist).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Build the UI
+        working-directory: apps/desktop
+        run: npm ci && npx vite build
+
       - name: Build
-        run: cargo build --locked --release -p twincursor-media-spike
+        run: cargo build --locked --release --workspace
 
   # The viewer runs on Windows too, so make sure it keeps building there: tc-spike for
   # development, and tc-engine for the testers' viewer package (packaging/windows).
