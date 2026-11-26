@@ -181,7 +181,7 @@ Drag TwinCursor to Applications and open it; when macOS says it can't verify the
 [testing guide](testing-guide.md#install-it) has the same steps for the people you send it to.
 
 A build made without a backend file opens, but its panel says "This build isn't connected to a
-server."
+server." and links to this guide.
 
 ## 5. Try it
 

@@ -26,7 +26,7 @@ Mark each line pass or fail. For a fail, note what happened, and copy the number
 | 1.2 | Open it a second time | It opens with no warning. The panel hangs from the TwinCursor icon in the menu bar |
 | 1.3 | Click the icon; click it again; press Escape with the panel open; click another app | The panel opens, closes, closes, closes |
 | 1.4 | Right-click the icon | A menu with **Open TwinCursor** and **Quit TwinCursor** |
-| 1.5 | Open a build made without a backend, if you have one | The panel says "This build isn't connected to a server." and nothing else works |
+| 1.5 | Open a build made without a backend, if you have one | The panel says "This build isn't connected to a server." and nothing else works. **self-hosting guide** opens the guide on GitHub in your browser |
 
 ## 2. Sign in
 

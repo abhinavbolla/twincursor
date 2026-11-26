@@ -233,6 +233,22 @@ fn open_settings_pane(pane: Pane) -> Result<(), String> {
     }
 }
 
+/// The self-hosting guide, which the panel offers when the build names no backend.
+const SELF_HOSTING_GUIDE: &str =
+    "https://github.com/abhinavbolla/twincursor/blob/main/docs/self-hosting.md";
+
+/// Opens the self-hosting guide with `open`. The address is fixed here, so the window can't
+/// make the app open any other page.
+fn open_guide(open: impl FnOnce(&str) -> Result<(), String>) -> Result<(), String> {
+    open(SELF_HOSTING_GUIDE).map_err(|e| format!("The guide didn't open: {e}."))
+}
+
+/// The panel's "self-hosting guide" link, in the default browser. Takes nothing from the window.
+#[tauri::command]
+fn open_self_hosting_guide() -> Result<(), String> {
+    open_guide(accounts::open_browser)
+}
+
 #[tauri::command]
 async fn account_state(
     account: tauri::State<'_, Arc<AccountShell>>,
@@ -513,6 +529,7 @@ fn main() {
             leave_call,
             permissions,
             open_settings_pane,
+            open_self_hosting_guide,
             account_state,
             sign_in,
             cancel_sign_in,
@@ -585,4 +602,27 @@ fn main() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_guide_command_opens_exactly_the_guide() {
+        let mut opened = Vec::new();
+        open_guide(|url| {
+            opened.push(url.to_owned());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            opened,
+            ["https://github.com/abhinavbolla/twincursor/blob/main/docs/self-hosting.md"]
+        );
+        assert_eq!(
+            open_guide(|_| Err("open failed".into())).unwrap_err(),
+            "The guide didn't open: open failed."
+        );
+    }
 }

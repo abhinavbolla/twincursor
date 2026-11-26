@@ -770,6 +770,10 @@ export function createMock(params: URLSearchParams): LoadedBridge {
       console.info("(mock) would quit TwinCursor");
       return Promise.resolve();
     },
+    openGuide: () => {
+      console.info("(mock) would open the self-hosting guide");
+      return Promise.resolve();
+    },
   };
   const role = params.get("mock");
   if (role === "share" || role === "join") {

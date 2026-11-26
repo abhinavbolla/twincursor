@@ -311,6 +311,24 @@ kbd {
   margin: 0;
 }
 
+/* A button that reads as a link inside a sentence. */
+.surface button.link-button {
+  height: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--accent-ink);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: normal;
+}
+
+.surface button.link-button:hover:not(:disabled) {
+  color: var(--accent);
+}
+
 /* A quiet button: no fill until hovered, a hairline so it still reads as a button. */
 button.quiet {
   background: transparent;

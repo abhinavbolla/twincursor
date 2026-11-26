@@ -39,6 +39,7 @@ export function Panel({ bridge, home, call, menuOpen = false }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
   const [signInError, setSignInError] = useState<string | null>(null);
+  const [guideError, setGuideError] = useState<string | null>(null);
   const [sharing, setSharing] = useState(false);
 
   const model = panelModel(home, call, { dismissed, error, signingIn });
@@ -115,7 +116,25 @@ export function Panel({ bridge, home, call, menuOpen = false }: Props) {
       {model.kind === "off" && (
         <div className="panel-block">
           <p>This build isn't connected to a server.</p>
-          <p className="muted">See the self-hosting guide to set one up.</p>
+          <p className="muted">
+            See the{" "}
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => {
+                setGuideError(null);
+                bridge.openGuide().catch((e: unknown) => setGuideError(sentence(e)));
+              }}
+            >
+              self-hosting guide
+            </button>{" "}
+            to set one up.
+          </p>
+          {guideError !== null && (
+            <p className="panel-error" role="alert">
+              {guideError}
+            </p>
+          )}
         </div>
       )}
 

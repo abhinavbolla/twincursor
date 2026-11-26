@@ -61,7 +61,7 @@ when they show is decided in `surfaces.rs`, as plain tested functions).
 
 | State | What it shows |
 | --- | --- |
-| Not set up | "This build isn't connected to a server." and "See the self-hosting guide to set one up." |
+| Not set up | "This build isn't connected to a server." and "See the self-hosting guide to set one up.", where "self-hosting guide" is a link-styled button that opens [the guide](self-hosting.md) in the browser (the address is fixed in Rust, `open_self_hosting_guide`) |
 | Signed out | "Sign in to share your screen and call people." and **Sign in with GitHub**; a sign-in error as one line under it |
 | Signing in | "Finish signing in in your browser…" and a quiet **Cancel** |
 | Home | Rings on top ("**Sam Rivera** is calling", **Decline**, **Join**); **Share my screen**; **Paste link** with "Join with a link someone sent you"; **People**, one 36 px row each with a **Call** button |

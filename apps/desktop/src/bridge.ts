@@ -63,6 +63,8 @@ export interface Bridge {
   onHome(f: (home: HomeView) => void): () => void;
   /** Quits the app (the panel's Quit TwinCursor). */
   quit(): Promise<void>;
+  /** Opens the self-hosting guide in the browser. The address is fixed on the Rust side. */
+  openGuide(): Promise<void>;
 }
 
 export interface LoadedBridge {
@@ -146,6 +148,7 @@ function tauriBridge(): Bridge {
       return () => void stop.then((unlisten) => unlisten());
     },
     quit: () => invoke<void>("quit"),
+    openGuide: () => invoke<void>("open_self_hosting_guide"),
   };
 }
 
