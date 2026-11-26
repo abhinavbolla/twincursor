@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { ComponentType } from "react";
 
+import { parseAccountState, type AccountState } from "./accountState";
 import type { EngineCommand, EngineOutput, Plan } from "./ipc";
 import { parseOutput } from "./ipc";
 import type { PermissionName } from "./permissions";
@@ -56,6 +57,13 @@ export interface Bridge {
   readSettings(): Promise<SettingsView>;
   saveSettings(change: SettingsChange): Promise<SettingsView>;
   engineConfig(): Promise<EngineConfig>;
+  /** Who is signed in. Never a token: the Rust side keeps the session. */
+  accountState(): Promise<AccountState>;
+  /** Opens GitHub sign-in in the browser; resolves once signed in, rejects with a sentence. */
+  signIn(): Promise<AccountState>;
+  /** Stops a sign-in waiting for the browser (its signIn() then rejects). */
+  cancelSignIn(): Promise<void>;
+  signOut(): Promise<AccountState>;
   /** Everything the Rust side says about the call. Returns a function that stops listening. */
   onOutput(f: (output: EngineOutput) => void): () => void;
 }
@@ -64,6 +72,15 @@ export interface LoadedBridge {
   bridge: Bridge;
   /** The mock's control panel, in development only. */
   DevPanel: ComponentType | null;
+}
+
+/** The Rust side's account answer, checked. */
+function accountAnswer(value: unknown): AccountState {
+  const state = parseAccountState(value);
+  if (state === null) {
+    throw new Error("The app's account answer couldn't be read.");
+  }
+  return state;
 }
 
 function tauriBridge(): Bridge {
@@ -77,6 +94,10 @@ function tauriBridge(): Bridge {
     readSettings: () => invoke<SettingsView>("read_settings"),
     saveSettings: (change) => invoke<SettingsView>("save_settings", { change }),
     engineConfig: () => invoke<EngineConfig>("engine_config"),
+    accountState: () => invoke<unknown>("account_state").then(accountAnswer),
+    signIn: () => invoke<unknown>("sign_in").then(accountAnswer),
+    cancelSignIn: () => invoke<void>("cancel_sign_in"),
+    signOut: () => invoke<unknown>("sign_out").then(accountAnswer),
     onOutput: (f) => {
       const stop = listen<unknown>("engine", (e) => {
         const output = parseOutput(e.payload);

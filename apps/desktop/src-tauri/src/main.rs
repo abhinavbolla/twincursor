@@ -4,11 +4,13 @@
 //! text and controls (docs/adr/0007-shell-and-engine.md).
 //!
 //! `engine.rs` starts and stops the engine and reads its events, `settings.rs` keeps the server
-//! overrides, and `script.rs` is the test-only `--script` mode. This file connects them to the
-//! window.
+//! overrides, `accounts.rs` signs in and out (`backend.rs` says where), and `script.rs` is the
+//! test-only `--script` mode. This file connects them to the window.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod accounts;
+mod backend;
 mod engine;
 mod script;
 mod settings;
@@ -20,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
 
+use accounts::{AccountShell, AccountView};
 use engine::{Call, Launcher, Output, Plan, Sink, TestHooks};
 use settings::{Settings, SettingsChange, SettingsView};
 
@@ -223,6 +226,49 @@ fn save_settings(app: AppHandle, change: SettingsChange) -> Result<SettingsView,
     Ok(settings.view())
 }
 
+#[tauri::command]
+async fn account_state(account: tauri::State<'_, AccountShell>) -> Result<AccountView, String> {
+    Ok(account.view().await)
+}
+
+/// Signs in with GitHub in the default browser. Resolves once signed in, or with a sentence.
+#[tauri::command]
+async fn sign_in(account: tauri::State<'_, AccountShell>) -> Result<AccountView, String> {
+    account.sign_in(accounts::open_browser).await
+}
+
+#[tauri::command]
+fn cancel_sign_in(account: tauri::State<'_, AccountShell>) {
+    account.cancel_sign_in();
+}
+
+#[tauri::command]
+async fn sign_out(account: tauri::State<'_, AccountShell>) -> Result<AccountView, String> {
+    account.sign_out().await
+}
+
+/// The account backend this run names, if any, with its session file in the app's config
+/// directory. A backend that is set up wrongly is reported and left out.
+fn account_shell(app: &AppHandle) -> AccountShell {
+    let backend = match backend::from_environment() {
+        Ok(Some(backend)) => backend,
+        Ok(None) => return AccountShell::none(),
+        Err(e) => {
+            eprintln!("accounts: {e}");
+            return AccountShell::none();
+        }
+    };
+    let shell = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("No config folder: {e}."))
+        .and_then(|dir| AccountShell::new(backend, dir.join(accounts::SESSION_FILE)));
+    shell.unwrap_or_else(|e| {
+        eprintln!("accounts: {e}");
+        AccountShell::none()
+    })
+}
+
 /// `--script PATH --report PATH`: share as the script says, write what happens, maybe quit.
 fn run_script(app: AppHandle, script_path: PathBuf, report_path: PathBuf) {
     let fail = |app: &AppHandle, message: String| {
@@ -292,9 +338,14 @@ fn main() {
             engine_config,
             open_settings_pane,
             read_settings,
-            save_settings
+            save_settings,
+            account_state,
+            sign_in,
+            cancel_sign_in,
+            sign_out
         ])
         .setup(move |app| {
+            app.manage(account_shell(app.handle()));
             if let Some((script_path, report_path)) = script.clone() {
                 let handle = app.handle().clone();
                 // Give the window a moment to appear: capture leaves out apps with a window.

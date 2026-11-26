@@ -431,8 +431,8 @@ impl Trace {
     /// Alice and Bob are in the call, under their tokens' names, and have said hello.
     fn in_call() -> Self {
         let mut t = Self::new();
-        t.c.joined(GUEST, "Alice");
-        t.c.joined(OTHER, "Bob");
+        t.c.joined(GUEST, "Alice", t.t0);
+        t.c.joined(OTHER, "Bob", t.t0);
         t.msg(GUEST, hello("Alice", Platform::Macos), 0);
         t.msg(OTHER, hello("Bob", Platform::Linux), 0);
         t
@@ -607,7 +607,7 @@ fn leaving_ends_the_trust_and_a_returning_guest_is_asked() {
     t.c.left(GUEST);
     assert!(trusted(&t).is_empty());
     // The same identity comes back, as a guest with a call pass does.
-    t.c.joined(GUEST, "Alice");
+    t.c.joined(GUEST, "Alice", t.t0);
     t.msg(GUEST, hello("Alice", Platform::Macos), 100);
     assert!(asks(&t.msg(GUEST, Message::RequestControl, 110), GUEST));
 
@@ -616,7 +616,7 @@ fn leaving_ends_the_trust_and_a_returning_guest_is_asked() {
     t.trust(GUEST, 0);
     t.msg(GUEST, Message::RequestControl, 10);
     t.c.left(GUEST);
-    t.c.joined(GUEST, "Alice");
+    t.c.joined(GUEST, "Alice", t.t0);
     assert!(asks(&t.msg(GUEST, Message::RequestControl, 110), GUEST));
 
     // Someone else leaving while they ask leaves the trusted guest's trust alone, and puts
@@ -690,7 +690,7 @@ fn trust_belongs_to_an_identity_not_a_name() {
 #[test]
 fn the_token_name_is_shown_not_the_hello() {
     let mut t = Trace::new();
-    t.c.joined(GUEST, "Alice Account");
+    t.c.joined(GUEST, "Alice Account", t.t0);
     // The guest's own app claims another name.
     t.msg(GUEST, hello("Mallory", Platform::Windows), 0);
     let effects = t.msg(GUEST, Message::RequestControl, 0);
@@ -710,14 +710,14 @@ fn the_token_name_is_shown_not_the_hello() {
 
     // A token with no name: the hello's name, then the identity.
     let mut t = Trace::new();
-    t.c.joined(GUEST, "");
+    t.c.joined(GUEST, "", t.t0);
     t.msg(GUEST, hello("Alice", Platform::Macos), 0);
     let Effect::Ask(guest) = &t.msg(GUEST, Message::RequestControl, 0)[0] else {
         panic!()
     };
     assert_eq!(guest.name, "Alice");
     let mut t = Trace::new();
-    t.c.joined(GUEST, "");
+    t.c.joined(GUEST, "", t.t0);
     let Effect::Ask(guest) = &t.msg(GUEST, Message::RequestControl, 0)[0] else {
         panic!()
     };
@@ -1046,4 +1046,190 @@ fn scrolls_pass_through() {
             unit: ScrollUnit::Pixel
         }]
     );
+}
+
+// Trust on arrival: "Let in with control" for someone not in the call yet.
+
+impl Trace {
+    /// Bob is in the call; Alice isn't yet.
+    fn bob_only() -> Self {
+        let mut t = Self::new();
+        t.c.joined(OTHER, "Bob", t.t0);
+        t.msg(OTHER, hello("Bob", Platform::Linux), 0);
+        t
+    }
+
+    fn expect(&mut self, who: &str, ms: u64) -> Vec<Effect> {
+        let at = self.at(ms);
+        self.c.expect(who, at)
+    }
+
+    /// Alice joins at `ms` and says hello.
+    fn alice_joins(&mut self, ms: u64) -> Vec<Effect> {
+        let at = self.at(ms);
+        let effects = self.c.joined(GUEST, "Alice", at);
+        self.msg(GUEST, hello("Alice", Platform::Macos), ms);
+        effects
+    }
+}
+
+#[test]
+fn an_expected_guest_is_trusted_when_they_join() {
+    let mut t = Trace::bob_only();
+    assert!(t.expect(GUEST, 0).is_empty());
+    assert_eq!(t.c.expected(), [GUEST]);
+    assert!(trusted(&t).is_empty(), "not before they join");
+    assert!(t.alice_joins(1_000).is_empty());
+    assert_eq!(trusted(&t), [GUEST]);
+    assert!(t.c.expected().is_empty());
+    assert_eq!(
+        t.msg(GUEST, Message::RequestControl, 1_100),
+        grant_to(GUEST),
+        "granted, and nobody asked"
+    );
+    // Only Alice: Bob is asked about as ever.
+    let mut t = Trace::bob_only();
+    t.expect(GUEST, 0);
+    assert!(asks(&t.msg(OTHER, Message::RequestControl, 10), OTHER));
+}
+
+#[test]
+fn a_revoke_before_they_join_cancels_the_expectation() {
+    // While idle, with nobody else asking: a revoke still counts.
+    let mut t = Trace::bob_only();
+    t.expect(GUEST, 0);
+    assert!(t.c.revoke().is_empty());
+    assert!(t.c.expected().is_empty());
+    t.alice_joins(1_000);
+    assert!(trusted(&t).is_empty());
+    assert!(asks(&t.msg(GUEST, Message::RequestControl, 1_100), GUEST));
+
+    // While Bob is asking, and while Bob is in control.
+    for bob_in_control in [false, true] {
+        let mut t = Trace::bob_only();
+        t.expect(GUEST, 0);
+        t.msg(OTHER, Message::RequestControl, 10);
+        if bob_in_control {
+            t.c.grant(t.at(20));
+        }
+        t.c.revoke();
+        assert!(t.c.expected().is_empty());
+        t.alice_joins(1_000);
+        assert!(trusted(&t).is_empty());
+        assert!(asks(&t.msg(GUEST, Message::RequestControl, 1_100), GUEST));
+    }
+}
+
+#[test]
+fn an_expectation_runs_out_after_a_minute() {
+    let mut t = Trace::bob_only();
+    t.expect(GUEST, 0);
+    let late = crate::EXPECT_FOR.as_millis() as u64 + 1_000;
+    assert!(t.alice_joins(late).is_empty());
+    assert!(trusted(&t).is_empty(), "never trusted late");
+    assert!(asks(
+        &t.msg(GUEST, Message::RequestControl, late + 100),
+        GUEST
+    ));
+
+    // The tick drops it too, so a join after that finds nothing.
+    let mut t = Trace::bob_only();
+    t.expect(GUEST, 0);
+    t.tick(crate::EXPECT_FOR.as_millis() as u64);
+    assert!(t.c.expected().is_empty());
+
+    // Just in time is in time.
+    let mut t = Trace::bob_only();
+    t.expect(GUEST, 0);
+    t.alice_joins(crate::EXPECT_FOR.as_millis() as u64 - 1);
+    assert_eq!(trusted(&t), [GUEST]);
+}
+
+#[test]
+fn an_expected_guest_isnt_trusted_while_someone_else_controls() {
+    let mut t = Trace::bob_only();
+    t.expect(GUEST, 0);
+    t.msg(OTHER, Message::RequestControl, 10);
+    t.c.grant(t.at(20));
+    assert_eq!(
+        t.alice_joins(1_000),
+        vec![Effect::Refused(Refusal::SomeoneElseControls)]
+    );
+    assert!(trusted(&t).is_empty() && t.c.expected().is_empty());
+    // Bob gives control back: Alice was never trusted, so she is asked about.
+    t.msg(OTHER, Message::ReleaseControl, 1_100);
+    assert!(asks(&t.msg(GUEST, Message::RequestControl, 1_200), GUEST));
+
+    // And expecting someone while another controls is refused at once.
+    let mut t = Trace::bob_only();
+    t.msg(OTHER, Message::RequestControl, 10);
+    t.c.grant(t.at(20));
+    assert_eq!(
+        t.expect(GUEST, 30),
+        vec![Effect::Refused(Refusal::SomeoneElseControls)]
+    );
+    assert!(t.c.expected().is_empty());
+}
+
+#[test]
+fn expecting_someone_already_in_the_call_is_trusting_them() {
+    let mut t = Trace::in_call();
+    assert!(t.expect(GUEST, 0).is_empty());
+    assert_eq!(trusted(&t), [GUEST]);
+    assert!(t.c.expected().is_empty());
+    // Asking right now: granted at once, as with trust.
+    let mut t = Trace::in_call();
+    t.msg(GUEST, Message::RequestControl, 0);
+    assert_eq!(t.expect(GUEST, 10), grant_to(GUEST));
+}
+
+#[test]
+fn a_new_controller_expects_nobody() {
+    // An engine restart is a new controller: what the old one expected is gone.
+    let mut t = Trace::bob_only();
+    t.expect(GUEST, 0);
+    let mut fresh = Trace::bob_only();
+    fresh.alice_joins(1_000);
+    assert!(trusted(&fresh).is_empty());
+    assert!(asks(
+        &fresh.msg(GUEST, Message::RequestControl, 1_100),
+        GUEST
+    ));
+}
+
+#[test]
+fn nothing_a_guest_sends_creates_an_expectation_or_extends_one() {
+    let mut t = Trace::bob_only();
+    for message in [
+        hello("Alice", Platform::Macos),
+        Message::RequestControl,
+        Message::ReleaseControl,
+        Message::Heartbeat { sent_at_us: 1 },
+        Message::Grant,
+        Message::HelloAck,
+    ] {
+        t.msg(GUEST, message.clone(), 10);
+        t.msg(OTHER, message, 10);
+    }
+    assert!(t.c.expected().is_empty());
+    t.c.revoke();
+
+    // A hello, or a reconnect hello, near the deadline doesn't push it back.
+    let mut t = Trace::bob_only();
+    t.expect(GUEST, 0);
+    let deadline = crate::EXPECT_FOR.as_millis() as u64;
+    t.msg(GUEST, hello("Alice", Platform::Macos), deadline - 100);
+    t.msg(GUEST, hello("Alice", Platform::Macos), deadline - 10);
+    assert!(t.alice_joins(deadline + 10).is_empty());
+    assert!(trusted(&t).is_empty());
+}
+
+#[test]
+fn an_expected_guest_who_leaves_is_forgotten() {
+    let mut t = Trace::bob_only();
+    t.expect(GUEST, 0);
+    t.c.left(GUEST);
+    assert!(t.c.expected().is_empty());
+    t.alice_joins(1_000);
+    assert!(trusted(&t).is_empty());
 }

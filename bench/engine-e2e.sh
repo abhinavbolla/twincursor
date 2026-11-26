@@ -26,6 +26,8 @@
 # someone not in the call, or the sharer, is an error; a guest who leaves and comes back with the
 # same pass is asked again; a share without --allow-control refuses both trust and requests. The
 # guest claims another name in its hello (`--hello-name`): the sharer must show the pass's.
+# Then trust on arrival: `trust_on_arrival` for someone not in the call yet, then a revoke, then
+# they join and ask: a prompt; and for someone else, who joins and is granted with no prompt.
 #
 # Needs `livekit-server --dev` running, jq, swiftc, and a release build:
 #   cargo build --release -p twincursor-engine-cli -p twincursor-media-spike
@@ -461,6 +463,71 @@ done
 [[ $(count "$TS" '.event == "control_asked" and .name == "Mallory"') -eq 0 \
   && $(count "$TS" '.event == "control" and (.by.name == "Mallory" or (.trusted | any(.name == "Mallory")))') -eq 0 ]] \
   && pass "the name in the guest's hello (Mallory) is never shown" || fail "the hello's name was shown"
+
+echo "=== trust on arrival, with call passes"
+# "Let in with control" for someone not in the call yet: trusted when they join, unless any
+# revoke came first.
+aroom="e2e-arrive-$$"
+asid=$(uuidgen | tr '[:upper:]' '[:lower:]')
+aaid=$(uuidgen | tr '[:upper:]' '[:lower:]')
+abid=$(uuidgen | tr '[:upper:]' '[:lower:]')
+asharer_pass=$("$BIN" dev-pass --room "$aroom" --role sharer --name "Alex Account" --id "$asid" --ttl 600)
+aa_pass=$("$BIN" dev-pass --room "$aroom" --role guest --name "Ana Account" --id "$aaid" --ttl 600)
+ab_pass=$("$BIN" dev-pass --room "$aroom" --role guest --name "Bo Account" --id "$abid" --ttl 600)
+AS=$OUT/arrive-share.jsonl
+mkfifo "$OUT/arrive-share.in" "$OUT/arrive-a.in" "$OUT/arrive-b.in"
+TWINCURSOR_PASS=$asharer_pass "$BIN" share --ipc --audio off --capture pattern --resolution 720 \
+  --allow-control --inject "record:$OUT/arrive-actions.jsonl" \
+  <"$OUT/arrive-share.in" >"$AS" 2>"$OUT/arrive-share.log" &
+asharer=$!
+pids+=("$asharer")
+exec 3>"$OUT/arrive-share.in"
+check "$AS" '.event == "connection" and .state == "connected"' "sharer connected with its pass"
+
+echo "{\"cmd\":\"trust_on_arrival\",\"identity\":\"guest-$aaid\"}" >&3
+sleep 0.3
+echo '{"cmd":"revoke_control"}' >&3
+sleep 0.3
+TWINCURSOR_PASS=$aa_pass "$BIN" view --ipc --audio off --headless \
+  <"$OUT/arrive-a.in" >"$OUT/arrive-a.jsonl" 2>"$OUT/arrive-a.log" &
+aviewer=$!
+pids+=("$aviewer")
+exec 4>"$OUT/arrive-a.in"
+check "$AS" ".event == \"participants\" and (.participants | any(.identity == \"guest-$aaid\"))" "trust_on_arrival, then revoke_control, then Ana joins"
+sleep 0.5
+echo '{"cmd":"request_control"}' >&4
+check "$AS" ".event == \"control_asked\" and .identity == \"guest-$aaid\"" "Ana's request asks the app: the revoke cancelled it"
+[[ $(count "$AS" '.event == "control" and (.state == "controlling" or (.trusted | length > 0))') -eq 0 ]] \
+  && pass "Ana was never trusted or given control" || fail "Ana got control after a revoke"
+request=$(first "$AS" '.event == "control_asked"' | jq -r .request)
+echo "{\"cmd\":\"deny_control\",\"request\":$request}" >&3
+if wait_count "$OUT/arrive-a.jsonl" '.event == "control" and .state == "none"' 2; then pass "denied"; else fail "deny for Ana"; fi
+echo '{"cmd":"leave"}' >&4
+exec 4>&-
+
+echo "{\"cmd\":\"trust_on_arrival\",\"identity\":\"guest-$abid\"}" >&3
+sleep 0.3
+[[ $(count "$AS" '.event == "error"') -eq 0 ]] && pass "trust_on_arrival for someone not in the call yet is taken" || fail "trust_on_arrival was refused: $(first "$AS" '.event == "error"')"
+TWINCURSOR_PASS=$ab_pass "$BIN" view --ipc --audio off --headless \
+  <"$OUT/arrive-b.in" >"$OUT/arrive-b.jsonl" 2>"$OUT/arrive-b.log" &
+bviewer=$!
+pids+=("$bviewer")
+exec 4>"$OUT/arrive-b.in"
+check "$AS" ".event == \"control\" and (.trusted | any(.identity == \"guest-$abid\" and .name == \"Bo Account\"))" "Bo joins and is trusted on arrival"
+sleep 0.5
+echo '{"cmd":"request_control"}' >&4
+check "$AS" '.event == "control" and .state == "controlling" and .by.name == "Bo Account"' "Bo's request is granted at once"
+[[ $(count "$AS" ".event == \"control_asked\" and .identity == \"guest-$abid\"") -eq 0 ]] && pass "with no control_asked" || fail "Bo's request raised a prompt"
+echo '{"cmd":"revoke_control"}' >&3
+check "$AS" '.event == "control" and .state == "none" and (.trusted | length == 0) and .by == null' "revoke_control takes it back"
+echo '{"cmd":"leave"}' >&4
+echo '{"cmd":"leave"}' >&3
+check "$AS" '.event == "ended" and .reason == "left"' "sharer left"
+exec 3>&- 4>&-
+for pid in "$asharer" "$aviewer" "$bviewer"; do
+  for _ in $(seq 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+  kill -0 "$pid" 2>/dev/null && fail "process $pid still running after leave" || pass "process $pid exited"
+done
 
 echo "=== trusted control in a share without --allow-control"
 nroom="e2e-notrust-$$"

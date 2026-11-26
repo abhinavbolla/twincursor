@@ -13,6 +13,9 @@ host's app.
 | `tests/database/` | pgTAP tests of the access rules (`supabase test db`) |
 | `tests/call-pass.sh` | End-to-end check of the function against the local stack |
 
+The app's side (GitHub sign-in, the session, and `tc-account` for trying the backend by hand) is
+in [docs/accounts.md](../docs/accounts.md).
+
 ## Data model
 
 | Table | One row per | Notes |

@@ -1,0 +1,37 @@
+[package]
+name = "twincursor-account"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "TwinCursor accounts: GitHub sign-in through Supabase Auth, the session, and the backend's calls"
+publish = false
+
+[lib]
+name = "account"
+
+# A development tool for benches and for trying a backend by hand. Never bundled into the app.
+[[bin]]
+name = "tc-account"
+path = "src/bin/tc-account.rs"
+
+[features]
+# `account::fake`, a stand-in backend for other crates' tests. Never in a shipped build.
+fake = []
+
+[dependencies]
+# HTTP to the backend. Already in the tree through LiveKit (livekit-net, webrtc-sys-build), with
+# these same features, so it adds no packages.
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-native-roots", "json"] }
+tokio = { workspace = true, features = ["net", "io-util"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# The PKCE challenge (SHA-256, base64url) and its random verifier. All already in the tree.
+sha2 = "0.10.9"
+base64.workspace = true
+getrandom = "0.3.4"
+# The tc-account tool.
+clap.workspace = true
+anyhow.workspace = true
