@@ -165,9 +165,9 @@ enum Cmd {
     View(ViewArgs),
     /// Print this process's Screen Recording, Accessibility and Microphone access as JSON.
     Permissions {
-        /// Ask macOS for the access not yet given.
-        #[arg(long)]
-        request: bool,
+        /// Ask macOS for the access not yet given: all of it, or only the one named.
+        #[arg(long, value_name = "PERMISSION", num_args = 0..=1)]
+        request: Option<Option<Permission>>,
     },
     /// Print the microphones and speakers as JSON.
     Devices,
@@ -196,6 +196,28 @@ struct DevPassArgs {
     /// How long the pass is valid, in seconds.
     #[arg(long, default_value_t = 3600)]
     ttl: u64,
+}
+
+/// One permission for `permissions --request`, named as `permissions` prints it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Permission {
+    #[value(name = "screen_recording")]
+    ScreenRecording,
+    #[value(name = "accessibility")]
+    Accessibility,
+    #[value(name = "microphone")]
+    Microphone,
+}
+
+impl Permission {
+    fn which(self) -> engine::permission::Which {
+        use engine::permission::Which;
+        match self {
+            Permission::ScreenRecording => Which::ScreenRecording,
+            Permission::Accessibility => Which::Accessibility,
+            Permission::Microphone => Which::Microphone,
+        }
+    }
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -455,8 +477,11 @@ fn main() -> anyhow::Result<()> {
         Cmd::Share(args) => share(args),
         Cmd::View(args) => watch(args),
         Cmd::Permissions { request } => {
-            if request {
-                engine::permission::request_missing(&engine::permission::status());
+            let before = engine::permission::status();
+            match request {
+                None => {}
+                Some(None) => engine::permission::request_missing(&before),
+                Some(Some(one)) => engine::permission::request_one(one.which(), &before),
             }
             print_line(&serde_json::to_string(&engine::permission::status())?);
             Ok(())
@@ -981,6 +1006,30 @@ mod tests {
             resolve(Some(""), Some(" ".into()), Some(""), dev),
             (dev.into(), Origin::Dev)
         );
+    }
+
+    #[test]
+    fn permissions_request_all_or_one() {
+        let request = |args: &[&str]| match Cli::try_parse_from(args).unwrap().command {
+            Cmd::Permissions { request } => request,
+            _ => panic!("not permissions"),
+        };
+        assert_eq!(request(&["tc-engine", "permissions"]), None);
+        assert_eq!(
+            request(&["tc-engine", "permissions", "--request"]),
+            Some(None)
+        );
+        for (word, one) in [
+            ("screen_recording", Permission::ScreenRecording),
+            ("accessibility", Permission::Accessibility),
+            ("microphone", Permission::Microphone),
+        ] {
+            assert_eq!(
+                request(&["tc-engine", "permissions", "--request", word]),
+                Some(Some(one))
+            );
+        }
+        assert!(Cli::try_parse_from(["tc-engine", "permissions", "--request", "camera"]).is_err());
     }
 
     #[test]
