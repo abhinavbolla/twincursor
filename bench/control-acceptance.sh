@@ -9,14 +9,26 @@
 #   4. Capture latency with and without --allow-control, which leaves the app's windows out.
 #
 # The terminal needs Accessibility and Screen Recording permission, and `livekit-server --dev`
-# must be running. Results land in bench/results/acceptance-<time>/.
+# must be running. Logs and numbers land in bench/results/acceptance-<time>/.
 # STEPS="2 3" bench/control-acceptance.sh runs only those steps.
+#
+# Step 3's images are pictures of your real screen: a screenshot and the frames the guest
+# received. They are kept only with KEEP_IMAGES=1 (in bench/results/acceptance-<time>/images/).
+# Otherwise they go to a temporary folder that is deleted when the script ends; it waits for
+# Return so you can look at them first.
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
 BIN=${BIN:-target/release/tc-spike}
 OUT=bench/results/acceptance-$(date +%s)
 mkdir -p "$OUT"
+if [[ "${KEEP_IMAGES:-0}" == 1 ]]; then
+  IMAGES="$OUT/images"
+  mkdir -p "$IMAGES"
+else
+  IMAGES="$(mktemp -d)"
+  trap 'rm -rf "$IMAGES"' EXIT
+fi
 status=0
 note() { echo; echo "=== $*"; }
 want() { [[ " ${STEPS:-1 2 3 4} " == *" $1 "* ]]; }
@@ -44,14 +56,14 @@ cat >"$OUT/script.json" <<'JSON'
  {"do": "wait", "ms": 4000}, {"do": "release"}]
 JSON
 "$BIN" view --audio off --room "$room" --headless --no-stats --duration 30 --out "$OUT" --name "Acceptance" \
-  --control-script "$OUT/script.json" --snapshot-every 1 --snapshot-dir "$OUT/stream" \
+  --control-script "$OUT/script.json" --snapshot-every 1 --snapshot-dir "$IMAGES/stream" \
   >"$OUT/view.log" 2>&1 &
 viewer=$!
 for _ in $(seq 60); do grep -q "asks to control" "$OUT/share.log" && break; sleep 0.5; done
 echo y >&3
 for _ in $(seq 40); do grep -q "now controls this computer" "$OUT/share.log" && break; sleep 0.25; done
 sleep 1.5
-screencapture -x "$OUT/overlay-on-screen.png"
+screencapture -x "$IMAGES/overlay-on-screen.png"
 wait "$viewer"
 kill -INT "$sharer" 2>/dev/null
 wait "$sharer" 2>/dev/null
@@ -63,9 +75,12 @@ else
   echo "FAIL: the sharer didn't find its own windows, so the overlay is in the stream"
   status=1
 fi
-echo "Your screen during control: $OUT/overlay-on-screen.png (the label and name tag should show)"
-echo "What the guest received: the newest PGM in $OUT/stream/ (neither should show; the"
+echo "Your screen during control: $IMAGES/overlay-on-screen.png (the label and name tag should show)"
+echo "What the guest received: the newest PGM in $IMAGES/stream/ (neither should show; the"
 echo "  black and white blocks over the top-left menus are the latency marker)"
+if [[ "${KEEP_IMAGES:-0}" != 1 && -t 0 ]]; then
+  read -r -p "Compare the two now; press Return to go on (they are deleted when this script ends). " _
+fi
 fi
 
 if want 4; then
@@ -89,5 +104,5 @@ done
 fi
 
 echo
-if [[ $status -eq 0 ]]; then echo "Automatic checks passed. Look at the two images in step 3."; else echo "Some checks FAILED: see above."; fi
+if [[ $status -eq 0 ]]; then echo "Automatic checks passed. Step 3's two images are for you to compare."; else echo "Some checks FAILED: see above."; fi
 exit $status
