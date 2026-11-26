@@ -1,4 +1,9 @@
+# Everything checks out with LF everywhere, Windows included: the shell scripts CI runs there in
+# Git Bash, and the fixtures the tests compare byte for byte, break with CRLF.
+* text=auto eol=lf
+
 # Windows tools read these: batch files need CRLF to find their labels reliably.
 packaging/windows/*.cmd text eol=crlf
 packaging/windows/*.txt text eol=crlf
 packaging/windows/*.example text eol=crlf
+packaging/windows/app/*.txt text eol=crlf
