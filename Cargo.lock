@@ -5949,6 +5949,8 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "tokio",
+ "twincursor-account",
  "twincursor-ipc",
 ]
 

@@ -5,10 +5,12 @@
 //   http://localhost:5173/?mock=share   starts a call as the sharer
 //   http://localhost:5173/?mock=join    starts a call as a guest
 //   add &quality=4k to share with HEVC, &voice=off for a call without voice
+//   add &account=off for a build without an account backend, &account=in to start signed in
 //
 // The panel in the corner makes things happen: a control request, a guest without HEVC, an
 // error, a dropped connection, the engine crashing, and permissions changing.
 
+import type { AccountState } from "./accountState";
 import type { Bridge, EngineConfig, LoadedBridge, SettingsChange, SettingsView } from "./bridge";
 import type { EngineCommand, EngineOutput, Participant, Plan } from "./ipc";
 import type { Access, PermissionName, PermissionStatus } from "./permissions";
@@ -366,8 +368,63 @@ function MockPanel({ engine }: { engine: MockEngine }) {
   );
 }
 
+/** A pretend account: sign-in "finishes in the browser" after two seconds. */
+class MockAccount {
+  private state: AccountState;
+  private pending: { timer: number; reject: (e: string) => void } | null = null;
+
+  constructor(mode: string | null) {
+    this.state = {
+      configured: mode !== "off",
+      signed_in: mode === "in",
+      me: mode === "in" ? MockAccount.ME : null,
+      signing_in: false,
+    };
+  }
+
+  static readonly ME = { id: "u1", name: "Alex Example", handle: "alex", avatar_url: null };
+
+  get(): Promise<AccountState> {
+    return Promise.resolve({ ...this.state });
+  }
+
+  signIn(): Promise<AccountState> {
+    if (!this.state.configured) {
+      return Promise.reject("This build isn't set up for accounts.");
+    }
+    if (this.pending !== null) {
+      return Promise.reject("Sign-in is already under way.");
+    }
+    this.state = { ...this.state, signing_in: true };
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        this.pending = null;
+        this.state = { configured: true, signed_in: true, me: MockAccount.ME, signing_in: false };
+        resolve({ ...this.state });
+      }, 2000);
+      this.pending = { timer, reject };
+    });
+  }
+
+  cancel(): Promise<void> {
+    if (this.pending !== null) {
+      window.clearTimeout(this.pending.timer);
+      this.pending.reject("Sign-in was cancelled.");
+      this.pending = null;
+      this.state = { ...this.state, signing_in: false };
+    }
+    return Promise.resolve();
+  }
+
+  signOut(): Promise<AccountState> {
+    this.state = { ...this.state, signed_in: false, me: null };
+    return this.get();
+  }
+}
+
 export function createMock(params: URLSearchParams): LoadedBridge {
   const engine = new MockEngine();
+  const account = new MockAccount(params.get("account"));
   const view = (): SettingsView => ({
     url: engine.settings.url,
     api_key: engine.settings.api_key,
@@ -432,6 +489,10 @@ export function createMock(params: URLSearchParams): LoadedBridge {
       return Promise.resolve(view());
     },
     engineConfig: () => Promise.resolve(config),
+    accountState: () => account.get(),
+    signIn: () => account.signIn(),
+    cancelSignIn: () => account.cancel(),
+    signOut: () => account.signOut(),
     onOutput: (f) => engine.on(f),
   };
   const role = params.get("mock");
