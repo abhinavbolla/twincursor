@@ -73,11 +73,15 @@ pub enum Effect {
     Ask(Guest),
     /// Control, or a pending request, ended without the sharer deciding it.
     Ended { identity: String, reason: EndReason },
-    /// Something the sharer asked for was not done. Tell the sharer why.
+    /// Something the sharer asked for was not done, a request was turned down because control
+    /// isn't available in this share, or control was taken back because it stopped being
+    /// available. Tell the sharer why.
     Refused(Refusal),
 }
 
-/// Why [`Controller::trust`], [`Controller::expect`] or a grant didn't happen. Each reads as a sentence for the sharer.
+/// Why [`Controller::trust`], [`Controller::expect`] or a grant didn't happen. Each reads as a
+/// sentence for the sharer (and, for [`Refusal::OneWindowShared`] and
+/// [`Refusal::DisplayGone`], for the guest too).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Refusal {
     /// Only someone in the call can be trusted with control.
@@ -86,6 +90,14 @@ pub enum Refusal {
     /// One controller at a time: trusting anyone else would queue a second.
     #[error("Someone else is in control. Take control back first.")]
     SomeoneElseControls,
+    /// The share shows one window or app. Input is mapped onto a whole display, so a click in
+    /// the window's picture would land somewhere else: no control until input follows windows.
+    #[error("Control isn't available while one window is shared.")]
+    OneWindowShared,
+    /// The shared display was disconnected (or went to sleep). Input can't go where the guest
+    /// sees it any more, and never goes to another display instead.
+    #[error("The shared display is gone, so control isn't available.")]
+    DisplayGone,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +159,8 @@ pub struct Controller<I> {
     /// Guests to trust if they join before their deadline ([`Controller::expect`]). A revoke
     /// empties it, as it empties `trusted`.
     expected: HashMap<String, Instant>,
+    /// Control can't be had in this share, and why ([`Controller::close`]). For good.
+    closed: Option<Refusal>,
     counters: Counters,
 }
 
@@ -160,8 +174,36 @@ impl<I: Injector> Controller<I> {
             present: HashMap::new(),
             trusted: BTreeSet::new(),
             expected: HashMap::new(),
+            closed: None,
             counters: Counters::default(),
         }
+    }
+
+    /// Makes control unavailable for the rest of the share: takes it back as
+    /// [`Controller::revoke`] does, and from now on turns every request down, telling the guest
+    /// and the sharer `why`, and refuses every trust. Returns what to send and show, `why` for
+    /// the sharer last. For a share that never offers control (one window), call it before
+    /// anyone joins and drop what it returns.
+    pub fn close(&mut self, why: Refusal) -> Vec<Effect> {
+        let mut effects = self.revoke();
+        tracing::info!("control closed for this share: {why}");
+        self.closed = Some(why.clone());
+        effects.push(Effect::Refused(why));
+        effects
+    }
+
+    /// Why control can't be had in this share, if it can't ([`Controller::close`]).
+    pub fn unavailable(&self) -> Option<&Refusal> {
+        self.closed.as_ref()
+    }
+
+    /// Closes control with [`Refusal::DisplayGone`] the first time the injector reports that
+    /// the shared display went away.
+    fn check_display(&mut self) -> Vec<Effect> {
+        if self.closed.is_none() && self.injector.display_gone() {
+            return self.close(Refusal::DisplayGone);
+        }
+        vec![]
     }
 
     /// Handles a message from `from`, the sender's identity as LiveKit reports it.
@@ -188,15 +230,17 @@ impl<I: Injector> Controller<I> {
                 after,
                 event,
             } => {
+                // Nothing goes to a display that is gone, not even this input.
+                let effects = self.check_display();
                 self.on_input(from, seq, sent_at_us, after, event, now);
-                vec![]
+                effects
             }
             // Sizing, not control: the sharer's media loop reads it from the room itself.
             Message::Viewport { .. } => vec![],
             // Only the sharer sends these.
             Message::HelloAck
             | Message::Grant
-            | Message::Deny
+            | Message::Deny { .. }
             | Message::Revoke
             | Message::Released => vec![],
         }
@@ -216,6 +260,9 @@ impl<I: Injector> Controller<I> {
             tracing::info!(guest = %identity, "joined too late to be given control");
             return vec![];
         }
+        if let Some(why) = &self.closed {
+            return vec![Effect::Refused(why.clone())];
+        }
         if matches!(&self.phase, Phase::Granted(guest, _) if guest.identity != identity) {
             return vec![Effect::Refused(Refusal::SomeoneElseControls)];
         }
@@ -230,6 +277,9 @@ impl<I: Injector> Controller<I> {
     /// while someone else has control. Any revoke cancels it, as it cancels every trust; so does
     /// that guest leaving, and the deadline passing. A hello doesn't extend it.
     pub fn expect(&mut self, identity: &str, now: Instant) -> Vec<Effect> {
+        if let Some(why) = &self.closed {
+            return vec![Effect::Refused(why.clone())];
+        }
         if self.present.contains_key(identity) {
             return self.trust(identity, now);
         }
@@ -253,6 +303,9 @@ impl<I: Injector> Controller<I> {
     /// can call this; nothing a guest sends does. If they are asking right now, they get control
     /// now. Refused for someone not in the call, or while someone else has control.
     pub fn trust(&mut self, identity: &str, now: Instant) -> Vec<Effect> {
+        if let Some(why) = &self.closed {
+            return vec![Effect::Refused(why.clone())];
+        }
         if !self.present.contains_key(identity) {
             return vec![Effect::Refused(Refusal::NotInCall)];
         }
@@ -276,6 +329,10 @@ impl<I: Injector> Controller<I> {
 
     /// The sharer accepts the pending request.
     pub fn grant(&mut self, now: Instant) -> Vec<Effect> {
+        if self.closed.is_some() {
+            // Can't happen: a closed controller never has a request open.
+            return self.deny();
+        }
         match std::mem::replace(&mut self.phase, Phase::Idle) {
             Phase::Requested(guest) => {
                 let swap = self.config.swap_ctrl_cmd && guest.platform != Platform::Macos;
@@ -308,7 +365,7 @@ impl<I: Injector> Controller<I> {
     /// The sharer turns down the pending request.
     pub fn deny(&mut self) -> Vec<Effect> {
         match std::mem::replace(&mut self.phase, Phase::Idle) {
-            Phase::Requested(guest) => vec![send(guest.identity, Message::Deny)],
+            Phase::Requested(guest) => vec![send(guest.identity, self.deny_message())],
             other => {
                 self.phase = other;
                 vec![]
@@ -324,7 +381,7 @@ impl<I: Injector> Controller<I> {
         self.expected.clear();
         match std::mem::replace(&mut self.phase, Phase::Idle) {
             Phase::Idle => vec![],
-            Phase::Requested(guest) => vec![send(guest.identity, Message::Deny)],
+            Phase::Requested(guest) => vec![send(guest.identity, self.deny_message())],
             Phase::Granted(guest, mut control) => {
                 self.release(&mut control);
                 vec![send(guest.identity, Message::Revoke)]
@@ -342,12 +399,17 @@ impl<I: Injector> Controller<I> {
         self.end_by_guest(identity, EndReason::Left)
     }
 
-    /// Call often, every 100 ms or so: it runs the deadman, and drops expectations past their
-    /// deadline.
-    pub fn tick(&mut self, now: Instant) {
+    /// Call often, every 100 ms or so: it runs the deadman, drops expectations past their
+    /// deadline, and closes control if the shared display went away (returning what that sends
+    /// and shows).
+    pub fn tick(&mut self, now: Instant) -> Vec<Effect> {
         self.expected.retain(|_, deadline| now < *deadline);
+        let effects = self.check_display();
+        if !effects.is_empty() {
+            return effects;
+        }
         let Phase::Granted(_, control) = &mut self.phase else {
-            return;
+            return effects;
         };
         if !control.held.is_empty()
             && now.saturating_duration_since(control.last_heard) >= self.config.deadman
@@ -359,6 +421,7 @@ impl<I: Injector> Controller<I> {
             control.stalled = true;
             self.counters.deadman_releases += 1;
         }
+        effects
     }
 
     pub fn requester(&self) -> Option<&Guest> {
@@ -414,7 +477,26 @@ impl<I: Injector> Controller<I> {
         }
     }
 
+    /// A deny, with the reason when control isn't available in this share.
+    fn deny_message(&self) -> Message {
+        Message::Deny {
+            reason: self.closed.as_ref().map(ToString::to_string),
+        }
+    }
+
     fn on_request(&mut self, from: &str, now: Instant) -> Vec<Effect> {
+        let mut effects = self.check_display();
+        if let Some(why) = self.closed.clone() {
+            // The guest is told why, and so is the sharer (once, if this request is what found
+            // the display gone): nobody is asked.
+            tracing::info!(guest = %from, "control requested, but {why}");
+            let told = !effects.is_empty();
+            effects.push(send(from.to_owned(), self.deny_message()));
+            if !told {
+                effects.push(Effect::Refused(why));
+            }
+            return effects;
+        }
         match &self.phase {
             Phase::Idle => {
                 let guest = self.guest(from);
@@ -428,7 +510,7 @@ impl<I: Injector> Controller<I> {
             }
             Phase::Requested(guest) | Phase::Granted(guest, _) if guest.identity == from => vec![],
             // One guest at a time.
-            _ => vec![send(from.to_owned(), Message::Deny)],
+            _ => vec![send(from.to_owned(), self.deny_message())],
         }
     }
 

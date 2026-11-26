@@ -13,6 +13,7 @@ mod hud;
 pub mod input;
 mod overlay;
 pub mod permission;
+pub mod screen;
 pub mod sharer;
 pub mod view;
 

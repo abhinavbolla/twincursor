@@ -151,9 +151,6 @@ pub fn window_pixels(points: (f64, f64), scale: f64) -> (u32, u32) {
     (px(points.0), px(points.1))
 }
 
-/// Why sharing one window or app and remote control don't go together.
-pub const CONTROL_NEEDS_DISPLAY: &str = "--allow-control can't be combined with --window or --app: remote control maps the guest's pointer onto the whole display, so share the whole display to give control";
-
 /// One line of the window table.
 fn window_row(w: &WindowInfo) -> String {
     format!(

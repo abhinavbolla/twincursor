@@ -114,34 +114,60 @@ pub const FALLBACK_DISPLAY: (u32, u32) = (1920, 1080);
 /// 1920x1080, 2560x1440 and 3840x2160 on every machine and results compare across machines.
 pub const PATTERN_DISPLAY: (u32, u32) = (3840, 2160);
 
-/// Pixel size of the display we capture (the first one), if the platform can tell us.
-pub fn display_pixels() -> Option<(u32, u32)> {
+/// Pixel size of display `display_id` (the shared one), if the platform can tell us.
+pub fn display_pixels(display_id: u32) -> Option<(u32, u32)> {
     #[cfg(target_os = "macos")]
     {
-        sck::display_pixels()
+        sck::display_pixels(display_id)
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = display_id;
         None
+    }
+}
+
+/// The ids of the displays screen capture can see (macOS: `CGDirectDisplayID`s, as
+/// ScreenCaptureKit lists them, in its order, which is not "main display first").
+pub fn display_ids() -> Result<Vec<u32>, CaptureError> {
+    #[cfg(target_os = "macos")]
+    {
+        sck::display_ids()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(CaptureError::Unsupported)
     }
 }
 
 /// What to capture. Only ScreenCaptureKit captures a window or an app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Source {
-    /// The main display, leaving out every TwinCursor window (see
-    /// [`select::is_twincursor`]), so a viewer on the same Mac doesn't show itself.
+    /// The shared display ([`CaptureConfig::display`]), leaving out every TwinCursor window
+    /// (see [`select::is_twincursor`]), so a viewer on the same Mac doesn't show itself.
     #[default]
     Display,
     /// One window, by id ([`select::WindowInfo::id`]), wherever it is and whatever covers it.
     Window(u32),
-    /// The main display, showing only the windows of the app with this process id.
+    /// The shared display, showing only the windows of the app with this process id.
     App(i32),
+}
+
+impl Source {
+    /// Whether this shows a whole display, so a position on the picture is a position on that
+    /// display. One window or one app's windows isn't: remote control needs this.
+    pub fn is_whole_display(self) -> bool {
+        self == Source::Display
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct CaptureConfig {
     pub source: Source,
+    /// The share's display, by platform id (macOS: `CGDirectDisplayID`), chosen once per share
+    /// and given to remote control too, so input goes to the display the guest sees. Screen
+    /// backends capture this one and no other; the pattern ignores it.
+    pub display: Option<u32>,
     /// Output size. Backends that can't scale on capture scale on the CPU instead.
     pub width: u32,
     pub height: u32,
@@ -180,16 +206,16 @@ pub struct WindowRect {
     pub height: f64,
 }
 
-/// The captured display's size in points and the on-screen windows of the app with process id
-/// `pid` on it, so a check can find where they would appear in a frame.
-pub fn app_windows(pid: u32) -> Option<((f64, f64), Vec<WindowRect>)> {
+/// Display `display_id`'s size in points and the on-screen windows of the app with process id
+/// `pid` on it, so a check can find where they would appear in a frame of that display.
+pub fn app_windows(pid: u32, display_id: u32) -> Option<((f64, f64), Vec<WindowRect>)> {
     #[cfg(target_os = "macos")]
     {
-        sck::app_windows(pid)
+        sck::app_windows(pid, display_id)
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = pid;
+        let _ = (pid, display_id);
         None
     }
 }
@@ -241,6 +267,10 @@ pub enum CaptureError {
     Gone(String),
     #[error("only ScreenCaptureKit (macOS) can capture a single window or app")]
     Unsupported,
+    #[error("no display was chosen to capture")]
+    NoDisplayChosen,
+    #[error("display {0} isn't one screen capture can see, so nothing was shared")]
+    DisplayNotListed(u32),
 }
 
 /// Keeps a capture running; capture stops when this is dropped.

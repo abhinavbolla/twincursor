@@ -37,10 +37,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Capture the main display (or one window or app) and publish it.
+    /// Capture the main display (or `--display`, or one window or app) and publish it.
     Share(ShareArgs),
     /// List the windows `share --window` can capture: id, size in pixels, app and title.
     Windows {
+        /// Print JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the displays `share --display` can capture: id, main, place in points, pixels.
+    Displays {
         /// Print JSON instead of a table.
         #[arg(long)]
         json: bool,
@@ -168,6 +174,10 @@ struct ShareArgs {
     /// Share one app: the display with only this app's windows on it (name or bundle id).
     #[arg(long)]
     app: Option<String>,
+    /// The display to share, by id (see `tc-spike displays`). Default: the main display, the
+    /// one with the menu bar. Remote control goes to the same display.
+    #[arg(long)]
+    display: Option<u32>,
     /// Video codec. H.264 is the default (hardware on macOS; see docs/adr/0002). H.265 (HEVC)
     /// is opt-in, for 4K (docs/adr/0008).
     #[arg(long, value_enum, default_value = "h264")]
@@ -215,6 +225,8 @@ struct ShareArgs {
     #[command(flatten)]
     voice: voice::VoiceArgs,
     /// Let viewers ask for remote control. You're asked in this terminal before anyone gets it.
+    /// With --window or --app every request is turned down, with a reason: input can't follow
+    /// one window yet.
     #[arg(long)]
     allow_control: bool,
     /// What granted input does: `real` input (the default; macOS, needs Accessibility), `log`
@@ -250,6 +262,15 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Share(args) => share(args),
         Command::Windows { json } => list_windows(json),
+        Command::Displays { json } => {
+            let displays = engine::screen::list();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&displays)?);
+            } else {
+                print!("{}", engine::screen::table(&displays));
+            }
+            Ok(())
+        }
         Command::View(args) => view_args::run(args),
         Command::Compare { sharer, viewer } => compare(&sharer, &viewer),
         Command::Devices => voice::list_devices(),
@@ -296,11 +317,6 @@ fn pick_source(args: &ShareArgs) -> anyhow::Result<(Source, Option<(u32, u32)>)>
 }
 
 fn share(args: ShareArgs) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        !(args.allow_control && (args.window.is_some() || args.app.is_some())),
-        "{}",
-        select::CONTROL_NEEDS_DISPLAY
-    );
     let (source, source_pixels) = pick_source(&args)?;
     let backend = match args.capture {
         #[cfg(target_os = "macos")]
@@ -310,10 +326,17 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
         CaptureBackend::Lk => Backend::LiveKit,
         CaptureBackend::Pattern => Backend::Pattern,
     };
+    // The one display this share is about: captured, and the only one control input goes to.
+    let display = engine::screen::choose(backend, args.display).map_err(anyhow::Error::msg)?;
+    let surface = if source.is_whole_display() {
+        sharer::Surface::Display(display.id)
+    } else {
+        sharer::Surface::Window
+    };
     let tier = Tier::from(args.resolution);
     let detected = match backend {
         Backend::Pattern => Some(capture::PATTERN_DISPLAY),
-        _ => source_pixels.or_else(capture::display_pixels),
+        _ => source_pixels.or_else(|| capture::display_pixels(display.id)),
     };
     let screen = detected.unwrap_or_else(|| {
         tracing::warn!(
@@ -348,6 +371,7 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
         fit_viewport: !args.ignore_viewport && args.width.is_none(),
         capture: CaptureConfig {
             source,
+            display: Some(display.id),
             width,
             height,
             max_fps: args.fps,
@@ -394,7 +418,7 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
         if mute.is_none() {
             return network(None);
         }
-        return match hotkey::SharerUi::new() {
+        return match hotkey::SharerUi::new(display.id) {
             Ok(ui) => ui.run(None, mute, move || network(None))?,
             Err(e) => {
                 tracing::warn!("no {} to mute with: {e}", hotkey::MUTE);
@@ -408,15 +432,21 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
             !matches!(args.inject, sharer::Inject::Real),
             "--headless only works with --inject log or record: real control needs the label"
         );
-        let (sharer, link) =
-            sharer::Sharer::start(&args.inject, revoke, None, sharer::Consent::Terminal)?;
+        let (sharer, link) = sharer::Sharer::start(
+            &args.inject,
+            surface,
+            revoke,
+            None,
+            sharer::Consent::Terminal,
+        )?;
         let result = network(Some(link));
         sharer.stop();
         return result;
     }
-    let ui = hotkey::SharerUi::new()?;
+    let ui = hotkey::SharerUi::new(display.id)?;
     let (sharer, link) = sharer::Sharer::start(
         &args.inject,
+        surface,
         revoke.clone(),
         Some(ui.overlay()),
         sharer::Consent::Terminal,

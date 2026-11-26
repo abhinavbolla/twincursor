@@ -145,6 +145,12 @@ fn window_pixels(window: &SCWindow) -> Option<(u32, u32)> {
     (size.0 > 0 && size.1 > 0).then_some(size)
 }
 
+/// The main display's id (`CGMainDisplayID`).
+pub fn main_display_id() -> u32 {
+    // SAFETY: plain CoreGraphics call.
+    unsafe { CGMainDisplayID() }
+}
+
 /// A filter's size and scale come from CoreGraphics, which asserts unless this process has
 /// connected to the window server; command-line tools haven't yet. This connects.
 fn connect_window_server() {
@@ -224,16 +230,42 @@ fn display_filter(
     (builder.build(), pids)
 }
 
+/// The display with this id among ScreenCaptureKit's. Never another one: `displays()` lists
+/// them in no promised order, and its first isn't always the main display.
+fn find_display(content: &SCShareableContent, id: u32) -> Option<SCDisplay> {
+    content
+        .displays()
+        .into_iter()
+        .find(|d| d.display_id() == id)
+}
+
+/// The ids of the displays ScreenCaptureKit can capture.
+pub fn display_ids() -> Result<Vec<u32>, CaptureError> {
+    connect_window_server();
+    let content = SCShareableContent::get().map_err(|_| CaptureError::NoDisplay)?;
+    Ok(content
+        .displays()
+        .iter()
+        .map(SCDisplay::display_id)
+        .collect())
+}
+
 /// Keeps a display capture's filter up to date as apps to leave out start and quit:
 /// ScreenCaptureKit can only leave out an app that has a window when the filter is made.
-fn watch_display(stream: SCStream, exclusion: Exclusion, mut pids: Vec<i32>) -> mpsc::Sender<()> {
+fn watch_display(
+    stream: SCStream,
+    display_id: u32,
+    exclusion: Exclusion,
+    mut pids: Vec<i32>,
+) -> mpsc::Sender<()> {
     let (stop, stopped) = mpsc::channel::<()>();
     std::thread::spawn(move || {
         while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(WATCH_DISPLAY_EVERY) {
             let Ok(content) = SCShareableContent::get() else {
                 continue;
             };
-            let Some(display) = content.displays().into_iter().next() else {
+            // Gone: the stream's delegate ends the capture.
+            let Some(display) = find_display(&content, display_id) else {
                 continue;
             };
             if pids_of(&exclusion.apps(&content)) == pids {
@@ -417,10 +449,10 @@ fn filter_for(
     Ok((filter.map_err(backend_err)?, name))
 }
 
-/// The first display's size in points, and the on-screen windows of app `pid` on it.
-pub fn app_windows(pid: u32) -> Option<((f64, f64), Vec<WindowRect>)> {
+/// Display `display_id`'s size in points, and the on-screen windows of app `pid` on it.
+pub fn app_windows(pid: u32, display_id: u32) -> Option<((f64, f64), Vec<WindowRect>)> {
     let content = SCShareableContent::get().ok()?;
-    let display = content.displays().into_iter().next()?;
+    let display = find_display(&content, display_id)?;
     let screen = display.frame();
     let pid = pid_i32(pid);
     let windows = content
@@ -453,11 +485,10 @@ pub fn start(
     resized: tokio_mpsc::UnboundedSender<Resize>,
 ) -> Result<SckCapture, CaptureError> {
     let content = SCShareableContent::get().map_err(|_| CaptureError::NoDisplay)?;
-    let display = content
-        .displays()
-        .into_iter()
-        .next()
-        .ok_or(CaptureError::NoDisplay)?;
+    // The share's one display (`CaptureConfig::display`), which input is mapped onto too.
+    let display_id = config.display.ok_or(CaptureError::NoDisplayChosen)?;
+    let display =
+        find_display(&content, display_id).ok_or(CaptureError::DisplayNotListed(display_id))?;
     connect_window_server();
     let exclusion = Exclusion::new(config.leave_out_twincursor, config.exclude_app_pid);
     let (filter, name) = filter_for(config.source, &content, &display, &exclusion)?;
@@ -520,7 +551,7 @@ pub fn start(
     let watch = match (config.source, window_px, config.follow_tier) {
         (Source::Display, _, _) => {
             let pids = pids_of(&exclusion.apps(&content));
-            Some(watch_display(stream.clone(), exclusion, pids))
+            Some(watch_display(stream.clone(), display_id, exclusion, pids))
         }
         (Source::Window(id), Some(px), Some(tier)) => Some(watch_window(
             stream.clone(),
@@ -596,14 +627,14 @@ extern "C" {
     fn CGMainDisplayID() -> u32;
 }
 
-/// Pixel size of the first display. `SCDisplay` reports points, which is half the pixels
+/// Pixel size of display `display_id`. `SCDisplay` reports points, which is half the pixels
 /// on a Retina panel, so ask CoreGraphics for the current mode's pixel size.
-pub fn display_pixels() -> Option<(u32, u32)> {
-    let content = SCShareableContent::get().ok()?;
-    let display = content.displays().into_iter().next()?;
-    // SAFETY: plain CoreGraphics calls; the mode is released after use.
+pub fn display_pixels(display_id: u32) -> Option<(u32, u32)> {
+    connect_window_server();
+    // SAFETY: plain CoreGraphics calls; the mode is released after use, and an unknown id
+    // gives a null mode.
     unsafe {
-        let mode = CGDisplayCopyDisplayMode(display.display_id());
+        let mode = CGDisplayCopyDisplayMode(display_id);
         if mode.is_null() {
             return None;
         }

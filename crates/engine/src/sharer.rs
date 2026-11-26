@@ -53,6 +53,18 @@ impl std::str::FromStr for Inject {
     }
 }
 
+/// What the share shows, which decides where granted input may go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Surface {
+    /// A whole display, by id (`CGDirectDisplayID`): the one being captured
+    /// ([`crate::screen::choose`]). Real input is mapped onto it and no other.
+    Display(u32),
+    /// One window, or one app's windows. Input would be mapped onto a whole display, not onto
+    /// the window in the picture, so no control: every request is turned down and every trust
+    /// refused with [`Refusal::OneWindowShared`], and nothing is injected.
+    Window,
+}
+
 /// Where the sharer is asked for consent, and told what happens.
 pub enum Consent {
     /// In this terminal: a prompt on stdout, answered by typing `y` (anything else is no), and
@@ -140,6 +152,7 @@ impl Sharer {
     /// stops injection at once and ends control.
     pub fn start(
         inject: &Inject,
+        surface: Surface,
         revoke: RevokeSwitch,
         overlay: Option<OverlayHandle>,
         consent: Consent,
@@ -152,9 +165,13 @@ impl Sharer {
                 Lazy::now(Box::new(RecordInjector::new(std::fs::File::create(path)?)))
             }
             #[cfg(target_os = "macos")]
-            Inject::Real => Lazy::later(Box::new(|| {
+            Inject::Real => Lazy::later(Box::new(move || {
                 use control::macos::{MacError, MacInjector};
-                match MacInjector::new() {
+                // A window share is never granted control, so this is never made for one.
+                let Surface::Display(display) = surface else {
+                    return Err(Refusal::OneWindowShared.to_string());
+                };
+                match MacInjector::new(display) {
                     Ok(injector) => Ok(Box::new(injector) as Box<dyn Injector + Send>),
                     Err(MacError::NoPermission) => Err(NEEDS_ACCESSIBILITY.to_owned()),
                     Err(e) => Err(format!("Remote control couldn't start: {e}.")),
@@ -195,7 +212,7 @@ impl Sharer {
                     Consent::App { events, allow } => Seam::App(AppSeam::new(events, allow)),
                 };
                 run(
-                    Controller::new(injector, Config::default()),
+                    controller_for(surface, injector),
                     &rx,
                     &outgoing,
                     &revoke,
@@ -204,11 +221,14 @@ impl Sharer {
                 )
             })?;
         if terminal {
-            println!(
-                "Remote control is allowed to be requested. You'll be asked before anyone gets \
-                 it, and {} takes it back at any time.",
-                crate::hotkey::REVOKE
-            );
+            match surface {
+                Surface::Display(_) => println!(
+                    "Remote control is allowed to be requested. You'll be asked before anyone \
+                     gets it, and {} takes it back at any time.",
+                    crate::hotkey::REVOKE
+                ),
+                Surface::Window => println!("{}", Refusal::OneWindowShared),
+            }
         }
         Ok((Self { handle, thread }, link))
     }
@@ -223,6 +243,16 @@ impl Sharer {
         self.handle.stop();
         let _ = self.thread.join();
     }
+}
+
+/// The controller for a share of `surface`: a window share's is closed from the start.
+fn controller_for<I: Injector>(surface: Surface, injector: I) -> Controller<I> {
+    let mut controller = Controller::new(injector, Config::default());
+    if surface == Surface::Window {
+        // Nobody has joined yet, so there is nothing to send or show.
+        let _ = controller.close(Refusal::OneWindowShared);
+    }
+    controller
 }
 
 /// Why a grant didn't happen, when real input can't be injected yet.
@@ -289,6 +319,10 @@ impl Injector for Lazy {
 
     fn pointer(&self) -> Option<control::Point> {
         self.injector.as_ref().and_then(|i| i.pointer())
+    }
+
+    fn display_gone(&mut self) -> bool {
+        self.injector.as_mut().is_some_and(|i| i.display_gone())
     }
 }
 
@@ -458,7 +492,9 @@ fn run(
             effects
         };
         apply_with(effects, outgoing, seam);
-        controller.tick(Instant::now());
+        // The shared display going away takes control back here, and the sharer is told.
+        let effects = controller.tick(Instant::now());
+        apply_with(effects, outgoing, seam);
         if let Seam::App(app) = seam {
             app.show(
                 controller.requester(),
@@ -616,19 +652,20 @@ fn app_trust(
     on_arrival: bool,
 ) -> Vec<Effect> {
     let refused = if !app.allow {
-        Some("This share doesn't allow remote control.")
+        Some("This share doesn't allow remote control.".to_owned())
+    } else if let Some(why) = controller.unavailable() {
+        // Before making the injector: a window share never needs one.
+        Some(why.to_string())
     } else if stale {
-        Some("Control was just taken back, so nobody was given it.")
+        Some("Control was just taken back, so nobody was given it.".to_owned())
     } else if role_of(identity) != Role::Guest {
-        Some("Only a guest can be given control.")
+        Some("Only a guest can be given control.".to_owned())
     } else {
         None
     };
     if let Some(message) = refused {
         tracing::info!(guest = %identity, "{message}");
-        app.send(Event::Error {
-            message: message.into(),
-        });
+        app.send(Event::Error { message });
         return vec![];
     }
     // Trust is a grant made in advance, and trust on arrival a trust made in advance: both need
@@ -789,6 +826,17 @@ mod tests {
         stop: bool,
         inputs: impl FnOnce(&SharerHandle, &Sender<In>),
     ) -> Vec<Event> {
+        control_thread_on(Surface::Display(1), injector, sam_first, stop, inputs)
+    }
+
+    /// As [`control_thread_in`], for a share of `surface`.
+    fn control_thread_on(
+        surface: Surface,
+        injector: Lazy,
+        sam_first: bool,
+        stop: bool,
+        inputs: impl FnOnce(&SharerHandle, &Sender<In>),
+    ) -> Vec<Event> {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let events: Events = {
             let seen = seen.clone();
@@ -811,7 +859,7 @@ mod tests {
         }
         let mut seam = Seam::App(AppSeam::new(events, true));
         run(
-            Controller::new(injector, Config::default()),
+            controller_for(surface, injector),
             &rx,
             &outgoing,
             &revoke,
@@ -1111,7 +1159,7 @@ mod tests {
     fn deny_to_sam() -> Vec<Effect> {
         vec![Effect::Send {
             to: SAM.into(),
-            message: Message::Deny,
+            message: Message::Deny { reason: None },
         }]
     }
 
@@ -1367,6 +1415,187 @@ mod tests {
         });
         assert!(!ever_controlling(&events), "{events:?}");
         assert_eq!(made.load(Ordering::SeqCst), 0);
+    }
+
+    const ONE_WINDOW: &str = "Control isn't available while one window is shared.";
+
+    #[test]
+    fn a_window_share_gives_nobody_control_and_says_why() {
+        let (allowed, made) = (
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let events = control_thread_on(
+            Surface::Window,
+            later(&allowed, &made),
+            true,
+            true,
+            |handle, tx| {
+                tx.send(from_sam(&Message::RequestControl)).unwrap();
+                handle.trust(SAM.into());
+                handle.trust_on_arrival(SAM.into());
+                handle.trust_on_arrival("guest-later".into());
+                tx.send(from_sam(&Message::RequestControl)).unwrap();
+                // An allow for the request that was never asked about grants nothing.
+                handle.answer(Answer::Allow { request: 1 });
+            },
+        );
+        assert!(!asked(&events), "nobody is asked: {events:?}");
+        assert!(
+            !ever_controlling(&events) && !ever_trusted(&events),
+            "{events:?}"
+        );
+        let errors: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Error { message } => Some(message.as_str()),
+                _ => None,
+            })
+            .collect();
+        // Two requests, two trusts and a trust on arrival for each: the same sentence each time.
+        // The stale allow is the usual error.
+        assert_eq!(
+            errors,
+            [
+                ONE_WINDOW,
+                ONE_WINDOW,
+                ONE_WINDOW,
+                ONE_WINDOW,
+                ONE_WINDOW,
+                "That request for control is no longer open."
+            ],
+            "{events:?}"
+        );
+        assert_eq!(
+            made.load(Ordering::SeqCst),
+            0,
+            "no injector, so no Accessibility"
+        );
+    }
+
+    #[test]
+    fn a_window_share_refuses_trust_before_anything_else_but_allow() {
+        let (mut c, mut app, seen) = setup(true);
+        let _ = c.close(Refusal::OneWindowShared);
+        for on_arrival in [false, true] {
+            assert!(app_trust(&mut c, &mut app, SAM, false, on_arrival).is_empty());
+            assert_eq!(errors(&seen), [ONE_WINDOW]);
+        }
+        // A request is denied to Sam with the reason, and the app hears the same.
+        let effects = request(&mut c, SAM);
+        assert_eq!(
+            effects,
+            vec![
+                Effect::Send {
+                    to: SAM.into(),
+                    message: Message::Deny {
+                        reason: Some(ONE_WINDOW.into())
+                    },
+                },
+                Effect::Refused(Refusal::OneWindowShared),
+            ]
+        );
+        // Without --allow-control, that is still what the app hears about trust.
+        let (mut c, mut app, seen) = setup(false);
+        let _ = c.close(Refusal::OneWindowShared);
+        app_trust(&mut c, &mut app, SAM, false, false);
+        assert_eq!(errors(&seen), ["This share doesn't allow remote control."]);
+    }
+
+    /// Records into `actions`, and loses its display when `gone` is set.
+    struct Vanishing {
+        gone: Arc<AtomicBool>,
+        actions: Arc<Mutex<Vec<control::Action>>>,
+    }
+
+    impl Injector for Vanishing {
+        fn inject(&mut self, action: &control::Action) {
+            self.actions.lock().unwrap().push(action.clone());
+        }
+
+        fn pointer(&self) -> Option<control::Point> {
+            None
+        }
+
+        fn display_gone(&mut self) -> bool {
+            self.gone.load(Ordering::SeqCst)
+        }
+    }
+
+    #[test]
+    fn the_shared_display_going_away_takes_control_back_and_the_app_is_told() {
+        let gone = Arc::new(AtomicBool::new(false));
+        let actions = Arc::new(Mutex::new(Vec::new()));
+        let injector = Lazy::now(Box::new(Vanishing {
+            gone: gone.clone(),
+            actions: actions.clone(),
+        }));
+        let typed = |code: &str, pressed: bool, seq: u64| {
+            from_sam(&Message::Input {
+                seq,
+                sent_at_us: seq * 1_000,
+                after: 0,
+                event: protocol::InputEvent::Key {
+                    code: code.into(),
+                    pressed,
+                    text: None,
+                },
+            })
+        };
+        let events = control_thread_in(injector, true, false, |handle, tx| {
+            handle.trust(SAM.into());
+            tx.send(from_sam(&Message::RequestControl)).unwrap();
+            tx.send(typed("ShiftLeft", true, 1)).unwrap();
+            let (tx, gone) = (tx.clone(), gone.clone());
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(200));
+                gone.store(true, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(200));
+                // Late input, a new request and a trust: none of it does anything.
+                let _ = tx.send(typed("KeyA", true, 2));
+                let _ = tx.send(from_sam(&Message::RequestControl));
+                std::thread::sleep(Duration::from_millis(100));
+                let _ = tx.send(In::Stop);
+            });
+        });
+        let controlling = events
+            .iter()
+            .position(|e| {
+                matches!(
+                    e,
+                    Event::Control {
+                        state: ControlState::Controlling,
+                        ..
+                    }
+                )
+            })
+            .expect("Sam had control");
+        let none = Event::Control {
+            state: ControlState::None,
+            by: None,
+            trusted: vec![],
+        };
+        assert!(events[controlling..].contains(&none), "{events:?}");
+        let gone_sentence = "The shared display is gone, so control isn't available.";
+        let told = events
+            .iter()
+            .filter(|e| matches!(e, Event::Error { message } if message == gone_sentence))
+            .count();
+        assert_eq!(
+            told, 2,
+            "once when it went, once for the later request: {events:?}"
+        );
+        assert!(!asked(&events), "{events:?}");
+        // Shift went down while the display was there, and came up when control was taken
+        // back. Nothing after.
+        let key = |code: &str, pressed| control::Action::Key {
+            code: code.into(),
+            pressed,
+        };
+        assert_eq!(
+            *actions.lock().unwrap(),
+            [key("ShiftLeft", true), key("ShiftLeft", false)]
+        );
     }
 
     #[test]

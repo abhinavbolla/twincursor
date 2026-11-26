@@ -32,7 +32,10 @@
 # Needs `livekit-server --dev` running, jq, swiftc, and a release build:
 #   cargo build --release -p twincursor-engine-cli -p twincursor-media-spike
 # Usage: bench/engine-e2e.sh   (BIN=path/to/tc-engine SPIKE=path/to/tc-spike to use other builds)
-# Nothing needs Screen Recording, a microphone or an unlocked screen.
+# Last, one window shared with --allow-control: every request is turned down with the reason
+# both sides see, every trust is refused with it, and nothing is injected. That part captures a
+# real window (headless: nothing opens) and is skipped without Screen Recording. Nothing else
+# needs Screen Recording, a microphone or an unlocked screen.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -594,6 +597,56 @@ wrong() {
 }
 wrong share "$guest_pass" "This pass is for a guest; it can't be used to share."
 wrong view "$sharer_pass" "This pass is for the sharer; it can't be used to view."
+
+echo "=== one window shared: control is never given (needs Screen Recording; skipped without it)"
+# Captured headless: nothing opens, nothing is saved, and nothing leaves this Mac. WINDOW=<id>
+# picks the window (see `tc-engine windows`); by default a Finder or terminal window if there is
+# one, else the smallest.
+win=${WINDOW:-$("$BIN" windows 2>/dev/null | jq -r '
+  (map(select(.app | test("^(Finder|Terminal|iTerm2|Ghostty|WezTerm)$"))) | min_by(.pixels[0] * .pixels[1]))
+  // min_by(.pixels[0] * .pixels[1]) | .id // empty' 2>/dev/null || true)}
+if [[ -z $win ]]; then
+  echo "  skipped: no window to share (is Screen Recording off for this terminal?)"
+else
+  room="e2e-window-$$"
+  WS=$OUT/window-share.jsonl WV=$OUT/window-view.jsonl
+  one_window="Control isn't available while one window is shared."
+  mkfifo "$OUT/window-share.in" "$OUT/window-view.in"
+  "$BIN" share --ipc --audio off --room "$room" --name Alex --window "$win" --resolution 720 \
+    --allow-control --inject "record:$OUT/window-actions.jsonl" --headless \
+    <"$OUT/window-share.in" >"$WS" 2>"$OUT/window-share.log" &
+  wsharer=$!
+  pids+=("$wsharer")
+  exec 3>"$OUT/window-share.in"
+  check "$WS" '.event == "connection" and .state == "connected"' "a share of window $win connects with --allow-control"
+  "$BIN" view --ipc --audio off --room "$room" --name Sam --headless \
+    <"$OUT/window-view.in" >"$WV" 2>"$OUT/window-view.log" &
+  wviewer=$!
+  pids+=("$wviewer")
+  exec 4>"$OUT/window-view.in"
+  check "$WS" '.event == "participants" and (.participants | any(.name == "Sam" and .role == "guest"))' "the sharer sees Sam"
+  wguest=$(first "$WS" '.event == "participants" and (.participants | any(.name == "Sam"))' | jq -r '.participants[] | select(.name == "Sam") | .identity')
+  echo '{"cmd":"request_control"}' >&4
+  check "$WV" ".event == \"error\" and .message == \"$one_window\"" "the guest is told: $one_window"
+  check "$WS" ".event == \"error\" and .message == \"$one_window\"" "so is the sharer's app"
+  echo "{\"cmd\":\"trust_control\",\"identity\":\"$wguest\"}" >&3
+  echo "{\"cmd\":\"trust_on_arrival\",\"identity\":\"guest-later\"}" >&3
+  echo '{"cmd":"request_control"}' >&4
+  if wait_count "$WS" ".event == \"error\" and .message == \"$one_window\"" 4; then
+    pass "trust_control, trust_on_arrival and a second request: the same sentence each"
+  else
+    fail "expected the sentence four times on the sharer, got $(count "$WS" ".event == \"error\" and .message == \"$one_window\"")"
+  fi
+  sleep 1
+  [[ $(count "$WS" '.event == "control_asked"') -eq 0 ]] && pass "nobody is asked" || fail "the app was asked"
+  [[ $(count "$WS" '.event == "control" and .state == "controlling"') -eq 0 && $(count "$WV" '.event == "control" and .state == "controlling"') -eq 0 ]] \
+    && pass "nobody ever controls" || fail "someone got control of a window share"
+  [[ ! -s $OUT/window-actions.jsonl ]] && pass "nothing was injected" || fail "actions recorded: $(head -3 "$OUT/window-actions.jsonl")"
+  echo '{"cmd":"leave"}' >&4
+  echo '{"cmd":"leave"}' >&3
+  check "$WS" '.event == "ended" and .reason == "left"' "the window share ended"
+  exec 3>&- 4>&-
+fi
 
 if [[ $failed -eq 0 ]]; then echo "engine-e2e: PASS"; else echo "engine-e2e: FAIL (events and logs in $OUT)"; fi
 exit $failed

@@ -385,6 +385,18 @@ fn run(
                         }
                         if session.on_message(&message) {
                             tracing::info!(?message, state = ?session.state(), "sharer answered");
+                            // A turn-down that isn't the sharer's choice says why: show it.
+                            if let Message::Deny {
+                                reason: Some(reason),
+                            } = &message
+                            {
+                                tracing::warn!("control turned down: {reason}");
+                                if let Some(app) = app.as_ref() {
+                                    (app.events)(Event::Error {
+                                        message: reason.clone(),
+                                    });
+                                }
+                            }
                         }
                     }
                     Err(e) => tracing::debug!("bad control message: {e}"),

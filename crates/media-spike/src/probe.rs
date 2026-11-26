@@ -5,8 +5,9 @@
 //! loop on real injection: guest → network → sharer → CGEvent → macOS → this window.
 //!
 //! Real input lands wherever it lands, so the window must be where it goes before any is sent.
-//! It covers the display the injector targets ([`control::macos::input_display`], the injector's
-//! own answer), and its first record says so: `{"ready": true, …}` once it is the key window of
+//! It covers the display the injector targets: the share's display, the main one unless
+//! `--display` names another, as `share --display` does ([`engine::screen::choose`], the same
+//! answer the share gets). Its first record says so: `{"ready": true, …}` once it is the key window of
 //! the frontmost app, on that display and covering it, and has stayed so for a moment. If that
 //! doesn't happen within `--ready-timeout` it records `not_ready` and exits non-zero. After
 //! that it keeps checking, and records `lost_focus` the moment any of it stops being true.
@@ -40,6 +41,9 @@ pub struct ProbeArgs {
     /// Give up (and exit non-zero) if the window isn't ready this many seconds after it opens.
     #[arg(long, default_value_t = 6)]
     ready_timeout: u64,
+    /// The display the sharer shares (`share --display`), if not the main one.
+    #[arg(long)]
+    display: Option<u32>,
 }
 
 /// How long everything has to hold before the window says it is ready: a full-screen window
@@ -208,7 +212,7 @@ impl Readiness {
 }
 
 pub fn run(args: ProbeArgs) -> anyhow::Result<()> {
-    let target = target_display()?;
+    let target = target_display(args.display)?;
     let event_loop = EventLoop::new()?;
     let opened = Instant::now();
     let mut probe = Probe {
@@ -234,19 +238,18 @@ pub fn run(args: ProbeArgs) -> anyhow::Result<()> {
 /// The display input goes to: the injector's own answer. A probe anywhere else proves nothing
 /// and puts real input on whatever is under it, so it refuses to start instead.
 #[cfg(target_os = "macos")]
-fn target_display() -> anyhow::Result<Display> {
+fn target_display(requested: Option<u32>) -> anyhow::Result<Display> {
     if control::macos::screen_is_locked() {
         anyhow::bail!("the screen is locked: unlock it first (nothing is injected while it is)");
     }
-    control::macos::input_display().map_err(|e| {
-        anyhow::anyhow!(
-            "can't tell which display input would go to ({e}), so no test window was opened"
-        )
-    })
+    // The pattern's rule: the display, not whether it can be captured. A share that got this
+    // far could capture it.
+    engine::screen::choose(media::capture::Backend::Pattern, requested)
+        .map_err(|e| anyhow::anyhow!("{e} (where input would go), so no test window was opened"))
 }
 
 #[cfg(not(target_os = "macos"))]
-fn target_display() -> anyhow::Result<Display> {
+fn target_display(_: Option<u32>) -> anyhow::Result<Display> {
     anyhow::bail!("the input probe is macOS only for now")
 }
 
