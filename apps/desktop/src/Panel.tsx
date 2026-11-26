@@ -8,28 +8,25 @@ import type { Bridge } from "./bridge";
 import type { CallState } from "./call";
 import { copyText } from "./clipboard";
 import type { HomeView } from "./home";
-import { BackIcon, Mark, MoreIcon } from "./icons";
+import { Mark, MoreIcon } from "./icons";
 import { Menu, type MenuItem } from "./Menu";
 import { forget, type ShownLine } from "./notices";
 import { panelModel, type MeView, type PanelMain, type PersonRow, type RingCard } from "./panelModel";
-import { SettingsPanel } from "./Settings";
 import { useCall, useHome } from "./useSurface";
 
 /** How long "Copied" shows after a copy. */
 export const COPIED_MS = 2000;
 
-export function PanelSurface({ bridge, settings = false, menuOpen = false }: { bridge: Bridge; settings?: boolean; menuOpen?: boolean }) {
+export function PanelSurface({ bridge, menuOpen = false }: { bridge: Bridge; menuOpen?: boolean }) {
   const home = useHome(bridge);
   const call = useCall(bridge);
-  return <Panel bridge={bridge} home={home} call={call} settings={settings} menuOpen={menuOpen} />;
+  return <Panel bridge={bridge} home={home} call={call} menuOpen={menuOpen} />;
 }
 
 interface Props {
   bridge: Bridge;
   home: HomeView | null;
   call: CallState;
-  /** Opens on the Settings page (the dev page's `settings` state). */
-  settings?: boolean;
   /** Opens with the account menu open (the dev page's `out-menu` state). */
   menuOpen?: boolean;
 }
@@ -37,8 +34,7 @@ interface Props {
 /** A flow's refusal, as the sentence the Rust side gave. */
 const sentence = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-export function Panel({ bridge, home, call, settings = false, menuOpen = false }: Props) {
-  const [page, setPage] = useState<"home" | "settings">(settings ? "settings" : "home");
+export function Panel({ bridge, home, call, menuOpen = false }: Props) {
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
@@ -98,27 +94,11 @@ export function Panel({ bridge, home, call, settings = false, menuOpen = false }
       .finally(() => setSharing(false));
   };
 
+  const signedIn = model.kind === "home";
   const menuItems: MenuItem[] = [
-    { label: "Settings…", run: () => setPage("settings") },
-    ...(model.kind === "home" ? [{ label: "Sign out", run: () => run(() => bridge.signOut()) }] : []),
-    { label: "Quit TwinCursor", run: () => void bridge.quit(), separated: true },
+    ...(signedIn ? [{ label: "Sign out", run: () => run(() => bridge.signOut()) }] : []),
+    { label: "Quit TwinCursor", run: () => void bridge.quit(), separated: signedIn },
   ];
-
-  if (page === "settings") {
-    return (
-      <div className="surface panel">
-        <header className="panel-head">
-          <button type="button" className="icon-button back" aria-label="Back" title="Back" onClick={() => setPage("home")}>
-            <BackIcon />
-          </button>
-          <h1 className="panel-title">Settings</h1>
-        </header>
-        <div className="panel-scroll panel-settings">
-          <SettingsPanel bridge={bridge} inCall={call.phase === "in_call"} />
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="surface panel">

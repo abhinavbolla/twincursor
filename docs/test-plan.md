@@ -34,7 +34,7 @@ Mark each line pass or fail. For a fail, note what happened, and copy the number
 |---|---|---|
 | 2.1 | **Sign in with GitHub** | The browser opens GitHub; the panel says "Finish signing in in your browser…" and stays open |
 | 2.2 | Approve the app on GitHub | The tab says "You're signed in. You can close this tab."; the panel shows your picture and **Share my screen** |
-| 2.3 | Click your picture | Your name and @handle, **Settings…**, **Sign out**, **Quit TwinCursor** |
+| 2.3 | Click your picture | Your name and @handle, **Sign out**, **Quit TwinCursor** |
 | 2.4 | Quit and reopen the app | Still signed in |
 | 2.5 | Start a sign-in, then **Cancel** | Back to **Sign in with GitHub** |
 | 2.6 | **Sign out**, then sign in again | Signed out at once; signing in works |

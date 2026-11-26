@@ -75,8 +75,8 @@ when they show is decided in `surfaces.rs`, as plain tested functions).
 | Server problem | A muted line pinned to the bottom |
 
 The header holds the mark, "TwinCursor" and your avatar, which opens: your name and @handle,
-**Settings…** (the server settings, as a second page with a back arrow), **Sign out** and
-**Quit TwinCursor**. Signed out, a More button opens the same menu without Sign out.
+**Sign out** and **Quit TwinCursor**. Signed out, a More button opens a menu with only **Quit
+TwinCursor**. There is no Settings page: the server comes with the call pass.
 
 ## The call bar
 
@@ -147,7 +147,7 @@ Sections under the row:
 `npm run dev` in `apps/desktop`, then open `http://localhost:5173/` with:
 
 - `?view=panel&state=<name>`: `off`, `out`, `out-menu`, `signing`, `home`, `empty`, `many`, `ring`, `rings`,
-  `needs`, `starting`, `hosting`, `knocking`, `joined`, `error`, `settings`, `offline`
+  `needs`, `starting`, `hosting`, `knocking`, `joined`, `error`, `offline`
 - `?view=bar&state=<name>`: `alone`, `knock`, `knock2`, `knock-nohandle`, `with`, `trusted`,
   `controlling`, `asked`, `needs`, `menu`, `notice`, `g-knocking`, `g-watching`, `g-asked`,
   `g-controlling`, `reconnecting`, `muted`, `long-trusted`, `long-controlling`,

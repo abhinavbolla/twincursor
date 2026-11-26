@@ -19,8 +19,6 @@ export interface Scenario {
   outputs: EngineOutput[];
   /** Bar: the menu section starts open. Panel: the account menu does. */
   menu?: boolean;
-  /** Panel: opens on the Settings page. */
-  settings?: boolean;
 }
 
 // ---------------------------------------------------------------- people
@@ -226,7 +224,6 @@ export const SCENARIOS: readonly Scenario[] = [
   panel("knocking", "Waiting to be let in", guestHome({ kind: "knocking", host: ALEX })),
   panel("joined", "In Alex's call", guestHome({ kind: "joined", host: ALEX }), watching()),
   panel("error", "A paste that wasn't a link", homeView({ error: "That isn't a TwinCursor call link." })),
-  { ...panel("settings", "The Settings page", homeView()), settings: true },
   panel("offline", "The server can't be reached", homeView({ server_problem: "Can't reach the server." })),
 
   bar("alone", "Sharing, nobody yet", hosting(), boot("share")),

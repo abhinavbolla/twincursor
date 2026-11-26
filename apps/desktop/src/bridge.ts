@@ -22,31 +22,6 @@ export interface EngineInfo {
   app_pid: number;
 }
 
-/** The server overrides, as the window may see them: whether a secret is saved, never what. */
-export interface SettingsView {
-  url: string | null;
-  api_key: string | null;
-  has_secret: boolean;
-}
-
-export type SecretChange = { do: "keep" } | { do: "clear" } | { do: "set"; value: string };
-
-export interface SettingsChange {
-  url: string | null;
-  api_key: string | null;
-  api_secret: SecretChange;
-}
-
-/** `tc-engine config`: the server the build names, or the local dev server. */
-export interface EngineConfig {
-  url: string;
-  api_key: string;
-  has_secret: boolean;
-  /** A call pass is in the engine's environment, so a call would use it, not the key. */
-  has_pass: boolean;
-  source: string;
-}
-
 export interface Bridge {
   engineInfo(): Promise<EngineInfo>;
   send(command: EngineCommand): Promise<void>;
@@ -54,9 +29,6 @@ export interface Bridge {
   /** A fresh `tc-engine permissions` (with `request`, asks macOS for what's missing). */
   permissions(request: boolean): Promise<unknown>;
   openPane(name: PermissionName): Promise<void>;
-  readSettings(): Promise<SettingsView>;
-  saveSettings(change: SettingsChange): Promise<SettingsView>;
-  engineConfig(): Promise<EngineConfig>;
   /** Who is signed in. Never a token: the Rust side keeps the session. */
   accountState(): Promise<AccountState>;
   /** Opens GitHub sign-in in the browser; resolves once signed in, rejects with a sentence. */
@@ -138,9 +110,6 @@ function tauriBridge(): Bridge {
     leave: () => invoke<void>("leave_call"),
     permissions: (request) => invoke<unknown>("permissions", { request }),
     openPane: (pane) => invoke<void>("open_settings_pane", { pane }),
-    readSettings: () => invoke<SettingsView>("read_settings"),
-    saveSettings: (change) => invoke<SettingsView>("save_settings", { change }),
-    engineConfig: () => invoke<EngineConfig>("engine_config"),
     accountState: () => invoke<unknown>("account_state").then(accountAnswer),
     signIn: () => invoke<unknown>("sign_in").then(accountAnswer),
     cancelSignIn: () => invoke<void>("cancel_sign_in"),

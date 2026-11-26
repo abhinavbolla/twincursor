@@ -133,10 +133,10 @@ hotkey, the on-screen label, and real input on macOS.*
   person, until it expires. The engine takes it only from its environment (never a flag, which
   other users can read), holds it there for the life of the call, and never logs it or puts it
   in an event or error. Keep passes short-lived.
-- **Server settings in the desktop app.** Overrides typed into Settings are saved in the app's
-  config folder, readable only by your user, and passed to the engine in its environment rather
-  than its flags (other users can read a process's flags). The window never gets the saved
-  secret back.
+- **No server secrets in the desktop app.** The app has no field for a LiveKit key or secret:
+  calls take their server from the call pass. A settings file from an earlier version that holds
+  server overrides still loads, but they are ignored and left out the next time the file is
+  saved.
 - **Your account session is a bearer credential.** Signing in leaves a Supabase session (an
   access token that lasts an hour and a refresh token that renews it) in `session.json` in the
   app's config folder, readable and writable by your user only and replaced atomically. Anyone who

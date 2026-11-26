@@ -74,7 +74,7 @@ comes from the first of:
 4. the local dev server (`livekit-server --dev`).
 
 Prefer the environment for the secret: other users of the Mac can read a process's flags. The
-desktop app passes its saved overrides that way. The secret is only used to sign the access
+desktop app passes the server and the call pass that way. The secret is only used to sign the access
 token and is never logged. `tc-engine config` prints the URL and key a call would use, whether a
 secret other than the dev server's is in effect (`has_secret`), whether a call pass is in its
 environment (`has_pass`: then a call would use the pass), and where the URL came from (`source`:

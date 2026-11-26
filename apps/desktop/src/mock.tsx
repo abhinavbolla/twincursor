@@ -13,7 +13,7 @@
 // call ending on the server, the server going away, and a permission that is missing.
 
 import type { AccountState } from "./accountState";
-import type { Bridge, EngineConfig, LoadedBridge, SettingsChange, SettingsView } from "./bridge";
+import type { Bridge, LoadedBridge } from "./bridge";
 import type { HomeView, Person } from "./home";
 import type { EngineCommand, EngineOutput, Participant, Plan } from "./ipc";
 import type { Access, PermissionName, PermissionStatus } from "./permissions";
@@ -60,11 +60,6 @@ class MockEngine {
     screen_recording: "not_granted",
     accessibility: "not_granted",
     microphone: "not_asked",
-  };
-  settings: { url: string | null; api_key: string | null; secret: string | null } = {
-    url: null,
-    api_key: null,
-    secret: null,
   };
 
   on(f: Listener): () => void {
@@ -722,18 +717,6 @@ export function createMock(params: URLSearchParams): LoadedBridge {
   const engine = new MockEngine();
   const account = new MockAccount(params.get("account"));
   const calls = new MockCalls(engine, () => account.snapshot());
-  const view = (): SettingsView => ({
-    url: engine.settings.url,
-    api_key: engine.settings.api_key,
-    has_secret: engine.settings.secret !== null,
-  });
-  const config: EngineConfig = {
-    url: "ws://localhost:7880",
-    api_key: "devkey",
-    has_secret: false,
-    has_pass: false,
-    source: "dev",
-  };
   const bridge: Bridge = {
     engineInfo: () =>
       Promise.resolve({ path: "(mock engine)", error: null, in_bundle: false, app_pid: 1 }),
@@ -766,19 +749,6 @@ export function createMock(params: URLSearchParams): LoadedBridge {
       console.info(`(mock) would open System Settings for ${name}`);
       return Promise.resolve();
     },
-    readSettings: () => Promise.resolve(view()),
-    saveSettings: (change: SettingsChange) => {
-      const filled = (v: string | null) => (v === null || v.trim() === "" ? null : v.trim());
-      engine.settings.url = filled(change.url);
-      engine.settings.api_key = filled(change.api_key);
-      if (change.api_secret.do === "clear") {
-        engine.settings.secret = null;
-      } else if (change.api_secret.do === "set") {
-        engine.settings.secret = filled(change.api_secret.value);
-      }
-      return Promise.resolve(view());
-    },
-    engineConfig: () => Promise.resolve(config),
     accountState: () => account.get(),
     signIn: () => account.signIn(),
     cancelSignIn: () => account.cancel(),

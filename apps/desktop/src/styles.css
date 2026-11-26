@@ -150,70 +150,6 @@ code,
   line-height: 16px;
 }
 
-/* ---------------------------------------------------------------- settings card */
-
-.card {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  box-shadow: var(--shadow);
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-/* ---------------------------------------------------------------- fields */
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  border: 0;
-  margin: 0;
-  padding: 0;
-  min-width: 0;
-}
-
-.field > span,
-.field > label {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--fg-2);
-  padding: 0;
-}
-
-input:not([type]),
-input[type="password"] {
-  font: inherit;
-  height: 36px;
-  padding: 0 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--raised);
-  color: var(--fg);
-  min-width: 0;
-  transition:
-    border-color 140ms var(--ease),
-    background-color 140ms var(--ease);
-}
-
-input::placeholder {
-  color: var(--muted);
-}
-
-input:not([type]):hover,
-input[type="password"]:hover {
-  border-color: var(--line-strong);
-}
-
 /* ---------------------------------------------------------------- buttons */
 
 button {
@@ -243,7 +179,6 @@ button:active:not(:disabled) {
 }
 
 button:focus-visible,
-input:focus-visible,
 summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -598,10 +533,6 @@ button.icon-button.muted:hover:not(:disabled) {
   flex-shrink: 0;
 }
 
-.panel-head:has(.back) {
-  padding-left: 4px;
-}
-
 .panel-brand {
   display: flex;
   align-items: center;
@@ -615,11 +546,6 @@ button.icon-button.muted:hover:not(:disabled) {
   width: 16px;
   height: 16px;
   color: var(--accent);
-}
-
-.panel-title {
-  font-size: 13px;
-  font-weight: 600;
 }
 
 .avatar-button {
@@ -833,21 +759,6 @@ button.icon-button.muted:hover:not(:disabled) {
   font-size: 12px;
   line-height: 16px;
   color: var(--muted);
-}
-
-.panel-scroll {
-  overflow-y: auto;
-  min-height: 0;
-}
-
-/* The window's settings card, laid flat inside the panel. */
-.panel-settings .card {
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-  background: transparent;
-  padding: 16px;
-  gap: 12px;
 }
 
 /* ---------------------------------------------------------------- menus */
@@ -1335,8 +1246,6 @@ button.menu-item.separated::before {
   cursor: default;
 }
 
-.in-window input,
-.in-window textarea,
 .in-window code {
   -webkit-user-select: text;
   user-select: text;

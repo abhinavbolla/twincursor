@@ -7,7 +7,7 @@
 //! `calls.rs` runs calls with accounts (sharing, joining by link, letting in, ringing) and owns
 //! the engine of every call; `engine.rs` starts and stops the engine and reads its events;
 //! `windows.rs` makes the windows and the menu bar icon and decides when they show (with
-//! `surfaces.rs`, `native.rs` and `mark.rs`); `settings.rs` keeps the server overrides;
+//! `surfaces.rs`, `native.rs` and `mark.rs`); `settings.rs` keeps where the bar was left;
 //! `accounts.rs` signs in and out (`backend.rs` says where); `script.rs` is the test-only
 //! `--script` mode. This file connects them.
 
@@ -40,7 +40,6 @@ use engine::{Output, Quality, Sink, TestHooks};
 use seams::{
     EnginePermits, MemoryClipboard, RealEngines, ScriptPermits, SystemClipboard, SystemClock,
 };
-use settings::{Settings, SettingsChange, SettingsView};
 use surfaces::Hold;
 use windows::{HeldPermits, Windows};
 
@@ -64,10 +63,6 @@ fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
         .app_config_dir()
         .map(|dir| dir.join("settings.json"))
         .map_err(|e| format!("No settings folder: {e}."))
-}
-
-fn load_settings(app: &AppHandle) -> Result<Settings, String> {
-    Settings::load(&settings_path(app)?)
 }
 
 #[tauri::command]
@@ -200,24 +195,7 @@ async fn permissions(request: bool) -> Result<Value, String> {
         } else {
             &["permissions"]
         };
-        engine::run_once(&exe, args, &[], &[])
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-/// The server the engine uses when nothing is overridden: what the build baked in, or the local
-/// dev server. Never the secret.
-#[tauri::command]
-async fn engine_config() -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let exe = engine::engine_path()?;
-        engine::run_once(
-            &exe,
-            &["config"],
-            &[],
-            &[settings::URL_ENV, settings::KEY_ENV, settings::SECRET_ENV],
-        )
+        engine::run_once(&exe, args)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -253,21 +231,6 @@ fn open_settings_pane(pane: Pane) -> Result<(), String> {
         let _ = pane;
         Err("Permissions are only needed on macOS.".into())
     }
-}
-
-#[tauri::command]
-fn read_settings(app: AppHandle) -> Result<SettingsView, String> {
-    Ok(load_settings(&app)?.view())
-}
-
-/// Saves overrides. The answer says whether a secret is set, never what it is.
-#[tauri::command]
-fn save_settings(app: AppHandle, change: SettingsChange) -> Result<SettingsView, String> {
-    let path = settings_path(&app)?;
-    let mut settings = Settings::load(&path)?;
-    settings.apply(change);
-    settings.save(&path)?;
-    Ok(settings.view())
 }
 
 #[tauri::command]
@@ -549,10 +512,7 @@ fn main() {
             send_command,
             leave_call,
             permissions,
-            engine_config,
             open_settings_pane,
-            read_settings,
-            save_settings,
             account_state,
             sign_in,
             cancel_sign_in,
