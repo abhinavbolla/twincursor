@@ -1,3 +1,5 @@
+<img src="apps/desktop/src-tauri/icons/128x128@2x.png" width="96" alt="TwinCursor icon">
+
 # TwinCursor
 
 [![CI](https://github.com/abhinavbolla/twincursor/actions/workflows/ci.yml/badge.svg)](https://github.com/abhinavbolla/twincursor/actions/workflows/ci.yml)
