@@ -9,7 +9,7 @@ import type { ComponentType } from "react";
 
 import { parseAccountState, type AccountState } from "./accountState";
 import { parseHomeView, type HomeView } from "./home";
-import type { EngineCommand, EngineOutput, Plan } from "./ipc";
+import type { EngineCommand, EngineOutput } from "./ipc";
 import { parseOutput } from "./ipc";
 import type { PermissionName } from "./permissions";
 
@@ -49,7 +49,6 @@ export interface EngineConfig {
 
 export interface Bridge {
   engineInfo(): Promise<EngineInfo>;
-  startCall(plan: Plan): Promise<void>;
   send(command: EngineCommand): Promise<void>;
   leave(): Promise<void>;
   /** A fresh `tc-engine permissions` (with `request`, asks macOS for what's missing). */
@@ -135,7 +134,6 @@ export function snapshotAnswer(value: unknown): EngineOutput[] {
 function tauriBridge(): Bridge {
   return {
     engineInfo: () => invoke<EngineInfo>("engine_info"),
-    startCall: (plan) => invoke<void>("start_call", { plan }),
     send: (command) => invoke<void>("send_command", { command }),
     leave: () => invoke<void>("leave_call"),
     permissions: (request) => invoke<unknown>("permissions", { request }),

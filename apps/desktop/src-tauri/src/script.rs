@@ -43,6 +43,11 @@ pub struct Script {
     /// Quit the app once the steps are done. Otherwise it stays, as a person's would.
     #[serde(default)]
     pub quit: bool,
+    /// Show the windows as a person would see them (the call bar during the call, the menu bar
+    /// icon), never focused, for pictures. Off by default: the windows exist but stay hidden,
+    /// and arming counts from delivery, as nothing is on screen to count from.
+    #[serde(default)]
+    pub windows: bool,
 }
 
 /// A share on the synthetic pattern, voice off. Where recorded input goes is required: a script
@@ -781,6 +786,12 @@ mod tests {
         assert!(script.plan().is_none());
         assert_eq!(script.quality(), Quality::K4);
         assert_eq!(script.hooks().inject_record, Some("/tmp/b.jsonl".into()));
+        assert!(!script.windows, "windows stay hidden unless asked for");
+        let shown: Script = serde_json::from_str(
+            r#"{"accounts":{"inject_record":"/tmp/b.jsonl"},"steps":[],"windows":true}"#,
+        )
+        .unwrap();
+        assert!(shown.windows);
         let both: Script = serde_json::from_str(
             r#"{"call":{"room":"r","name":"A","quality":"4k","inject_record":"/a"},"accounts":{"inject_record":"/b"},"steps":[]}"#,
         )

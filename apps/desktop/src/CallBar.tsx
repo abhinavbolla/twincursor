@@ -8,7 +8,7 @@ import { Avatar, Faces, Keys, NoticeRow, PhraseLine } from "./bits";
 import type { Bridge } from "./bridge";
 import { barModel, type AskCard, type KnockCard, type MenuView, type RowOp } from "./barModel";
 import { numbersReport, type CallState } from "./call";
-import { ALLOW_AFTER_MS } from "./CallScreen";
+import { ALLOW_AFTER_MS } from "./arming";
 import { copyText } from "./clipboard";
 import { allowControl, denyControl, mute, releaseControl, requestControl, revokeControl, unmute } from "./commands";
 import type { HomeView } from "./home";
@@ -101,7 +101,7 @@ export function CallBar({ bridge, home, call, menuOpen }: Props) {
   if (model.kind === "none") {
     return (
       <div className="surface bar">
-        <div className="bar-row">
+        <div className="bar-row" data-tauri-drag-region="deep">
           <span className="dot off" aria-hidden="true" />
           <span className="bar-line muted">Not in a call</span>
         </div>
@@ -136,7 +136,7 @@ export function CallBar({ bridge, home, call, menuOpen }: Props) {
 
   return (
     <div className={`surface bar${model.live ? " live" : ""}`}>
-      <div className="bar-row">
+      <div className="bar-row" data-tauri-drag-region="deep">
         <span className={`dot ${model.dot}`} role="img" aria-label={model.dotLabel} title={model.dotLabel} />
         <Faces faces={model.faces} extra={model.extra} />
         <PhraseLine phrase={model.line} className="bar-line" />

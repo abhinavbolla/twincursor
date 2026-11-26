@@ -1625,3 +1625,40 @@ button.menu-item.separated::before {
   border-radius: 12px;
   border: 1px solid var(--line);
 }
+
+/* ================================================================ in a window
+ * Inside the app each surface is its own native window (`in-window`, set by main.tsx), and the
+ * window brings the rounded corners, the hairline and the shadow. So the surface fills it edge
+ * to edge and draws none of its own, and the page behind it is the surface's colour, so nothing
+ * else shows at the corners. The dev page keeps the free-floating look above.
+ */
+
+.in-window,
+.in-window body {
+  background: var(--float);
+}
+
+.in-window body {
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+.in-window input,
+.in-window textarea,
+.in-window code {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.in-window .surface {
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* Someone is controlling this Mac. A hairline drawn inside the window's edge would be cut off by
+   its rounded corners (their radius differs between macOS versions), so in a window the row's
+   wash, the keycaps and Take back carry the state. */

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "bar",
+  "description": "The call bar may be dragged by its row (data-tauri-drag-region).",
+  "windows": ["bar"],
+  "permissions": ["core:window:allow-start-dragging"]
+}
