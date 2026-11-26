@@ -1,0 +1,74 @@
+import { describe, expect, it } from "vitest";
+
+import { accountView, parseAccountState, safeAvatar, type AccountState } from "./accountState";
+
+const signedIn: AccountState = {
+  configured: true,
+  signed_in: true,
+  me: {
+    id: "u1",
+    name: "Alex",
+    handle: "alex",
+    avatar_url: "https://avatars.githubusercontent.com/u/1?v=4",
+  },
+  signing_in: false,
+};
+
+describe("account", () => {
+  it("reads account_state", () => {
+    expect(parseAccountState(signedIn)).toEqual(signedIn);
+    expect(
+      parseAccountState({ configured: false, signed_in: false, me: null, signing_in: false }),
+    ).toEqual({ configured: false, signed_in: false, me: null, signing_in: false });
+    expect(parseAccountState(null)).toBeNull();
+    expect(parseAccountState({ configured: "yes", signed_in: false, me: null, signing_in: false })).toBeNull();
+    expect(parseAccountState({ ...signedIn, me: { id: 1, name: "Alex" } })).toBeNull();
+  });
+
+  it("shows nothing when no backend is set up", () => {
+    expect(accountView(null, false)).toEqual({ kind: "hidden" });
+    expect(
+      accountView({ configured: false, signed_in: false, me: null, signing_in: false }, true),
+    ).toEqual({ kind: "hidden" });
+  });
+
+  it("offers sign-in, then waits for the browser", () => {
+    const out: AccountState = { configured: true, signed_in: false, me: null, signing_in: false };
+    expect(accountView(out, false)).toEqual({ kind: "signed_out" });
+    expect(accountView(out, true)).toEqual({ kind: "waiting" });
+    expect(accountView({ ...out, signing_in: true }, false)).toEqual({ kind: "waiting" });
+  });
+
+  it("shows who is signed in", () => {
+    expect(accountView(signedIn, false)).toEqual({
+      kind: "signed_in",
+      name: "Alex",
+      handle: "alex",
+      avatar: "https://avatars.githubusercontent.com/u/1?v=4",
+    });
+    // The profile can't be read yet (offline): still signed in.
+    expect(accountView({ ...signedIn, me: null }, false)).toEqual({
+      kind: "signed_in",
+      name: "Signed in",
+      handle: null,
+      avatar: null,
+    });
+  });
+
+  it("loads avatars from GitHub's avatar host only", () => {
+    expect(safeAvatar("https://avatars.githubusercontent.com/u/1?v=4")).toBe(
+      "https://avatars.githubusercontent.com/u/1?v=4",
+    );
+    for (const bad of [
+      "http://avatars.githubusercontent.com/u/1",
+      "https://avatars.githubusercontent.com.example.test/u/1",
+      "https://example.test/a.png",
+      "javascript:alert(1)",
+      "data:image/png;base64,AAAA",
+      "not a url",
+    ]) {
+      expect(safeAvatar(bad)).toBeNull();
+    }
+    expect(safeAvatar(null)).toBeNull();
+  });
+});

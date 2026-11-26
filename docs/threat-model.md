@@ -116,6 +116,29 @@ hotkey, the on-screen label, and real input on macOS.*
   config folder, readable only by your user, and passed to the engine in its environment rather
   than its flags (other users can read a process's flags). The window never gets the saved
   secret back.
+- **Your account session is a bearer credential.** Signing in leaves a Supabase session (an
+  access token that lasts an hour and a refresh token that renews it) in `session.json` in the
+  app's config folder, readable and writable by your user only and replaced atomically. Anyone who
+  can read that file can act as you on the backend until you sign out, which ends the session on
+  the server and deletes the file (even when the server can't be reached; an access token already
+  issued then still works until it expires, within the hour). Other users of the Mac can't read
+  it; software running as you can. Once builds are signed, the session moves to the Keychain; an
+  unsigned build would make macOS ask for Keychain access on every update. The window never
+  receives a token: it learns only whether you're signed in and your name, handle and picture.
+- **The sign-in callback listens on your machine for a few minutes.** During a sign-in, and only
+  then, the app listens on `127.0.0.1:53682` (never another interface) for the browser's return
+  from GitHub, for at most five minutes. Another program on your Mac could connect to it: it
+  could end the sign-in early by sending an error or a made-up code (you'd see "Sign-in didn't
+  finish" and try again), or take the port first so sign-in can't start (the app says the port is
+  taken). It can't sign you in as someone else or take your session: the code alone is useless,
+  because exchanging it needs the PKCE verifier, a random secret that never leaves the app's
+  memory and that the backend checks against the challenge sent at the start. The page the
+  listener answers with is fixed text, nothing from the request is echoed, and a provider's error
+  description is never shown.
+- **The backend's public key is not a secret.** A build can carry the Supabase project's URL and
+  its public (anon or publishable) key (`apps/desktop/src-tauri/build.rs`). Both are public by
+  design: they identify the project, and the database's row-level rules decide what each
+  signed-in person may do. No service key, LiveKit secret or GitHub secret is ever in the app.
 - **`tc-spike` isn't safe on untrusted networks.** It uses LiveKit's well-known development keys and
   an unencrypted `ws://` connection, so anyone who can reach the server can join. Real deployments
   need the server's own keys and TLS, which come with the self-hosting work.

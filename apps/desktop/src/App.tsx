@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useReducer, useState } from "react";
 
+import { AccountCard } from "./Account";
 import type { EngineInfo, LoadedBridge } from "./bridge";
 import { loadBridge } from "./bridge";
 import { callReducer, initialCall } from "./call";
@@ -109,6 +110,8 @@ function Window({ bridge, DevPanel }: LoadedBridge) {
       </header>
 
       {showSettings && <SettingsPanel bridge={bridge} inCall={inCall} />}
+
+      {!inCall && <AccountCard bridge={bridge} />}
 
       {info !== null && info.path === null && (
         <p className="banner bad" role="alert">

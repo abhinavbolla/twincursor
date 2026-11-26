@@ -40,6 +40,7 @@ crates/engine/    what owns the main thread: native viewer, sharer hotkeys and o
                   the control threads on both sides
 crates/media-spike/  tc-spike, the development CLI over engine and media
 crates/protocol/  shared message types (serde), versioned
+crates/account/   accounts: GitHub sign-in via Supabase Auth, session, backend calls; tc-account tool
 server/           Rust (axum) API: auth, rooms, LiveKit token issuing
 deploy/           docker compose for self-hosting (server + LiveKit + Postgres)
 docs/             product, architecture, roadmap, research, ADRs
@@ -123,6 +124,9 @@ Fill these in as code lands; keep them accurate.
 - Call passes: `TWINCURSOR_PASS=$(target/release/tc-engine dev-pass --room R --role sharer
   --name Alex) tc-engine share --ipc ...` joins with a pass instead of a key and secret (no
   `--room`/`--name`); `bench/engine-e2e.sh` runs a call both ways
+- Accounts end to end (local Supabase + LiveKit, no GitHub): `bench/account-e2e.sh` (needs
+  `supabase start`); by hand: `tc-account --session FILE sign-in|whoami|start-call|knock|pass …`
+  with `TWINCURSOR_SUPABASE_URL`/`_KEY` set (docs/accounts.md)
 - Releases: `docs/RELEASING.md`; a `v*` tag builds archives and a draft release
 - Desktop app (`apps/desktop`, Node 20.19+): `npm ci`, then `npm run build` (UI into `dist`,
   which the app crate embeds: build it before `cargo clippy/test --workspace`), `npm run

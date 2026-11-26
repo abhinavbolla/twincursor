@@ -18,6 +18,10 @@ tauri-build = { version = "2.7.4", features = [] }
 
 [dependencies]
 twincursor-ipc = { path = "../../../crates/ipc" }
+twincursor-account = { path = "../../../crates/account" }
 tauri = { version = "2.12.5", features = [] }
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
