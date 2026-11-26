@@ -6,6 +6,7 @@
 //   http://localhost:5173/?mock=join    starts a call as a guest
 //   add &quality=4k to share with HEVC, &voice=off for a call without voice
 //   add &account=off for a build without an account backend, &account=in to start signed in
+//   add &platform=windows for the Windows app: a guest, with no Share or Call
 //
 // The panel in the corner makes things happen: a control request, a guest without HEVC, an
 // error, a dropped connection, the engine crashing, and permissions changing; and for calls
@@ -17,6 +18,7 @@ import type { Bridge, LoadedBridge } from "./bridge";
 import type { HomeView, Person } from "./home";
 import type { EngineCommand, EngineOutput, Participant, Plan } from "./ipc";
 import type { Access, PermissionName, PermissionStatus } from "./permissions";
+import { CANT_SHARE, MAC, platformOfParams } from "./platform";
 
 type Listener = (output: EngineOutput) => void;
 
@@ -715,6 +717,7 @@ class MockAccount {
 
 export function createMock(params: URLSearchParams): LoadedBridge {
   const engine = new MockEngine();
+  const platform = platformOfParams(params) ?? MAC;
   const account = new MockAccount(params.get("account"));
   const calls = new MockCalls(engine, () => account.snapshot());
   const bridge: Bridge = {
@@ -774,7 +777,13 @@ export function createMock(params: URLSearchParams): LoadedBridge {
       console.info("(mock) would open the self-hosting guide");
       return Promise.resolve();
     },
+    platformInfo: () => Promise.resolve(platform),
   };
+  if (!platform.can_share) {
+    // As the Rust side does: nothing starts.
+    bridge.share = () => Promise.reject(new Error(CANT_SHARE));
+    bridge.ring = () => Promise.reject(new Error(CANT_SHARE));
+  }
   const role = params.get("mock");
   if (role === "share" || role === "join") {
     engine.pending = {

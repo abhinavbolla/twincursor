@@ -12,7 +12,8 @@ import { Mark, MoreIcon } from "./icons";
 import { Menu, type MenuItem } from "./Menu";
 import { forget, type ShownLine } from "./notices";
 import { panelModel, type MeView, type PanelMain, type PersonRow, type RingCard } from "./panelModel";
-import { useCall, useHome } from "./useSurface";
+import { MAC, signInLine, type PlatformInfo } from "./platform";
+import { useCall, useHome, usePlatform } from "./useSurface";
 
 /** How long "Copied" shows after a copy. */
 export const COPIED_MS = 2000;
@@ -20,7 +21,9 @@ export const COPIED_MS = 2000;
 export function PanelSurface({ bridge, menuOpen = false }: { bridge: Bridge; menuOpen?: boolean }) {
   const home = useHome(bridge);
   const call = useCall(bridge);
-  return <Panel bridge={bridge} home={home} call={call} menuOpen={menuOpen} />;
+  const platform = usePlatform(bridge);
+  // Nothing is drawn until the platform is known, so a Windows panel never flashes Share.
+  return <Panel bridge={bridge} home={platform === null ? null : home} call={call} menuOpen={menuOpen} platform={platform ?? MAC} />;
 }
 
 interface Props {
@@ -29,6 +32,7 @@ interface Props {
   call: CallState;
   /** Opens with the account menu open (the dev page's `out-menu` state). */
   menuOpen?: boolean;
+  platform?: PlatformInfo;
 }
 
 const NO_MEMBERS: HomeView["members"] = [];
@@ -36,7 +40,7 @@ const NO_MEMBERS: HomeView["members"] = [];
 /** A flow's refusal, as the sentence the Rust side gave. */
 const sentence = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-export function Panel({ bridge, home, call, menuOpen = false }: Props) {
+export function Panel({ bridge, home, call, menuOpen = false, platform = MAC }: Props) {
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
@@ -45,7 +49,7 @@ export function Panel({ bridge, home, call, menuOpen = false }: Props) {
   const [sharing, setSharing] = useState(false);
 
   const outcomes = useRingOutcomes(home?.members ?? NO_MEMBERS);
-  const model = panelModel(home, call, { dismissed, error, signingIn, outcomes });
+  const model = panelModel(home, call, { dismissed, error, signingIn, outcomes }, platform);
 
   /** Runs a flow; a refusal shows as the panel's one error line. */
   const run = useCallback((flow: () => Promise<unknown>) => {
@@ -152,7 +156,7 @@ export function Panel({ bridge, home, call, menuOpen = false }: Props) {
             </>
           ) : (
             <>
-              <p>Sign in to share your screen and call people.</p>
+              <p>{signInLine(platform)}</p>
               <button type="button" className="wide primary" onClick={() => void signIn()}>
                 Sign in with GitHub
               </button>
@@ -285,6 +289,27 @@ function Main(props: {
   act: (op: "end" | "cancel_knock") => void;
 }) {
   const main = props.main;
+  if (main.kind === "join") {
+    return (
+      <div className="panel-main">
+        <p className="hint center" role="note">
+          {main.note}
+        </p>
+        <button
+          type="button"
+          className={`wide${main.primary ? " primary" : ""}`}
+          aria-describedby="paste-hint"
+          disabled={main.busy}
+          onClick={props.paste}
+        >
+          Paste link
+        </button>
+        <p className="hint center" id="paste-hint">
+          Join with a link someone sent you
+        </p>
+      </div>
+    );
+  }
   if (main.kind === "share") {
     const busy = main.busy || props.sharing;
     return (

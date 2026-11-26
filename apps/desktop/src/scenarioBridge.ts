@@ -6,6 +6,7 @@ import type { Bridge } from "./bridge";
 import type { CallState } from "./call";
 import type { HomeView, Person } from "./home";
 import type { EngineCommand, EngineOutput } from "./ipc";
+import { MAC, CANT_SHARE, type PlatformInfo } from "./platform";
 import { ALEX, asGuest, asSharer, boot, guestIdentity, LINK, out, peer, type Scenario } from "./scenarios";
 import { replay } from "./useSurface";
 
@@ -13,7 +14,7 @@ import { replay } from "./useSurface";
  * A bridge over `base` (the mock, for everything else) whose home view and call
  * come from the scenario and change as the person clicks.
  */
-export function scenarioBridge(scenario: Scenario, base: Bridge): Bridge {
+export function scenarioBridge(scenario: Scenario, base: Bridge, platform: PlatformInfo = MAC): Bridge {
   let home: HomeView = scenario.home;
   let outputs: EngineOutput[] = [...scenario.outputs];
   let call: CallState = replay(outputs);
@@ -133,7 +134,11 @@ export function scenarioBridge(scenario: Scenario, base: Bridge): Bridge {
       setHome({ account, contacts: [] });
       return Promise.resolve(account);
     },
+    platformInfo: () => Promise.resolve(platform),
     share: () => {
+      if (!platform.can_share) {
+        return refuse(CANT_SHARE);
+      }
       if (home.stage.kind !== "idle") {
         return refuse("You're already in a call. Leave it first.");
       }
@@ -199,6 +204,9 @@ export function scenarioBridge(scenario: Scenario, base: Bridge): Bridge {
       return ok();
     },
     ring: (userId) => {
+      if (!platform.can_share) {
+        return refuse(CANT_SHARE);
+      }
       const contact = home.contacts.find((c) => c.id === userId);
       if (contact === undefined) {
         return refuse("You can only ring someone who has you as a contact too.");

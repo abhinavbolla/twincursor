@@ -9,6 +9,8 @@
 //   &frame=desktop                 over a busy pretend desktop, to judge legibility
 //   &theme=light | &theme=dark     instead of following the system
 //   &menu=1                        the panel's account menu or the bar's menu starts open
+//   &platform=windows              the Windows app: a guest, with no Share or Call, and the
+//                                  window's square edge with its hairline (with &window=1)
 //   &window=1                      as the native window shows it: edge to edge, in a frame of
 //                                  the height the window would be given (menus included)
 //
@@ -20,6 +22,7 @@ import type { Bridge } from "./bridge";
 import { CallBarSurface } from "./CallBar";
 import { observeHeight } from "./inWindow";
 import { createMock } from "./mock";
+import { MAC, platformOfParams } from "./platform";
 import { PanelSurface } from "./Panel";
 import { scenarioBridge } from "./scenarioBridge";
 import { findScenario, scenariosOf, type Scenario, type Surface } from "./scenarios";
@@ -112,6 +115,10 @@ function Toolbar({ params }: { params: URLSearchParams }) {
         {link("Desktop", { frame: "desktop" }, desktop)}
       </span>
       <span>
+        {link("Mac", { platform: null }, params.get("platform") !== "windows")}
+        {link("Windows", { platform: "windows" }, params.get("platform") === "windows")}
+      </span>
+      <span>
         {link("Floating", { window: null }, !asWindow())}
         {link("In a window", { window: "1" }, asWindow())}
       </span>
@@ -122,7 +129,11 @@ function Toolbar({ params }: { params: URLSearchParams }) {
 function Gallery({ params, base }: { params: URLSearchParams; base: Bridge }) {
   const of: Surface = params.get("of") === "bar" ? "bar" : "panel";
   const desktop = params.get("frame") === "desktop";
-  const cells = useMemo(() => scenariosOf(of).map((s) => ({ scenario: s, bridge: scenarioBridge(s, base) })), [of, base]);
+  const platform = platformOfParams(params) ?? MAC;
+  const cells = useMemo(
+    () => scenariosOf(of).map((s) => ({ scenario: s, bridge: scenarioBridge(s, base, platform) })),
+    [of, base, platform],
+  );
   return (
     <div className="dev-gallery-page">
       <Toolbar params={params} />
@@ -155,6 +166,9 @@ export function DevPage({ params }: { params: URLSearchParams }) {
     const theme = params.get("theme");
     if (theme === "light" || theme === "dark") {
       document.documentElement.dataset.theme = theme;
+    }
+    if (params.get("platform") === "windows") {
+      document.documentElement.dataset.platform = "windows";
     }
   }, [params]);
 
@@ -213,7 +227,7 @@ export function DevPage({ params }: { params: URLSearchParams }) {
 }
 
 function ScenarioView({ scenario, base, desktop }: { scenario: Scenario; base: Bridge; desktop: boolean }) {
-  const [bridge] = useState(() => scenarioBridge(scenario, base));
+  const [bridge] = useState(() => scenarioBridge(scenario, base, platformOfParams(new URLSearchParams(window.location.search)) ?? MAC));
   return (
     <Stage desktop={desktop}>
       <SurfaceOf surface={scenario.surface} bridge={bridge} scenario={scenario} />
