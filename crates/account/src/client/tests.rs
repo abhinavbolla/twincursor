@@ -537,7 +537,7 @@ async fn every_rpc_sends_the_right_request() {
             "knock" => Reply::json(200, json!([{ "call_id": "c1", "state": "knocking", "host_id": "u1", "host_name": "Alex", "host_handle": "alex", "host_avatar_url": null }])),
             "answer_knock" => Reply::json(200, json!("admitted")),
             "answer_ring" => Reply::json(200, json!("declined")),
-            "leave_call" | "end_call" | "remove_contact" => Reply::empty(204),
+            "leave_call" | "end_call" | "remove_contact" | "ask_to_host" => Reply::empty(204),
             _ => Reply::empty(404),
         }
     })
@@ -545,7 +545,14 @@ async fn every_rpc_sends_the_right_request() {
     let (account, _) = make(&fake.url, Some(session(3600)));
 
     assert_eq!(
-        account.inbox(None).await.unwrap().me.handle.as_deref(),
+        account
+            .inbox(None)
+            .await
+            .unwrap()
+            .me
+            .profile
+            .handle
+            .as_deref(),
         Some("sam")
     );
     account.inbox(Some("c9")).await.unwrap();
@@ -570,6 +577,7 @@ async fn every_rpc_sends_the_right_request() {
     account.leave_call("c1").await.unwrap();
     account.end_call("c1").await.unwrap();
     account.remove_contact("u2").await.unwrap();
+    account.ask_to_host().await.unwrap();
 
     let sent: Vec<(String, Value)> = fake
         .requests()
@@ -610,6 +618,7 @@ async fn every_rpc_sends_the_right_request() {
             (rpc("leave_call"), json!({ "call_id": "c1" })),
             (rpc("end_call"), json!({ "call_id": "c1" })),
             (rpc("remove_contact"), json!({ "contact": "u2" })),
+            (rpc("ask_to_host"), json!({})),
         ]
     );
 }
@@ -629,7 +638,7 @@ async fn void_functions_accept_an_empty_or_null_answer() {
 
 #[tokio::test]
 async fn backend_errors_become_sentences() {
-    let cases: [(u16, &str, &str, Error); 10] = [
+    let cases: [(u16, &str, &str, Error); 11] = [
         (400, "P0001", "call_not_found", Error::CallNotFound),
         (
             400,
@@ -648,6 +657,12 @@ async fn backend_errors_become_sentences() {
         ),
         (403, "42501", "not_a_contact", Error::NotAContact),
         (403, "42501", "not_allowed", Error::NotAllowed),
+        (
+            403,
+            "42501",
+            "not_invited: this server is invite-only",
+            Error::NotInvited,
+        ),
         (400, "P0001", "a_word_from_the_future", Error::Refused(400)),
         (500, "XX000", "internal", Error::Server(500)),
     ];
