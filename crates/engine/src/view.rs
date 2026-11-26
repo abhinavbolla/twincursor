@@ -104,7 +104,8 @@ fn obey(
                 Command::AllowControl { .. }
                 | Command::DenyControl { .. }
                 | Command::RevokeControl
-                | Command::TrustControl { .. } => events(ipc::Event::Error {
+                | Command::TrustControl { .. }
+                | Command::TrustOnArrival { .. } => events(ipc::Event::Error {
                     message: "Only the sharer can answer requests for control.".into(),
                 }),
                 Command::Leave => {

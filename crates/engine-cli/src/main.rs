@@ -710,6 +710,7 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
                 // The same switch the hotkey trips, so both take the same path.
                 Command::RevokeControl => revoke.trip(),
                 Command::TrustControl { identity } => handle.trust(identity),
+                Command::TrustOnArrival { identity } => handle.trust_on_arrival(identity),
                 Command::RequestControl | Command::ReleaseControl => events(Event::Error {
                     message: "Only a guest can ask for control.".into(),
                 }),
