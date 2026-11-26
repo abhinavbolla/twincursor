@@ -17,6 +17,8 @@ const NET_MS: u64 = 20;
 struct Recorder {
     actions: Vec<Action>,
     pointer: Option<Point>,
+    /// The shared display went away, as a real injector would find on its next look.
+    gone: bool,
 }
 
 impl Injector for Recorder {
@@ -29,6 +31,10 @@ impl Injector for Recorder {
 
     fn pointer(&self) -> Option<Point> {
         self.pointer
+    }
+
+    fn display_gone(&mut self) -> bool {
+        self.gone
     }
 }
 
@@ -94,8 +100,8 @@ impl Trace {
         self.msg(GUEST, message, sent_ms + NET_MS);
     }
 
-    fn tick(&mut self, ms: u64) {
-        self.c.tick(self.at(ms));
+    fn tick(&mut self, ms: u64) -> Vec<Effect> {
+        self.c.tick(self.at(ms))
     }
 
     fn take(&mut self) -> Vec<Action> {
@@ -261,7 +267,7 @@ fn denied_guests_cannot_inject() {
         effects,
         vec![Effect::Send {
             to: GUEST.into(),
-            message: Message::Deny
+            message: Message::Deny { reason: None }
         }]
     );
     t.send(mv(0.5, 0.5), 10);
@@ -282,7 +288,7 @@ fn only_the_granted_guest_can_inject_and_one_at_a_time() {
         effects,
         vec![Effect::Send {
             to: OTHER.into(),
-            message: Message::Deny
+            message: Message::Deny { reason: None }
         }]
     );
     // Another participant can't end someone else's control.
@@ -396,7 +402,11 @@ fn a_move_never_overtakes_a_click_sent_before_it() {
 fn guests_cannot_send_sharer_messages() {
     let mut t = Trace::new();
     t.msg(GUEST, Message::RequestControl, 0);
-    for message in [Message::Grant, Message::Revoke, Message::Deny] {
+    for message in [
+        Message::Grant,
+        Message::Revoke,
+        Message::Deny { reason: None },
+    ] {
         assert!(t.msg(GUEST, message, 10).is_empty());
     }
     assert!(t.c.controller().is_none());
@@ -415,7 +425,7 @@ fn grant_to(to: &str) -> Vec<Effect> {
 fn deny_to(to: &str) -> Vec<Effect> {
     vec![Effect::Send {
         to: to.into(),
-        message: Message::Deny,
+        message: Message::Deny { reason: None },
     }]
 }
 
@@ -643,7 +653,7 @@ fn nothing_a_guest_sends_creates_or_restores_trust() {
             hello("Alice", Platform::Macos),
             Message::HelloAck,
             Message::Grant,
-            Message::Deny,
+            Message::Deny { reason: None },
             Message::Revoke,
             Message::Released,
             Message::ReleaseControl,
@@ -1232,4 +1242,139 @@ fn an_expected_guest_who_leaves_is_forgotten() {
     assert!(t.c.expected().is_empty());
     t.alice_joins(1_000);
     assert!(trusted(&t).is_empty());
+}
+
+fn deny_because(who: &str, why: &Refusal) -> Effect {
+    Effect::Send {
+        to: who.into(),
+        message: Message::Deny {
+            reason: Some(why.to_string()),
+        },
+    }
+}
+
+#[test]
+fn a_one_window_share_turns_every_request_down_and_says_why() {
+    let mut t = Trace::in_call();
+    // The share closes control before anyone asks; what that returns is nobody's business.
+    t.c.close(Refusal::OneWindowShared);
+    let why = Refusal::OneWindowShared;
+    assert_eq!(
+        why.to_string(),
+        "Control isn't available while one window is shared."
+    );
+    for ms in [0, 1_000, 2_000] {
+        assert_eq!(
+            t.msg(GUEST, Message::RequestControl, ms),
+            vec![deny_because(GUEST, &why), Effect::Refused(why.clone())],
+            "the guest and the sharer both hear why, and nobody is asked"
+        );
+        assert!(t.c.requester().is_none() && t.c.controller().is_none());
+    }
+    // Neither kind of trust gets around it, nor does a grant.
+    assert_eq!(
+        t.c.trust(GUEST, t.at(10)),
+        vec![Effect::Refused(why.clone())]
+    );
+    assert_eq!(t.expect("carol", 20), vec![Effect::Refused(why.clone())]);
+    assert!(trusted(&t).is_empty() && t.c.expected().is_empty());
+    assert!(t.c.grant(t.at(30)).is_empty());
+    // Input as if granted is turned away, and nothing is injected.
+    t.send(mv(0.5, 0.5), 40);
+    t.send(key("KeyA", true, Some("a")), 50);
+    t.tick(100);
+    assert!(t.take().is_empty());
+    assert_eq!(t.c.unavailable(), Some(&why));
+}
+
+#[test]
+fn a_guest_expected_before_control_closed_isnt_trusted_on_arrival() {
+    let mut t = Trace::bob_only();
+    assert!(t.expect(GUEST, 0).is_empty());
+    t.c.close(Refusal::OneWindowShared);
+    assert!(
+        t.c.expected().is_empty(),
+        "closing takes every expectation back"
+    );
+    t.alice_joins(10);
+    assert!(trusted(&t).is_empty());
+}
+
+#[test]
+fn the_shared_display_disappearing_mid_control_takes_control_back() {
+    let mut t = Trace::granted(Platform::Macos);
+    t.send(key("ShiftLeft", true, None), 0);
+    t.send(button(true, 0.2, 0.2), 10);
+    t.take();
+    t.c.injector_mut().gone = true;
+    let effects = t.tick(100);
+    assert_eq!(
+        effects,
+        vec![
+            Effect::Send {
+                to: GUEST.into(),
+                message: Message::Revoke
+            },
+            Effect::Refused(Refusal::DisplayGone),
+        ]
+    );
+    assert!(t.c.controller().is_none());
+    // Only releases go out, so nothing stays held.
+    let released = t.take();
+    assert!(!released.is_empty());
+    assert!(
+        released.iter().all(|a| matches!(
+            a,
+            Action::Key { pressed: false, .. } | Action::Button { pressed: false, .. }
+        )),
+        "{released:?}"
+    );
+    // Nothing after that: input, a new request, a trust.
+    t.send(mv(0.5, 0.5), 200);
+    t.send(key("KeyA", true, Some("a")), 210);
+    assert!(t.take().is_empty());
+    let why = Refusal::DisplayGone;
+    assert_eq!(
+        t.msg(GUEST, Message::RequestControl, 300),
+        vec![deny_because(GUEST, &why), Effect::Refused(why.clone())]
+    );
+    assert_eq!(t.c.trust(GUEST, t.at(310)), vec![Effect::Refused(why)]);
+    // Told once: later ticks are quiet.
+    assert!(t.tick(400).is_empty());
+}
+
+#[test]
+fn input_arriving_after_the_display_went_is_never_injected() {
+    // Gone between two ticks: the input that comes first finds out, and isn't applied.
+    let mut t = Trace::granted(Platform::Macos);
+    t.send(mv(0.1, 0.1), 0);
+    t.take();
+    t.c.injector_mut().gone = true;
+    t.seq += 1;
+    let effects = t.msg(
+        GUEST,
+        Message::Input {
+            seq: t.seq,
+            sent_at_us: GUEST_CLOCK_US + 30_000,
+            after: 0,
+            event: mv(0.9, 0.9),
+        },
+        50,
+    );
+    assert!(effects.contains(&Effect::Refused(Refusal::DisplayGone)));
+    assert!(t.take().is_empty());
+    assert!(t.c.controller().is_none());
+}
+
+#[test]
+fn a_display_gone_before_anyone_asks_is_said_once() {
+    let mut t = Trace::in_call();
+    t.c.injector_mut().gone = true;
+    let why = Refusal::DisplayGone;
+    // The request is what finds out: the sharer hears it once, the guest is told why.
+    assert_eq!(
+        t.msg(GUEST, Message::RequestControl, 0),
+        vec![Effect::Refused(why.clone()), deny_because(GUEST, &why)]
+    );
+    assert!(t.tick(10).is_empty());
 }

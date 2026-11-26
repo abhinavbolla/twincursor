@@ -186,7 +186,7 @@ struct Grab {
 
 #[cfg(target_os = "macos")]
 impl Grab {
-    fn start(size: (u32, u32), exclude_app_pid: Option<u32>) -> anyhow::Result<Self> {
+    fn start(size: (u32, u32), display: u32, exclude_app_pid: Option<u32>) -> anyhow::Result<Self> {
         use media::capture::{self, Backend, CaptureConfig, FrameBuffer};
         let latest = Arc::new(Mutex::new(Latest::default()));
         let sink = latest.clone();
@@ -196,6 +196,7 @@ impl Grab {
             max_fps: 30,
             show_cursor: false,
             source: capture::Source::Display,
+            display: Some(display),
             exclude_app_pid,
             // The check must see the desktop app's windows when it doesn't leave them out, and
             // the desktop app is TwinCursor: only `exclude_app_pid` decides here.
@@ -235,9 +236,14 @@ impl Grab {
         Ok(())
     }
 
-    fn measure(&self, pid: u32, known_before: &[u32]) -> anyhow::Result<Vec<WindowSample>> {
-        let (screen, windows) =
-            media::capture::app_windows(pid).ok_or_else(|| anyhow::anyhow!("no display"))?;
+    fn measure(
+        &self,
+        pid: u32,
+        display: u32,
+        known_before: &[u32],
+    ) -> anyhow::Result<Vec<WindowSample>> {
+        let (screen, windows) = media::capture::app_windows(pid, display)
+            .ok_or_else(|| anyhow::anyhow!("no display"))?;
         let latest = self.latest.lock().unwrap();
         let sx = f64::from(latest.size.0) / screen.0;
         let sy = f64::from(latest.size.1) / screen.1;
@@ -260,17 +266,22 @@ impl Grab {
 
 #[cfg(target_os = "macos")]
 fn capture_check_into(exclude: Option<u32>, report: &mut CaptureReport) -> anyhow::Result<()> {
-    let pixels = media::capture::display_pixels().unwrap_or(media::capture::FALLBACK_DISPLAY);
+    // The display a share would capture, so the check sees what a guest would.
+    let display = engine::screen::choose(media::capture::Backend::ScreenCaptureKit, None)
+        .map_err(anyhow::Error::msg)?
+        .id;
+    let pixels =
+        media::capture::display_pixels(display).unwrap_or(media::capture::FALLBACK_DISPLAY);
     // Half size is plenty to find a window, and cheap.
     let size = ((pixels.0 / 2) / 16 * 16, (pixels.1 / 2) & !1);
     let window_ids = |pid| {
-        media::capture::app_windows(pid)
+        media::capture::app_windows(pid, display)
             .map(|(_, w)| w.into_iter().map(|w| w.id).collect::<Vec<_>>())
             .unwrap_or_default()
     };
 
     let Some(pid) = exclude else {
-        let grab = Grab::start(size, None)?;
+        let grab = Grab::start(size, display, None)?;
         grab.wait(Duration::ZERO)?;
         report.frame = Some(grab.latest.lock().unwrap().size);
         return Ok(());
@@ -278,16 +289,16 @@ fn capture_check_into(exclude: Option<u32>, report: &mut CaptureReport) -> anyho
 
     // 1. Without leaving the app out: its probe windows must show up.
     {
-        let grab = Grab::start(size, None)?;
+        let grab = Grab::start(size, display, None)?;
         grab.wait(Duration::from_millis(500))?;
         report.frame = Some(grab.latest.lock().unwrap().size);
         let known = window_ids(pid);
-        report.included = grab.measure(pid, &known)?;
+        report.included = grab.measure(pid, display, &known)?;
     }
 
     // 2. Leaving it out, while it opens another window.
     let known = window_ids(pid);
-    let grab = Grab::start(size, Some(pid))?;
+    let grab = Grab::start(size, display, Some(pid))?;
     grab.wait(Duration::ZERO)?;
     print_line(CAPTURING);
     let start = Instant::now();
@@ -299,7 +310,7 @@ fn capture_check_into(exclude: Option<u32>, report: &mut CaptureReport) -> anyho
     // ScreenCaptureKit sends a frame whenever what it captures changes, so a window that leaked
     // into the capture would be in the latest frame by now.
     std::thread::sleep(Duration::from_secs(1));
-    report.excluded = grab.measure(pid, &known)?;
+    report.excluded = grab.measure(pid, display, &known)?;
     Ok(())
 }
 

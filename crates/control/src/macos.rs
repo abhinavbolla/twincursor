@@ -20,11 +20,14 @@ use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use enigo::{Axis, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings};
 use protocol::{Button, ScrollUnit};
 
+use crate::display::{self as rules, by_id, to_points, to_surface, Display, NoTarget};
 use crate::{Action, Injector, Point};
 
-/// How long a lock-screen check or the display's bounds are trusted before asking again.
+/// How long a lock-screen check or the shared display's bounds are trusted before asking again.
+/// Looking one display up is a few microseconds, and a display that went away must stop
+/// receiving input well before the sharer could notice.
 const RECHECK: Duration = Duration::from_millis(50);
-const BOUNDS_RECHECK: Duration = Duration::from_secs(2);
+const BOUNDS_RECHECK: Duration = Duration::from_millis(100);
 /// The system may still report the pointer where an earlier move put it for a moment. A pointer
 /// at any of our targets from this long ago is ours, not the sharer's.
 const IN_FLIGHT: Duration = Duration::from_millis(100);
@@ -45,9 +48,14 @@ pub enum MacError {
 
 pub struct MacInjector {
     enigo: Enigo,
-    /// The main display in global points: x, y, width, height.
+    /// The shared display, by id: the one being captured, and the only one input goes to.
+    display: u32,
+    /// Its bounds in global points (x, y, width, height), as of `bounds_at`.
     bounds: (f64, f64, f64, f64),
     bounds_at: Instant,
+    /// The shared display went away. For good: nothing that needs a position is injected again
+    /// in this share, even if a display with its id comes back.
+    gone: bool,
     locked: bool,
     locked_at: Option<Instant>,
     /// Scroll left over from fractional deltas, so slow trackpad scrolls aren't lost.
@@ -61,7 +69,9 @@ pub struct MacInjector {
 }
 
 impl MacInjector {
-    pub fn new() -> Result<Self, MacError> {
+    /// Input onto `display` (a `CGDirectDisplayID`): the display being shared, from
+    /// [`crate::display::shared_display`]. Fails if it isn't connected.
+    pub fn new(display: u32) -> Result<Self, MacError> {
         let settings = Settings {
             open_prompt_to_get_permissions: false,
             independent_of_keyboard_state: true,
@@ -72,10 +82,15 @@ impl MacInjector {
             enigo::NewConError::NoPermission => MacError::NoPermission,
             other => MacError::Setup(other.to_string()),
         })?;
+        let bounds = by_id(&displays(), display)
+            .map_err(|e| MacError::Setup(format!("the shared display isn't available: {e}")))?
+            .bounds();
         Ok(Self {
             enigo,
-            bounds: main_bounds(),
+            display,
+            bounds,
             bounds_at: Instant::now(),
+            gone: false,
             locked: false,
             locked_at: None,
             carry: [(0.0, 0.0); 2],
@@ -101,18 +116,31 @@ impl MacInjector {
         self.locked
     }
 
-    fn display(&mut self) -> (f64, f64, f64, f64) {
-        if self.bounds_at.elapsed() >= BOUNDS_RECHECK {
-            self.bounds = main_bounds();
+    /// Follows the shared display's bounds (a new resolution, or the displays rearranged), and
+    /// notices when it goes away. Returns whether it is still there.
+    fn recheck(&mut self) -> bool {
+        if !self.gone && self.bounds_at.elapsed() >= BOUNDS_RECHECK {
+            match by_id(&displays(), self.display) {
+                Ok(display) => self.bounds = display.bounds(),
+                Err(NoTarget::Empty(_)) => {
+                    tracing::debug!("the shared display has no size for now; keeping its bounds")
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "{e}: the shared display is gone, so no more input goes anywhere"
+                    );
+                    self.gone = true;
+                }
+            }
             self.bounds_at = Instant::now();
         }
-        self.bounds
+        !self.gone
     }
 
     fn apply(&mut self, action: &Action) -> enigo::InputResult<()> {
         match action {
             Action::MoveTo(p) => {
-                let (x, y) = to_points(*p, self.display());
+                let (x, y) = to_points(*p, self.bounds);
                 let now = Instant::now();
                 self.targets
                     .retain(|(t, _)| now.duration_since(*t) < IN_FLIGHT);
@@ -169,6 +197,12 @@ impl Injector for MacInjector {
             self.paused += 1;
             return;
         }
+        // Only releases once the shared display is gone, so nothing stays held: a press, a move
+        // or typing would land on whatever display is left, which the guest can't see.
+        if !release && !self.recheck() {
+            self.paused += 1;
+            return;
+        }
         if let Err(e) = self.apply(action) {
             self.failed += 1;
             tracing::warn!(?action, "input not injected: {e}");
@@ -188,11 +222,11 @@ impl Injector for MacInjector {
             (true, Some(&(_, newest))) => newest,
             _ => at,
         };
-        let (x0, y0, w, h) = self.bounds;
-        Some(Point {
-            x: ((f64::from(x) - x0) / w).clamp(0.0, 1.0),
-            y: ((f64::from(y) - y0) / h).clamp(0.0, 1.0),
-        })
+        Some(to_surface((f64::from(x), f64::from(y)), self.bounds))
+    }
+
+    fn display_gone(&mut self) -> bool {
+        !self.recheck()
     }
 }
 
@@ -218,17 +252,35 @@ impl Drop for MacInjector {
     }
 }
 
-fn main_bounds() -> (f64, f64, f64, f64) {
-    let b = CGDisplay::main().bounds();
-    (b.origin.x, b.origin.y, b.size.width, b.size.height)
+/// The active displays, in global points.
+pub fn displays() -> Vec<Display> {
+    let main = CGDisplay::main().id;
+    CGDisplay::active_displays()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|id| {
+            let b = CGDisplay::new(id).bounds();
+            Display {
+                id,
+                x: b.origin.x,
+                y: b.origin.y,
+                width: b.size.width,
+                height: b.size.height,
+                main: id == main,
+            }
+        })
+        .collect()
 }
 
-/// A point on the shared surface (the main display) in global display points.
-fn to_points(p: Point, (x0, y0, w, h): (f64, f64, f64, f64)) -> (i32, i32) {
-    // The last point is width - 1: a pointer at x = width would be on the next display.
-    let x = x0 + (p.x * w).min(w - 1.0);
-    let y = y0 + (p.y * h).min(h - 1.0);
-    (x.round() as i32, y.round() as i32)
+/// This Mac's main display right now ([`rules::main_display`]): the one a share is about
+/// unless another is asked for.
+pub fn main_display() -> Result<Display, NoTarget> {
+    rules::main_display(&displays())
+}
+
+/// The display with this id right now.
+pub fn display(id: u32) -> Result<Display, NoTarget> {
+    by_id(&displays(), id)
 }
 
 /// Adds `delta` to `carry` and takes out the whole part.
@@ -411,20 +463,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn maps_the_surface_onto_display_points() {
-        let display = (0.0, 0.0, 1512.0, 982.0);
-        assert_eq!(to_points(Point { x: 0.0, y: 0.0 }, display), (0, 0));
-        assert_eq!(to_points(Point { x: 0.5, y: 0.5 }, display), (756, 491));
-        assert_eq!(
-            to_points(Point { x: 1.0, y: 1.0 }, display),
-            (1511, 981),
-            "stays on this display"
-        );
-        // A main display that isn't at the origin of the global space.
-        assert_eq!(
-            to_points(Point { x: 0.25, y: 0.0 }, (-1920.0, 100.0, 1920.0, 1080.0)),
-            (-1440, 100)
-        );
+    fn this_macs_displays_have_one_main_one_with_a_size() {
+        // The answer depends on the machine; this proves the listing and the lookups agree.
+        let all = displays();
+        eprintln!("displays: {all:?}");
+        if let Ok(main) = main_display() {
+            assert_eq!(display(main.id), Ok(main));
+            assert!(all.iter().filter(|d| d.main).count() == 1);
+        }
     }
 
     #[test]

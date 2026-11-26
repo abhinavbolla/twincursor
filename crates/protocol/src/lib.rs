@@ -17,6 +17,8 @@ pub const MAX_LEN: usize = 1024;
 pub const MAX_NAME_CHARS: usize = 64;
 pub const MAX_TEXT_CHARS: usize = 32;
 pub const MAX_KEY_CODE_LEN: usize = 32;
+/// Longest reason a `Deny` may carry.
+pub const MAX_REASON_CHARS: usize = 160;
 /// Largest scroll step accepted, in either unit.
 pub const MAX_SCROLL: f64 = 10_000.0;
 /// Smallest and largest viewport side accepted, in pixels. 16384 is past any display made,
@@ -73,7 +75,13 @@ pub enum Message {
     /// it gets the hello offered again every few seconds.
     HelloAck,
     Grant,
-    Deny,
+    /// Turns a request down. `reason` says why when it isn't the sharer's choice ("Control isn't
+    /// available while one window is shared."), for the guest to show. Sharers before it send
+    /// none, and viewers before it ignore it: no version bump.
+    Deny {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
     Revoke,
     /// Answers the guest's `ReleaseControl`. Everything the guest sent before it has been
     /// applied, so the guest can leave without cutting off its last input.
@@ -204,6 +212,13 @@ impl Message {
                 Err("too many codecs")
             }
             Message::Input { event, .. } => event.validate(),
+            Message::Deny {
+                reason: Some(reason),
+            } if reason.chars().count() > MAX_REASON_CHARS
+                || reason.chars().any(char::is_control) =>
+            {
+                Err("bad reason")
+            }
             Message::Viewport { width, height }
                 if ![width, height]
                     .iter()
@@ -349,7 +364,10 @@ mod tests {
             },
             Message::HelloAck,
             Message::Grant,
-            Message::Deny,
+            Message::Deny { reason: None },
+            Message::Deny {
+                reason: Some("Control isn't available while one window is shared.".into()),
+            },
             Message::Revoke,
             Message::Released,
         ];
@@ -365,6 +383,40 @@ mod tests {
             std::str::from_utf8(&bytes).unwrap(),
             r#"{"v":1,"msg":{"type":"input","seq":7,"sent_at_us":1234567,"after":3,"event":{"kind":"move","x":0.5,"y":0.25}}}"#
         );
+    }
+
+    #[test]
+    fn a_deny_reason_needs_no_version_bump() {
+        // A sharer before the reason: no field, read as no reason.
+        assert_eq!(
+            decode(br#"{"v":1,"msg":{"type":"deny"}}"#).unwrap(),
+            Message::Deny { reason: None }
+        );
+        // No reason is written as before.
+        assert_eq!(
+            encode(&Message::Deny { reason: None }),
+            br#"{"v":1,"msg":{"type":"deny"}}"#
+        );
+        // A viewer before the reason knew `deny` as a unit variant, and reads one that has it.
+        #[derive(Deserialize, Debug, PartialEq)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum Old {
+            Deny,
+        }
+        #[derive(Deserialize)]
+        struct OldFrame {
+            msg: Old,
+        }
+        let new = encode(&Message::Deny {
+            reason: Some("Control isn't available while one window is shared.".into()),
+        });
+        let old: OldFrame = serde_json::from_slice(&new).unwrap();
+        assert_eq!(old.msg, Old::Deny);
+        // A reason is shown to the guest: no control characters, and short.
+        for bad in ["line\nbreak".to_owned(), "x".repeat(MAX_REASON_CHARS + 1)] {
+            let frame = encode(&Message::Deny { reason: Some(bad) });
+            assert!(matches!(decode(&frame), Err(DecodeError::Invalid(_))));
+        }
     }
 
     #[test]

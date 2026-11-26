@@ -32,7 +32,11 @@
 # Needs `livekit-server --dev` running, jq, swiftc, and a release build:
 #   cargo build --release -p twincursor-engine-cli -p twincursor-media-spike
 # Usage: bench/engine-e2e.sh   (BIN=path/to/tc-engine SPIKE=path/to/tc-spike to use other builds)
-# Nothing needs Screen Recording, a microphone or an unlocked screen.
+# Last, one window shared with --allow-control: every request is turned down with the reason
+# both sides see, every trust is refused with it, and nothing is injected. The window is one the
+# bench makes for it (bench/control/test-window.swift), never one found on screen; the step is
+# skipped without Screen Recording. Nothing else
+# needs Screen Recording, a microphone or an unlocked screen.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -594,6 +598,79 @@ wrong() {
 }
 wrong share "$guest_pass" "This pass is for a guest; it can't be used to share."
 wrong view "$sharer_pass" "This pass is for the sharer; it can't be used to view."
+
+echo "=== one window shared: control is never given (needs Screen Recording; skipped without it)"
+# The only window it shares is one it makes itself (bench/control/test-window.swift): small,
+# behind every other window, never focused. Never a window found on screen, and no override:
+# if that window can't be shared, the step is skipped. Captured headless: nothing is saved and
+# nothing leaves this Mac.
+win=
+swiftc -O -o "$OUT/test-window" bench/control/test-window.swift 2>"$OUT/test-window-build.log" || true
+if [[ -x $OUT/test-window ]]; then
+  "$OUT/test-window" "$OUT/test-window.id" "TwinCursor bench window" 2>"$OUT/test-window.log" &
+  helper=$!
+  pids+=("$helper")
+  for _ in $(seq 50); do [[ -s $OUT/test-window.id ]] && break; sleep 0.1; done
+  helper_win=$(tr -dc '0-9' <"$OUT/test-window.id" 2>/dev/null || true)
+  # Shared only once screen capture lists that id as the helper's own window. The listing isn't
+  # written anywhere: it names other people's windows.
+  for _ in $(seq 50); do
+    [[ -n $helper_win ]] || break
+    if "$BIN" windows 2>/dev/null | jq -e --argjson id "$helper_win" --argjson pid "$helper" \
+      'any(.id == $id and .pid == $pid)' >/dev/null 2>&1; then
+      win=$helper_win
+      break
+    fi
+    sleep 0.1
+  done
+fi
+if [[ -z $win ]]; then
+  echo "  skipped: the bench's own window couldn't be shared (no swiftc, no Screen Recording for this terminal, or it never appeared in the capture list)"
+else
+  room="e2e-window-$$"
+  WS=$OUT/window-share.jsonl WV=$OUT/window-view.jsonl
+  one_window="Control isn't available while one window is shared."
+  mkfifo "$OUT/window-share.in" "$OUT/window-view.in"
+  "$BIN" share --ipc --audio off --room "$room" --name Alex --window "$win" --resolution 720 \
+    --allow-control --inject "record:$OUT/window-actions.jsonl" --headless \
+    <"$OUT/window-share.in" >"$WS" 2>"$OUT/window-share.log" &
+  wsharer=$!
+  pids+=("$wsharer")
+  exec 3>"$OUT/window-share.in"
+  check "$WS" '.event == "connection" and .state == "connected"' "a share of the bench's window ($win) connects with --allow-control"
+  for _ in $(seq 50); do grep -q "capturing window $win (TwinCursor bench window)" "$OUT/window-share.log" && break; sleep 0.1; done
+  grep -q "capturing window $win (TwinCursor bench window)" "$OUT/window-share.log" \
+    && pass "it captures the bench's window and nothing else" || fail "the share isn't capturing the bench's window"
+  "$BIN" view --ipc --audio off --room "$room" --name Sam --headless \
+    <"$OUT/window-view.in" >"$WV" 2>"$OUT/window-view.log" &
+  wviewer=$!
+  pids+=("$wviewer")
+  exec 4>"$OUT/window-view.in"
+  check "$WS" '.event == "participants" and (.participants | any(.name == "Sam" and .role == "guest"))' "the sharer sees Sam"
+  wguest=$(first "$WS" '.event == "participants" and (.participants | any(.name == "Sam"))' | jq -r '.participants[] | select(.name == "Sam") | .identity')
+  echo '{"cmd":"request_control"}' >&4
+  check "$WV" ".event == \"error\" and .message == \"$one_window\"" "the guest is told: $one_window"
+  check "$WS" ".event == \"error\" and .message == \"$one_window\"" "so is the sharer's app"
+  echo "{\"cmd\":\"trust_control\",\"identity\":\"$wguest\"}" >&3
+  echo "{\"cmd\":\"trust_on_arrival\",\"identity\":\"guest-later\"}" >&3
+  echo '{"cmd":"request_control"}' >&4
+  if wait_count "$WS" ".event == \"error\" and .message == \"$one_window\"" 4; then
+    pass "trust_control, trust_on_arrival and a second request: the same sentence each"
+  else
+    fail "expected the sentence four times on the sharer, got $(count "$WS" ".event == \"error\" and .message == \"$one_window\"")"
+  fi
+  sleep 1
+  [[ $(count "$WS" '.event == "control_asked"') -eq 0 ]] && pass "nobody is asked" || fail "the app was asked"
+  [[ $(count "$WS" '.event == "control" and .state == "controlling"') -eq 0 && $(count "$WV" '.event == "control" and .state == "controlling"') -eq 0 ]] \
+    && pass "nobody ever controls" || fail "someone got control of a window share"
+  [[ ! -s $OUT/window-actions.jsonl ]] && pass "nothing was injected" || fail "actions recorded: $(head -3 "$OUT/window-actions.jsonl")"
+  echo '{"cmd":"leave"}' >&4
+  echo '{"cmd":"leave"}' >&3
+  check "$WS" '.event == "ended" and .reason == "left"' "the window share ended"
+  exec 3>&- 4>&-
+fi
+# The bench's window goes as soon as the step is over (and on any exit, through the trap).
+[[ -n ${helper:-} ]] && kill -INT "$helper" 2>/dev/null || true
 
 if [[ $failed -eq 0 ]]; then echo "engine-e2e: PASS"; else echo "engine-e2e: FAIL (events and logs in $OUT)"; fi
 exit $failed
