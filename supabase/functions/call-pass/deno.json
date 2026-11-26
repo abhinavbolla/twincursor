@@ -1,0 +1,13 @@
+{
+  "imports": {
+    "livekit-server-sdk": "npm:livekit-server-sdk@2.19.2",
+    "jose": "npm:jose@5.10.0",
+    "@std/assert": "jsr:@std/assert@1.0.13"
+  },
+  "tasks": {
+    "test": "deno test --allow-env=BUF_BIGINT_DISABLE pass_test.ts"
+  },
+  "fmt": {
+    "lineWidth": 110
+  }
+}
