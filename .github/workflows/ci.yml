@@ -113,6 +113,48 @@ jobs:
           target/release/tc-engine.exe view --help
           target/release/tc-engine.exe config
 
+  # The backend (supabase/): the database's access rules and the call-pass Edge Function, run
+  # against a local Supabase stack.
+  supabase:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v3
+        with:
+          version: 2.120.0
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Check formatting and lint the function
+        working-directory: supabase
+        run: |
+          deno fmt --check --config functions/call-pass/deno.json functions tests/call-pass_e2e.ts
+          deno lint --config functions/call-pass/deno.json functions tests/call-pass_e2e.ts
+
+      - name: Unit-test the function
+        working-directory: supabase/functions/call-pass
+        run: deno task test
+
+      - name: Start the local stack
+        run: supabase start -x studio
+
+      - name: Lint the database
+        run: supabase db lint --schema public,private --fail-on warning
+
+      - name: Test the database's access rules
+        run: supabase test db
+
+      - name: Test the function end to end
+        run: supabase/tests/call-pass.sh
+
+      - name: Stop the local stack
+        if: always()
+        run: supabase stop --no-backup
+
   # Enforces the license rule in CONTRIBUTING.md, and that crates only come from crates.io.
   dependencies:
     runs-on: ubuntu-latest

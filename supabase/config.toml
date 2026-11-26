@@ -1,0 +1,87 @@
+# Local development stack for the TwinCursor backend (`supabase start`).
+# Reference: https://supabase.com/docs/guides/local-development/cli/config
+#
+# The local ports are moved off the CLI's defaults (5432x) so this stack can run next to another
+# Supabase project on the same machine.
+project_id = "twincursor"
+
+[api]
+enabled = true
+port = 54421
+# Only `public` is exposed. Clients use its RPC functions; they can't write any table directly.
+schemas = ["public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54422
+shadow_port = 54420
+major_version = 17
+
+[db.migrations]
+enabled = true
+
+[db.seed]
+enabled = false
+
+# Not used yet: clients poll `inbox()`.
+[realtime]
+enabled = false
+
+[studio]
+enabled = true
+port = 54423
+api_url = "http://127.0.0.1"
+
+[local_smtp]
+enabled = false
+
+[storage]
+enabled = false
+
+[analytics]
+enabled = false
+
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:53682"
+# The desktop app finishes GitHub sign-in on a one-time local callback.
+additional_redirect_urls = ["http://127.0.0.1:53682/callback"]
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+refresh_token_reuse_interval = 10
+enable_signup = true
+enable_anonymous_sign_ins = false
+enable_manual_linking = false
+minimum_password_length = 8
+
+# Email and password sign-in is only here so local tests can create users. A hosted project
+# should turn it off and offer GitHub alone.
+[auth.email]
+enable_signup = true
+double_confirm_changes = true
+enable_confirmations = false
+secure_password_change = false
+max_frequency = "1s"
+
+[auth.sms]
+enable_signup = false
+
+# GitHub sign-in. The OAuth app's credentials come from the environment (or `supabase/.env`,
+# which is git-ignored); see README.md. Without them the stack still starts, and only GitHub
+# sign-in fails.
+[auth.external.github]
+enabled = true
+client_id = "env(SUPABASE_AUTH_GITHUB_CLIENT_ID)"
+secret = "env(SUPABASE_AUTH_GITHUB_SECRET)"
+redirect_uri = ""
+
+[edge_runtime]
+enabled = true
+policy = "per_worker"
+deno_version = 2
+
+# Mints LiveKit access tokens ("call passes"). Needs a signed-in user.
+[functions.call-pass]
+enabled = true
+verify_jwt = true
