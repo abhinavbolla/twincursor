@@ -104,6 +104,13 @@ only text and controls; the shared screen is the engine's own native window (ADR
   without HEVC, the app restarts its engine with H.264 (same room, name and resolution) and stays
   on H.264 for the rest of the call; a guest that hasn't announced yet changes nothing. An HEVC
   engine that fails before sending any video falls back the same way, once.
+- **Getting into a room.** The engine joins with a **call pass** when its environment has one
+  (`TWINCURSOR_PASS`): a LiveKit token the account server signed for one identity
+  (`sharer-<account id>` or `guest-<account id>`), one name and one room. The engine reads the
+  pass's claims to check it fits the call (role, room, expiry) but doesn't verify its signature:
+  it holds no secret, and LiveKit verifies the pass on connect. Without a pass, it mints its own
+  token from an API key and secret for `--room` and `--name`, as below. See
+  [IPC](ipc.md#getting-into-the-room).
 - **Settings.** The server the build baked into `tc-engine` is the default (`tc-engine config`).
   Overrides are saved by the Rust side as JSON in the app's config folder (mode 0600) and handed
   to the engine in its environment, never its flags. The window learns whether a secret is set,
@@ -264,6 +271,8 @@ The decisions and what they cost are in [ADR 0006](adr/0006-voice.md).
 ### 6. Server
 - Rust + axum + Postgres. Handles accounts, teams, rooms, and issuing LiveKit access tokens.
   It never touches media.
+- The tokens it issues are call passes: the engine takes one in `TWINCURSOR_PASS` and needs no
+  API secret of its own.
 - `deploy/` ships a docker compose file: server, LiveKit, Postgres, and Caddy for TLS.
 
 ## Measuring latency

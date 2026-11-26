@@ -16,13 +16,49 @@ tc-engine view  --ipc --room ROOM --name "Sam" [--audio mic|off] [--mic DEVICE] 
 tc-engine permissions [--request]     # one JSON object: Screen Recording, Accessibility, Microphone
 tc-engine devices                     # {"mics": [...], "speakers": [...]}
 tc-engine windows                     # [{"id", "app", "pid", "title", "pixels"}, ...]
-tc-engine config                      # {"url", "api_key", "has_secret", "source"}
+tc-engine config                      # {"url", "api_key", "has_secret", "has_pass", "source"}
 ```
+
+With a call pass in `TWINCURSOR_PASS`, `share` and `view` need neither `--room` nor `--name`
+(see [Getting into the room](#getting-into-the-room)).
 
 `--window` and `--app` share one window or one app instead of the display, and are refused with
 `--allow-control`: control maps the guest's pointer onto the whole display.
 
-Each of the server's URL, API key and API secret comes from the first of:
+### Getting into the room
+
+The server's URL comes from `--url`, else `TWINCURSOR_SERVER_URL`, else the build's, else the
+local dev server. The engine then joins its room in one of two ways.
+
+**With a call pass.** If `TWINCURSOR_PASS` holds one, the engine uses it and nothing else. A
+call pass is an ordinary LiveKit access token that the account server signed for one person in
+one room: its `sub` is the identity (`sharer-<account id>` for the call's host, `guest-<account
+id>` for an admitted guest), its `name` is the account's display name, and `video.room` is the
+room. The engine reads those claims, without checking the signature, to refuse a pass that can't
+work before it connects:
+
+- the pass must be a well-formed token whose `video.roomJoin` is true, with a non-empty `sub` and
+  room, not past its `exp`; a name over 64 characters or with control characters is refused, and
+  a missing name shows as "Unnamed";
+- `share` needs a sharer's pass and `view` a guest's ("This pass is for a guest; it can't be
+  used to share.");
+- `--room`, if given, must be the pass's room, and `--api-key`/`--api-secret` can't be given at
+  all. `--name` is ignored: the pass's name wins. A key and secret in the environment or the
+  build are simply not used.
+
+Not verifying the signature is deliberate: the engine has no secret to verify it with, and it
+doesn't need one. The pass grants nothing until LiveKit checks it on connect, so a forged or
+altered pass fails there. The pass is only ever read from the environment, never a flag (other
+users of the Mac can read a process's flags), and is never logged or put in an event or error.
+
+For development and the benches, `tc-engine dev-pass --room R --role sharer|guest --name N [--id
+ID] [--ttl SECONDS]` prints a pass signed with the engine's own key and secret (the dev server's
+by default; `--id` defaults to a random UUID-like value, `--ttl` to an hour). It is hidden from
+`--help` and refuses to run in a build that carries a server's key.
+
+**With an API key and secret.** Without a pass, `--room` and `--name` are required, and the
+engine mints its own token for a fresh identity. Each of the server's URL, API key and API secret
+comes from the first of:
 
 1. the flag: `--url`, `--api-key`, `--api-secret`;
 2. the environment: `TWINCURSOR_SERVER_URL`, `TWINCURSOR_API_KEY`, `TWINCURSOR_API_SECRET`;
@@ -34,8 +70,9 @@ Each of the server's URL, API key and API secret comes from the first of:
 Prefer the environment for the secret: other users of the Mac can read a process's flags. The
 desktop app passes its saved overrides that way. The secret is only used to sign the access
 token and is never logged. `tc-engine config` prints the URL and key a call would use, whether a
-secret other than the dev server's is in effect (`has_secret`), and where the URL came from
-(`source`: `env`, `build` or `dev`), never the secret itself.
+secret other than the dev server's is in effect (`has_secret`), whether a call pass is in its
+environment (`has_pass`: then a call would use the pass), and where the URL came from (`source`:
+`env`, `build` or `dev`), never the secret or the pass itself.
 
 **The engine exits when its stdin closes.** The app holds the engine's stdin open for as long as
 it runs. When the app quits or dies, the kernel closes the pipe; a sharer first takes control back
@@ -88,17 +125,20 @@ The rest of hard rule 4 stays in the engine, where it doesn't depend on the app:
 controlling" label on the sharer's screen, and the revoke hotkey (⌃⌥⌘R), which works with the
 app hung or gone and the network down. `revoke_control` trips the same switch as the hotkey.
 
-**Names are typed by the person and are not proof of who they are.** The name in
-`control_asked` is what the guest typed. The app should show it as such ("Sam (unverified)"
+**Names are not proof of who someone is.** Without a call pass, the name in `control_asked` is
+what the guest typed; with one, it is the guest's account name, but it still arrives in the
+guest's own control `hello`, not from the server. The app should show it as such ("Sam (unverified)"
 until accounts exist), and the sharer should grant control because they recognise the person on
 the call, not because of the name.
 
 ## Who is who
 
-A participant's **role travels in their LiveKit identity**: `sharer-<random>` or
-`guest-<random>` (`tc-spike` keeps its plain `sharer` and `viewer`). The server signs the identity
-into the token, and every data packet carries its sender's identity, so the engine knows whose
-message it holds without a lookup. The **display name travels in the token's name field**
+A participant's **role travels in their LiveKit identity**: `sharer-…` or `guest-…`, followed by
+the account's id with a call pass, or by a random value the engine picked without one (`tc-spike`
+keeps its plain `sharer` and `viewer`). Only the part before the first dash is the role. The
+server signs the identity into the token, and every data packet carries its sender's identity, so
+the engine knows whose message it holds without a lookup. The **display name travels in the
+token's name field**: the account's name in a call pass, the typed `--name` otherwise
 (`media::token::mint`). Identities are unique per call; names need not be.
 
 Guests **announce the codecs they decode** in the `hello` they already send the sharer on the
@@ -113,7 +153,8 @@ the same, once, if an engine sharing with HEVC fails before it sends any video).
 `bench/engine-e2e.sh` plays the app's part with nobody at the Mac: a sharer on the synthetic
 pattern and a headless guest, a request, the check that nothing is granted without an answer, an
 allow, typing (recorded, not injected), a revoke, a stale allow, both leaving, and the engine
-exiting when its stdin closes.
+exiting when its stdin closes. It then runs a call again with passes from `dev-pass` and no
+`--room` or `--name`, and checks that a pass for the other role is refused before connecting.
 
 `bench/app-e2e.sh` runs the real desktop app instead, in its test-only script mode, against a
 headless guest: a deny, an allow with recorded typing, a revoke and a leave, then the switch from

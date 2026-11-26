@@ -17,6 +17,7 @@ twincursor-engine = { path = "../engine" }
 twincursor-media = { path = "../media" }
 twincursor-control = { path = "../control" }
 twincursor-ipc = { path = "../ipc" }
+twincursor-protocol = { path = "../protocol" }
 livekit.workspace = true
 tokio.workspace = true
 clap.workspace = true
@@ -24,3 +25,5 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 serde_json.workspace = true
+# Reads call passes (JWTs); already in the tree through jsonwebtoken.
+base64.workspace = true

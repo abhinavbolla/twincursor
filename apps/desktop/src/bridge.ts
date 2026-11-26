@@ -40,6 +40,8 @@ export interface EngineConfig {
   url: string;
   api_key: string;
   has_secret: boolean;
+  /** A call pass is in the engine's environment, so a call would use it, not the key. */
+  has_pass: boolean;
   source: string;
 }
 
