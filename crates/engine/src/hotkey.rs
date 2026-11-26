@@ -54,9 +54,14 @@ impl SharerUi {
         #[cfg(target_os = "macos")]
         {
             // No Dock icon and no menu bar: the sharer only needs the run loop and the overlay.
+            // Nor does it take focus: whatever the sharer is working in stays in front (and
+            // keeps the keyboard) when sharing starts. winit activates the app at launch by
+            // default, which took the keyboard from the window under test in
+            // bench/control-inject.sh.
             use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
             builder
                 .with_activation_policy(ActivationPolicy::Accessory)
+                .with_activate_ignoring_other_apps(false)
                 .with_default_menu(false);
         }
         let event_loop = builder.build()?;
