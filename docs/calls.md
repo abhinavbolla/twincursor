@@ -58,6 +58,20 @@ server leaves by itself and says "The call ended."
 **A call left open by a crash.** If you're signed in and not sharing, but the backend still has a
 call of yours open, the app ends it.
 
+## On an invite-only server
+
+The backend may let only people on its invite list start calls
+([self-hosting](self-hosting.md#6-choose-who-can-start-calls)). The home view's
+`account.can_host` says whether you may; the server decides it and sends it with every poll.
+When you may not, **Share my screen** and **Call** are refused in the app with "This server is
+invite-only. Ask whoever runs it to add your GitHub handle.", without asking the server, and the
+panel offers neither. The server refuses them anyway. If it refuses a share or a ring the app
+thought was allowed (you were taken off the list since the last poll), the app shows the same
+sentence and switches to the invite-only panel at once. **Ask to be invited** (`ask_to_host`)
+tells whoever runs the server; `account.asked_to_host` remembers it across launches. Joining by
+link, being let in, answering a ring and leaving work as for anyone. A call you are hosting when
+you're taken off the list goes on until you stop it.
+
 ## Polling
 
 While you're signed in, the app asks the backend for your contacts, rings, knocks and your call
@@ -111,7 +125,7 @@ also returns, so a window that opens later starts out right:
 
 ```json
 {
-  "account": { "configured": true, "signed_in": true, "me": { "id": "…", "name": "…", "handle": "…", "avatar_url": null }, "signing_in": false },
+  "account": { "configured": true, "signed_in": true, "me": { "id": "…", "name": "…", "handle": "…", "avatar_url": null }, "signing_in": false, "can_host": true, "asked_to_host": false },
   "stage": { "kind": "hosting", "call_id": "…", "link": "twincursor://call/…" },
   "contacts": [{ "id": "…", "name": "…", "handle": "…", "avatar_url": null }],
   "rings": [{ "call_id": "…", "host": { "id": "…", "name": "…", "handle": null, "avatar_url": null } }],
@@ -139,6 +153,7 @@ also returns, so a window that opens later starts out right:
 | `give_control` | `identity` | Trust a guest in the call with control |
 | `ring` | `user_id` | Ring a contact |
 | `answer_ring` | `call_id`, `accept` | Accept or decline |
+| `ask_to_host` | | Ask to be invited, on an invite-only server |
 | `end` | | Stop sharing, or leave |
 
 Each answers with the view after it, or fails with one sentence. The engine's own output still

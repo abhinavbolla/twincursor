@@ -24,6 +24,21 @@ in [docs/accounts.md](../docs/accounts.md).
 | `calls` | call | `host`, `room` (LiveKit room name), `code` (what a call link carries), `seen_at` (host heartbeat), `ended_at` |
 | `call_members` | person in a call other than its host | `state`: `ringing`, `knocking`, `admitted`, `turned_away`, `declined` or `left`; `seen_at`: when a knocking person last knocked |
 | `contacts` | (owner, contact) pair | Added both ways when a host lets someone in |
+| `invited` | GitHub handle that may start calls | `handle` (stored lowercased; a leading `@` and spaces are dropped), `note`, `created_at`. A handle can be added before that person signs up |
+| `server_settings` | the server (one row) | `invite_only`: off (the default) lets everyone signed in start calls; on lets only handles on `invited` |
+| `host_requests` | person who asked to start calls | `asked_at`, kept from the first time they asked (`ask_to_host`) |
+
+And one view, for the owner:
+
+| View | Shows |
+|---|---|
+| `waiting_to_host` | Everyone signed in who isn't on `invited`: `handle`, `name`, `signed_up_at`, `asked_to_host`, `asked_at`, `user_id`. Those who asked come first, newest first. A row without a handle signed in without GitHub and can't be invited |
+
+`invited`, `server_settings`, `host_requests` and `waiting_to_host` are for whoever runs the
+project. Clients can't read or write any of them: row-level security is on with no policies, and
+`anon` and `authenticated` hold no privilege on them. The view is `security_invoker`, so it reads
+with the reader's rights; in the dashboard (the `postgres` role) and with the service role it
+shows everyone.
 
 `room` and `code` are independent 128-bit random values, each 32 lowercase hex characters.
 
@@ -61,6 +76,18 @@ rewritten by the signed-in user, so it is used only for accounts without a GitHu
 - **Who can read what.** Your own profile, your contacts' profiles, and the profiles of people in a
   live call with you (host and members, except people turned away or who declined). Calls you host
   or are a member of. Member rows of calls you host, and your own. Your own contacts. Nobody else's.
+- **Who may start calls.** Anyone signed in may join a call: knock with a link and be let in, or
+  answer a ring. Starting one (`start_call`, and `ring`, which starts or uses the caller's own
+  call) is for everyone while the server is open, and only for people whose GitHub handle is on
+  `invited` once `invite_only` is on; anyone else gets `not_invited`. Handles compare without
+  regard to letter case. An account without a GitHub handle (possible only with other sign-in
+  methods) is never on the list. Taking someone off the list stops them starting calls; a call
+  they host that is live goes on until it ends, and their pass for it as sharer still works, so
+  an engine restart doesn't drop it. `inbox().me.can_host` says which applies.
+- **The owner's safety checks.** `invite_only` can't be turned on while `invited` is empty
+  (`invite_list_empty`), the last handle can't be removed while it is on, in one statement or by
+  emptying the table (`last_invited`), and the settings row can't be deleted
+  (`keep_server_settings`). So nobody locks everyone out of starting calls by accident.
 - **Writes.** No table can be written directly. Every change goes through the functions below,
   which check who is calling. Signed-out (`anon`) clients can call none of them.
 
@@ -76,12 +103,13 @@ All are called as the signed-in user through PostgREST (`POST /rest/v1/rpc/<name
 | `ring(contact)` | `[{ call_id, code }]` |
 | `answer_ring(call_id, accept)` | `"admitted"` or `"declined"` |
 | `leave_call(call_id)`, `end_call(call_id)`, `remove_contact(contact)` | nothing |
+| `ask_to_host()` | nothing. Records that you'd like to start calls (it shows in `waiting_to_host`); asking again changes nothing |
 | `pass_claims(call_id)` | `[{ room, identity, name, role }]` (used by the call-pass function) |
 | `inbox(hosting)` | one JSON object, below. `hosting` (optional) is the call the app is sharing: the host's heartbeat |
 
 ```json
 {
-  "me": { "id": "…", "name": "…", "handle": "…", "avatar_url": "…" },
+  "me": { "id": "…", "name": "…", "handle": "…", "avatar_url": "…", "can_host": true, "asked_to_host": false },
   "contacts": [{ "id": "…", "name": "…", "handle": "…", "avatar_url": "…" }],
   "hosting": null,
   "rings": [{ "call_id": "…", "host": { "id": "…", "name": "…", "handle": "…", "avatar_url": "…" } }],
@@ -93,6 +121,9 @@ All are called as the signed-in user through PostgREST (`POST /rest/v1/rpc/<name
 "user_id", "name", "handle", "avatar_url", "state" }] }`. A ring nobody answered within 60
 seconds shows as `"missed"`, and knocks not repeated for 45 seconds are left out. A `hosting`
 argument that isn't your open call is ignored.
+`me.can_host` is whether you may start calls on this server (it is open, or your handle is on
+its invite list); `me.asked_to_host` whether you called `ask_to_host`. A server without the invite
+list leaves them out, and the app reads that as `true` and `false`.
 `waiting` lists your knocks on live calls, and knocks or rings answered in the last 60 seconds
 (`admitted` or `turned_away`). `handle` and `avatar_url` may be `null`.
 
@@ -108,6 +139,10 @@ Errors have a stable message and SQLSTATE (PostgREST puts them in `message` and 
 | `bad_argument` | `22023` | 400 | A required yes/no was null |
 | `not_allowed` | `42501` | 403 | `pass_claims`: you may not join this call |
 | `not_a_contact` | `42501` | 403 | `ring`: you aren't each other's contacts |
+| `not_invited` | `42501` | 403 | `start_call`, `ring`: the server is invite-only and your GitHub handle isn't on its list |
+
+The owner's changes to the invite list can be refused too, in the dashboard or SQL
+(`P0001`): `invite_list_empty`, `last_invited` and `keep_server_settings`, above.
 
 `inbox` can write (it is the heartbeat), so call it with `POST`; PostgREST runs `GET` requests
 read-only.

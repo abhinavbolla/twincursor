@@ -66,6 +66,14 @@ offers.
   in the app lets nobody do anything until they sign in.
 - **Anyone with a GitHub account can sign up** on a project that allows sign-ups. Restricting
   who may join a project is left to the person running it (Supabase's own settings).
+- **Addendum: an invite list for starting calls.** Because every build carries the backend's
+  public key, an open server lets any GitHub account start calls on the host's LiveKit server. A
+  second migration adds an owner-only invite list keyed by GitHub handle and a
+  `server_settings.invite_only` switch, off by default so applying it changes nothing. When it is
+  on, `start_call` and `ring` refuse anyone not on the list (`not_invited`); joining, being let
+  in, answering a ring and guest passes are unchanged, and a host taken off the list keeps a live
+  call until it ends. The server decides; `inbox().me.can_host` only tells the app what to show.
+  Sign-up itself stays open, and guests in an invited host's call still use minutes.
 - **Not built yet, on purpose:** presence (who is online), teams, a Windows app with sign-in (the
   Windows viewer still joins by room code on a keyed server), and call links that open the app
   when clicked (people paste them).
