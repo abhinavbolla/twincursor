@@ -4,13 +4,9 @@
 #
 #   apps/desktop/scripts/bundle.sh        # from anywhere in the repo
 #
-# To build in a server for testers, set TWINCURSOR_BUILD_SERVER_URL, TWINCURSOR_BUILD_API_KEY
-# and TWINCURSOR_BUILD_API_SECRET first (see .env.testbuild.example):
-#
-#   set -a; . ./.env.testbuild; set +a; apps/desktop/scripts/bundle.sh
-#
-# Anyone with such a build can read the secret out of it: give it only to people you'd give the
-# server's key to.
+# It builds with whatever TWINCURSOR_BUILD_* variables are in the environment. To make an app
+# for people to install, use package.sh instead: it sets the backend from a file, clears every
+# LiveKit variable first, and checks the result (docs/RELEASING.md).
 #
 # The result is in target/release/bundle/macos/TwinCursor.app.
 set -euo pipefail
