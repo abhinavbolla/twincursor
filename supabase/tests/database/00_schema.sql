@@ -1,7 +1,7 @@
 -- Privileges, row-level security and the profile trigger.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(27);
+select plan(29);
 
 -- Row-level security is on everywhere, and nothing but reads has a policy.
 select ok(
@@ -62,7 +62,7 @@ select is(
 insert into auth.users (id, email, raw_user_meta_data) values
   ('00000000-0000-4000-8000-0000000000a1', 'ada@example.test',
    '{"name": "Ada Lovelace", "user_name": "ada", "avatar_url": "https://avatars.example.test/ada"}'),
-  ('00000000-0000-4000-8000-0000000000a2', 'grace@example.test', '{}'),
+  ('00000000-0000-4000-8000-0000000000a2', 'grace@example.test', '{"name": "Typed In"}'),
   ('00000000-0000-4000-8000-0000000000a3', 'linus@example.test',
    jsonb_build_object('full_name', E'Li\tnus\u0007 ' || repeat('x', 100))),
   ('00000000-0000-4000-8000-0000000000a4', null, '{}'),
@@ -86,7 +86,7 @@ select results_eq(
 select results_eq(
   $$select name, handle from public.profiles where id = '00000000-0000-4000-8000-0000000000a2'$$,
   $$values ('grace-h', 'grace-h')$$,
-  'without a name, the GitHub handle is the name');
+  'without a GitHub name, the GitHub handle is the name, whatever the metadata says');
 select is(
   (select name from public.profiles where id = '00000000-0000-4000-8000-0000000000a3'),
   'Linus ' || repeat('x', 58),
@@ -105,18 +105,33 @@ select is(
   (select name from public.profiles where id = '00000000-0000-4000-8000-0000000000a6'),
   'ctl', 'a name of only control characters falls back to the email''s local part');
 
-update auth.users set raw_user_meta_data = '{"name": "Ada King"}'
+-- What updateUser({ data }) does: a signed-in user rewrites their own metadata.
+update auth.users set raw_user_meta_data = '{"name": "Linus Torvalds", "full_name": "Linus Torvalds"}'
 where id = '00000000-0000-4000-8000-0000000000a1';
 select results_eq(
   $$select name, handle from public.profiles where id = '00000000-0000-4000-8000-0000000000a1'$$,
-  $$values ('Ada King', 'ada')$$,
-  'changing the metadata refreshes the name and keeps the GitHub handle');
+  $$values ('Ada Lovelace', 'ada')$$,
+  'a GitHub user who edits their own metadata keeps their GitHub name');
 
-update auth.identities set identity_data = identity_data || '{"user_name": "ada-l"}'
+update auth.users set raw_user_meta_data = '{"name": "Renamed Spoof"}'
+where id = '00000000-0000-4000-8000-0000000000a5';
+select is(
+  (select name from public.profiles where id = '00000000-0000-4000-8000-0000000000a5'),
+  'Renamed Spoof', 'without a GitHub identity, an edited metadata name is used');
+
+update auth.identities
+set identity_data = identity_data || jsonb_build_object('user_name', 'ada-l', 'name', E'Ada\u0007 King ' || repeat('y', 80))
+where user_id = '00000000-0000-4000-8000-0000000000a1';
+select results_eq(
+  $$select name, handle from public.profiles where id = '00000000-0000-4000-8000-0000000000a1'$$,
+  $$select 'Ada King ' || repeat('y', 55), 'ada-l'$$,
+  'when the GitHub identity changes, the name (cleaned) and handle follow');
+
+update auth.identities set identity_data = (identity_data - 'name') || '{"full_name": "Ada Full"}'
 where user_id = '00000000-0000-4000-8000-0000000000a1';
 select is(
-  (select handle from public.profiles where id = '00000000-0000-4000-8000-0000000000a1'),
-  'ada-l', 'a renamed GitHub account refreshes the handle');
+  (select name from public.profiles where id = '00000000-0000-4000-8000-0000000000a1'),
+  'Ada Full', 'a GitHub full_name is used when there is no name');
 
 delete from auth.users where id in ('00000000-0000-4000-8000-0000000000a4', '00000000-0000-4000-8000-0000000000a2');
 select is(

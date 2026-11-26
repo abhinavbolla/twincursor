@@ -28,7 +28,7 @@ create table public.profiles (
   avatar_url text check (avatar_url is null or (char_length(avatar_url) <= 2048 and avatar_url ~ '^https://')),
   created_at timestamptz not null default now()
 );
-comment on table public.profiles is 'One row per account, kept in sync with auth.users and the GitHub identity by triggers. name is what the person calls themselves (not verified); handle and avatar_url come only from their GitHub identity.';
+comment on table public.profiles is 'One row per account, kept in sync with auth.users and the GitHub identity by triggers. name is what the person calls themselves on GitHub (not verified by anyone); handle is their GitHub login. With a GitHub identity all three come from it and can''t be edited by the user; only accounts without one take name from user metadata.';
 
 create table public.calls (
   id uuid primary key default gen_random_uuid(),
@@ -266,9 +266,10 @@ create policy "contacts: owner"
 -- Profiles from auth
 -------------------------------------------------------------------------------------------------
 
--- name comes from user metadata (which a user can edit, like any display name). handle and
--- avatar_url come only from the GitHub identity, which the user can't edit, so a handle can be
--- trusted to be that person's GitHub login.
+-- For an account with a GitHub identity, everything comes from that identity, which the user can't
+-- edit: name is what they call themselves on GitHub, handle is their GitHub login. User metadata
+-- (raw_user_meta_data) can be rewritten by the signed-in user with updateUser, so it is used only
+-- for accounts without a GitHub identity.
 create function private.sync_profile(p_user uuid)
 returns void
 language plpgsql
@@ -305,14 +306,19 @@ begin
     v_avatar := null;
   end if;
 
-  v_name := coalesce(
-    private.clean_text(meta ->> 'name', 64),
-    private.clean_text(meta ->> 'full_name', 64),
-    private.clean_text(meta ->> 'user_name', 64),
-    v_handle,
-    private.clean_text(split_part(v_email, '@', 1), 64),
-    'Someone'
-  );
+  if gh is not null then
+    v_name := coalesce(
+      private.clean_text(gh ->> 'name', 64),
+      private.clean_text(gh ->> 'full_name', 64),
+      v_handle,
+      private.clean_text(gh ->> 'user_name', 64));
+  else
+    v_name := coalesce(
+      private.clean_text(meta ->> 'name', 64),
+      private.clean_text(meta ->> 'full_name', 64),
+      private.clean_text(meta ->> 'user_name', 64));
+  end if;
+  v_name := coalesce(v_name, private.clean_text(split_part(v_email, '@', 1), 64), 'Someone');
 
   insert into public.profiles (id, name, handle, avatar_url)
   values (p_user, v_name, v_handle, v_avatar)
@@ -320,7 +326,7 @@ begin
     set name = excluded.name, handle = excluded.handle, avatar_url = excluded.avatar_url;
 end;
 $$;
-comment on function private.sync_profile(uuid) is 'Creates or refreshes a profile from auth.users metadata (name) and the GitHub identity (handle, avatar).';
+comment on function private.sync_profile(uuid) is 'Creates or refreshes a profile: from the GitHub identity when there is one, otherwise from auth.users metadata.';
 
 create function private.on_auth_user()
 returns trigger
