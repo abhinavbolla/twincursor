@@ -3,8 +3,16 @@
 //! on stdout, logs on stderr. The engine exits when its stdin closes, so it never outlives the
 //! app. `permissions` and `devices` print one JSON object.
 //!
-//! The server comes from flags, else the environment, else what the build baked in (`build.rs`),
-//! else the local dev server; `config` prints which, without the secret.
+//! The server's URL comes from `--url`, else the environment, else what the build baked in
+//! (`build.rs`), else the local dev server. A call gets into its room one of two ways:
+//!
+//! - **With a call pass** in `TWINCURSOR_PASS`: an access token the account server signed for one
+//!   person in one room (see `pass.rs`). The pass names the room, the identity and the name, so
+//!   `--room` and `--name` aren't needed, and no API key or secret is read.
+//! - **With an API key and secret** (flags, else the environment, else the build's, else the dev
+//!   server's): the engine mints its own token for `--room` and `--name`.
+//!
+//! `config` prints which server and mode a call would use, never the secret or the pass.
 //!
 //! `tc-spike` is the same engine as a development tool, with its terminal prompt and its
 //! measurement flags; this binary carries only what the app needs.
@@ -30,6 +38,11 @@ use media::token;
 const URL_ENV: &str = "TWINCURSOR_SERVER_URL";
 const KEY_ENV: &str = "TWINCURSOR_API_KEY";
 const SECRET_ENV: &str = "TWINCURSOR_API_SECRET";
+/// A call pass. Only ever from the environment: other users of this Mac can read a process's
+/// flags, and the pass lets whoever holds it into the call.
+const PASS_ENV: &str = "TWINCURSOR_PASS";
+
+mod pass;
 
 /// The server the build environment named, if any (see `build.rs`).
 mod baked {
@@ -81,6 +94,17 @@ fn env_var(name: &str) -> Option<String> {
     std::env::var(name).ok()
 }
 
+/// The call pass in the environment, if there is one. Empty counts as unset.
+fn pass_from_env() -> Option<String> {
+    env_var(PASS_ENV).filter(|v| !v.trim().is_empty())
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 /// The server's URL, API key and API secret, each from wherever it comes.
 struct Server {
     url: (String, Origin),
@@ -108,19 +132,26 @@ impl Server {
     }
 
     /// What `config` prints. Never the secret: only whether one other than the dev server's is
-    /// in effect.
-    fn describe(&self) -> serde_json::Value {
+    /// in effect. Never the pass: only whether one is, in which case a call uses it and not the
+    /// key and secret.
+    fn describe(&self, has_pass: bool) -> serde_json::Value {
         serde_json::json!({
             "url": self.url.0,
             "api_key": self.api_key.0,
             "has_secret": self.api_secret.1 != Origin::Dev,
+            "has_pass": has_pass,
             "source": self.url.1.name(),
         })
     }
 }
 
 #[derive(Parser)]
-#[command(version, about)]
+#[command(
+    version,
+    about,
+    after_help = "A call joins with the call pass in TWINCURSOR_PASS if there is one (then --room and \
+--name come from the pass), else with an API key and secret, minting its own token."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Cmd,
@@ -142,12 +173,38 @@ enum Cmd {
     Devices,
     /// Print the windows `share --window` can share as JSON: id, app, pid, title, pixels.
     Windows,
-    /// Print the server a call would use, as JSON: url, api_key, has_secret and source
-    /// (`env`, `build` or `dev`). Never prints the secret.
+    /// Print the server a call would use, as JSON: url, api_key, has_secret, has_pass and
+    /// source (`env`, `build` or `dev`). Never prints the secret or the pass.
     Config,
+    /// Print a call pass minted with this engine's key and secret, for testing pass mode against
+    /// a development server. Refused by builds that carry a server's key.
+    #[command(hide = true)]
+    DevPass(DevPassArgs),
 }
 
-/// Where the call is, and who this person says they are.
+#[derive(Args)]
+struct DevPassArgs {
+    #[arg(long)]
+    room: String,
+    #[arg(long, value_enum)]
+    role: PassRole,
+    #[arg(long)]
+    name: String,
+    /// The identity after the role's prefix. Default: a random UUID-like value.
+    #[arg(long)]
+    id: Option<String>,
+    /// How long the pass is valid, in seconds.
+    #[arg(long, default_value_t = 3600)]
+    ttl: u64,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum PassRole {
+    Sharer,
+    Guest,
+}
+
+/// Where the call is, and who this person is.
 #[derive(Args)]
 struct Call {
     /// The server's URL [env: TWINCURSOR_SERVER_URL; default: the build's, else the local dev
@@ -155,20 +212,21 @@ struct Call {
     #[arg(long)]
     url: Option<String>,
     /// The server's API key [env: TWINCURSOR_API_KEY; default: the build's, else the dev
-    /// server's].
+    /// server's]. Not with a call pass.
     #[arg(long)]
     api_key: Option<String>,
     /// The server's API secret [env: TWINCURSOR_API_SECRET; default: the build's, else the dev
-    /// server's]. Prefer
-    /// the environment: other users of this Mac can read a process's flags.
+    /// server's]. Prefer the environment: other users of this Mac can read a process's flags.
+    /// Not with a call pass.
     #[arg(long)]
     api_secret: Option<String>,
-    /// The room to join.
+    /// The room to join. Required without a call pass; with one, it must be the pass's room.
     #[arg(long)]
-    room: String,
-    /// The name the others see. They can't check it, and neither can we.
+    room: Option<String>,
+    /// The name the others see, without a call pass (required then). They can't check it, and
+    /// neither can we. A call pass carries its account's name, which wins.
     #[arg(long)]
-    name: String,
+    name: Option<String>,
     /// Speak the app's protocol on stdin and stdout, and exit when stdin closes.
     #[arg(long)]
     ipc: bool,
@@ -195,20 +253,62 @@ impl Call {
         self.server().url.0
     }
 
+    /// How `role` gets into the room: with the call pass in the environment, else with a token
+    /// minted for `--room` and `--name`.
+    fn join(&self, role: Role) -> anyhow::Result<Joining> {
+        self.join_with(role, pass_from_env(), now_secs())
+    }
+
+    fn join_with(&self, role: Role, pass: Option<String>, now: u64) -> anyhow::Result<Joining> {
+        let Some(jwt) = pass else {
+            return self.mint(role);
+        };
+        // Only flags: a key and secret in the environment or the build are simply not used.
+        anyhow::ensure!(
+            self.api_key.is_none() && self.api_secret.is_none(),
+            "--api-key and --api-secret can't be used with a call pass ({PASS_ENV})"
+        );
+        let pass = pass::Pass::decode(&jwt, now)?;
+        pass.check_role(role)?;
+        if let Some(room) = &self.room {
+            anyhow::ensure!(
+                *room == pass.room,
+                "This call pass is for room `{}`, not `{room}`",
+                pass.room
+            );
+        }
+        if self.name.as_ref().is_some_and(|name| *name != pass.name) {
+            tracing::info!("using the call pass's name, not --name");
+        }
+        Ok(Joining {
+            identity: pass.identity,
+            name: pass.name,
+            token: jwt.trim().to_owned(),
+        })
+    }
+
     /// A token for a fresh identity with `role`'s prefix. The secret goes into the token's
     /// signature and nowhere else.
-    fn token(&self, role: Role) -> anyhow::Result<(String, String)> {
+    fn mint(&self, role: Role) -> anyhow::Result<Joining> {
+        // `main` has made clap require both without a pass; this is only a backstop.
+        let (Some(room), Some(name)) = (&self.room, &self.name) else {
+            anyhow::bail!("--room and --name are needed without a call pass ({PASS_ENV})");
+        };
         let identity = app::new_identity(role);
         let server = self.server();
-        let jwt = token::mint(
+        let token = token::mint(
             &server.api_key.0,
             &server.api_secret.0,
-            &self.room,
+            room,
             &identity,
-            &self.name,
+            name,
         )
         .context("couldn't make an access token")?;
-        Ok((identity, jwt))
+        Ok(Joining {
+            identity,
+            name: name.clone(),
+            token,
+        })
     }
 
     fn audio(&self) -> anyhow::Result<AudioMode> {
@@ -228,6 +328,22 @@ impl Call {
                 })
             }
         })
+    }
+}
+
+/// Who joins, as whom, with which token. The token is a credential: `Debug` leaves it out.
+struct Joining {
+    identity: String,
+    name: String,
+    token: String,
+}
+
+impl std::fmt::Debug for Joining {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Joining")
+            .field("identity", &self.identity)
+            .field("name", &self.name)
+            .finish_non_exhaustive()
     }
 }
 
@@ -331,7 +447,7 @@ fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| "info,livekit=warn,libwebrtc=warn".into()),
         )
         .init();
-    match Cli::parse().command {
+    match parse().command {
         Cmd::Share(args) => share(args),
         Cmd::View(args) => watch(args),
         Cmd::Permissions { request } => {
@@ -347,7 +463,12 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Config => {
-            print_line(&Server::resolve(None, None, None).describe().to_string());
+            let server = Server::resolve(None, None, None);
+            print_line(&server.describe(pass_from_env().is_some()).to_string());
+            Ok(())
+        }
+        Cmd::DevPass(args) => {
+            print_line(&dev_pass(&Server::resolve(None, None, None), &args)?);
             Ok(())
         }
         Cmd::Devices => {
@@ -357,6 +478,87 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+/// Parses the command line. Without a call pass, `share` and `view` need `--room` and `--name`,
+/// and clap says so as it would for any required flag.
+fn parse() -> Cli {
+    use clap::FromArgMatches;
+    let command = cli_command(pass_from_env().is_some());
+    let mut matches = command.get_matches();
+    Cli::from_arg_matches_mut(&mut matches).unwrap_or_else(|e| e.exit())
+}
+
+fn cli_command(has_pass: bool) -> clap::Command {
+    use clap::CommandFactory;
+    let command = Cli::command();
+    if has_pass {
+        return command;
+    }
+    let required = |c: clap::Command| {
+        c.mut_arg("room", |a| a.required(true))
+            .mut_arg("name", |a| a.required(true))
+    };
+    command
+        .mut_subcommand("share", required)
+        .mut_subcommand("view", required)
+}
+
+/// A call pass for `args`, signed with `server`'s key and secret, for testing pass mode. A build
+/// that carries a server's key must not hand out passes for it, so this needs a key and secret
+/// from the environment or the dev server's.
+fn dev_pass(server: &Server, args: &DevPassArgs) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        server.api_key.1 != Origin::Build && server.api_secret.1 != Origin::Build,
+        "dev-pass only signs with a key and secret from the environment or the dev server's, \
+         not ones built into this engine"
+    );
+    let id = args.id.clone().unwrap_or_else(random_id);
+    anyhow::ensure!(
+        !id.trim().is_empty() && !id.chars().any(char::is_control),
+        "--id can't be empty or hold control characters"
+    );
+    let (prefix, role) = match args.role {
+        PassRole::Sharer => ("sharer", Role::Sharer),
+        PassRole::Guest => ("guest", Role::Guest),
+    };
+    let jwt = token::mint_with_ttl(
+        &server.api_key.0,
+        &server.api_secret.0,
+        &args.room,
+        &format!("{prefix}-{id}"),
+        &args.name,
+        Duration::from_secs(args.ttl),
+    )
+    .context("couldn't make a call pass")?;
+    // What a call would make of it, so a pass this prints is one `share` or `view` takes.
+    pass::Pass::decode(&jwt, now_secs())?.check_role(role)?;
+    Ok(jwt)
+}
+
+/// A random value shaped like a UUID (8-4-4-4-12 hex digits), as account ids are.
+fn random_id() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let half = |salt: u64| {
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        hasher.write_u64(salt);
+        hasher.write_u32(std::process::id());
+        hasher.write_u128(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos()),
+        );
+        hasher.finish()
+    };
+    let hex = format!("{:016x}{:016x}", half(1), half(2));
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    )
 }
 
 /// Prints and flushes one line. A closed pipe means nobody is listening, which is no reason to
@@ -561,6 +763,8 @@ fn device_ref(name: String) -> DeviceRef {
 }
 
 fn share_config(args: &ShareArgs) -> anyhow::Result<(ShareConfig, Arc<VoiceState>)> {
+    // First, so a pass that doesn't fit fails before anything else is set up.
+    let token = args.call.join(Role::Sharer)?.token;
     anyhow::ensure!(
         !(args.allow_control && (args.window.is_some() || args.app.is_some())),
         "{}",
@@ -597,7 +801,6 @@ fn share_config(args: &ShareArgs) -> anyhow::Result<(ShareConfig, Arc<VoiceState
     }
     .unwrap_or(capture::FALLBACK_DISPLAY);
     let (width, height) = tier.size(screen);
-    let (_, token) = args.call.token(Role::Sharer)?;
     let config = ShareConfig {
         url: args.call.url(),
         token,
@@ -692,10 +895,10 @@ fn watch(args: ViewArgs) -> anyhow::Result<()> {
         app::announce_only(decoders).map_err(|e| failed_early(&events, anyhow::anyhow!(e)))?;
     }
     let setup = (|| -> anyhow::Result<_> {
-        let (_, token) = args.call.token(Role::Guest)?;
-        Ok(ViewConfig {
+        let joining = args.call.join(Role::Guest)?;
+        let config = ViewConfig {
             url: args.call.url(),
-            token,
+            token: joining.token,
             tick_interval: Duration::from_millis(247),
             net_stats: true,
             measure_quality: false,
@@ -704,9 +907,10 @@ fn watch(args: ViewArgs) -> anyhow::Result<()> {
             snapshots: None,
             audio: args.call.audio()?,
             voice: VoiceOptions::default(),
-        })
+        };
+        Ok((config, joining.name))
     })();
-    let config = setup.map_err(|e| failed_early(&events, e))?;
+    let (config, name) = setup.map_err(|e| failed_early(&events, e))?;
     let (tx, rx) = mpsc::channel();
     if args.call.ipc {
         // The sender lives in the stdin thread; the viewer reads until it is gone.
@@ -732,7 +936,7 @@ fn watch(args: ViewArgs) -> anyhow::Result<()> {
         out: None,
         control_script: args.control_script,
         sent_log: args.sent_log,
-        name: args.call.name.clone(),
+        name,
         app: Some(view::ViewApp {
             events: events.clone(),
             commands: rx,
@@ -780,16 +984,215 @@ mod tests {
             api_key: ("key".into(), Origin::Build),
             api_secret: ("very-secret-value".into(), Origin::Build),
         };
-        let text = server.describe().to_string();
+        let text = server.describe(false).to_string();
         assert!(!text.contains("very-secret-value"), "{text}");
-        assert_eq!(server.describe()["has_secret"], true);
-        assert_eq!(server.describe()["source"], "build");
-        let dev = Server {
+        assert_eq!(server.describe(false)["has_secret"], true);
+        assert_eq!(server.describe(false)["has_pass"], false);
+        assert_eq!(server.describe(true)["has_pass"], true);
+        assert_eq!(server.describe(false)["source"], "build");
+        let dev = dev_server();
+        assert_eq!(dev.describe(false)["has_secret"], false);
+        assert_eq!(dev.describe(false)["source"], "dev");
+    }
+
+    fn dev_server() -> Server {
+        Server {
             url: (token::DEV_URL.into(), Origin::Dev),
             api_key: (token::DEV_API_KEY.into(), Origin::Dev),
             api_secret: (token::DEV_API_SECRET.into(), Origin::Dev),
+        }
+    }
+
+    const UUID: &str = "3f2c8a8e-5b7d-4e8f-9a51-0d6c1e2b7f40";
+
+    /// A pass the dev server would take, for `role`-`UUID`.
+    fn a_pass(role: PassRole, room: &str, name: &str) -> String {
+        dev_pass(
+            &dev_server(),
+            &DevPassArgs {
+                room: room.into(),
+                role,
+                name: name.into(),
+                id: Some(UUID.into()),
+                ttl: 600,
+            },
+        )
+        .unwrap()
+    }
+
+    fn call(has_pass: bool, args: &[&str]) -> Result<Call, clap::Error> {
+        use clap::FromArgMatches;
+        let argv = ["tc-engine"].iter().chain(args);
+        let mut matches = cli_command(has_pass).try_get_matches_from(argv)?;
+        Ok(match Cli::from_arg_matches_mut(&mut matches)?.command {
+            Cmd::Share(a) => a.call,
+            Cmd::View(a) => a.call,
+            _ => panic!("not a call"),
+        })
+    }
+
+    fn join(call: &Call, role: Role, pass: &str) -> anyhow::Result<Joining> {
+        call.join_with(role, Some(pass.into()), now_secs())
+    }
+
+    #[test]
+    fn room_and_name_are_required_without_a_pass() {
+        for sub in ["share", "view"] {
+            let e = call(false, &[sub]).err().expect("needs --room and --name");
+            assert_eq!(e.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+            let text = e.to_string();
+            assert!(text.contains("--room") && text.contains("--name"), "{text}");
+            assert!(call(false, &[sub, "--room", "r", "--name", "Sam"]).is_ok());
+            // With a pass, neither is needed.
+            assert!(call(true, &[sub]).is_ok());
+        }
+    }
+
+    #[test]
+    fn a_pass_says_who_joins_where() {
+        let pass = a_pass(PassRole::Sharer, "r1", "Alex");
+        let joining = join(&call(true, &["share"]).unwrap(), Role::Sharer, &pass).unwrap();
+        assert_eq!(joining.identity, format!("sharer-{UUID}"));
+        assert_eq!(app::role_of(&joining.identity), Role::Sharer);
+        assert_eq!(joining.name, "Alex");
+        assert_eq!(joining.token, pass);
+
+        // The pass's name wins; a --room that agrees is fine.
+        let pass = a_pass(PassRole::Guest, "r1", "Sam");
+        let given = call(true, &["view", "--room", "r1", "--name", "Typed"]).unwrap();
+        let joining = join(&given, Role::Guest, &pass).unwrap();
+        assert_eq!(
+            (
+                joining.name.as_str(),
+                joining.identity.starts_with("guest-")
+            ),
+            ("Sam", true)
+        );
+    }
+
+    #[test]
+    fn a_pass_that_doesnt_fit_the_call_is_refused() {
+        let guest = a_pass(PassRole::Guest, "r1", "Sam");
+        let sharer = a_pass(PassRole::Sharer, "r1", "Alex");
+        let e = join(&call(true, &["share"]).unwrap(), Role::Sharer, &guest).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "This pass is for a guest; it can't be used to share"
+        );
+        let e = join(&call(true, &["view"]).unwrap(), Role::Guest, &sharer).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "This pass is for the sharer; it can't be used to view"
+        );
+        let other_room = call(true, &["view", "--room", "r2"]).unwrap();
+        let e = join(&other_room, Role::Guest, &guest).unwrap_err();
+        assert_eq!(e.to_string(), "This call pass is for room `r1`, not `r2`");
+        for flag in ["--api-key", "--api-secret"] {
+            let with_key = call(true, &["view", flag, "x"]).unwrap();
+            let e = join(&with_key, Role::Guest, &guest).unwrap_err();
+            assert_eq!(
+                e.to_string(),
+                "--api-key and --api-secret can't be used with a call pass (TWINCURSOR_PASS)"
+            );
+        }
+    }
+
+    #[test]
+    fn the_pass_is_never_a_flag_nor_printed() {
+        use clap::CommandFactory;
+        let pass = a_pass(PassRole::Guest, "r1", "Sam");
+        // No flag takes it. (clap is built without its `env` feature, so no flag reads the
+        // environment either: only `pass_from_env` does.)
+        let command = Cli::command();
+        for sub in ["share", "view"] {
+            let sub = command.find_subcommand(sub).unwrap();
+            for arg in sub.get_arguments() {
+                let long = arg.get_long().unwrap_or_default();
+                assert!(!long.contains("pass"), "--{long}");
+            }
+            assert!(call(true, &[sub.get_name(), "--pass", &pass]).is_err());
+        }
+        // Not in what a call keeps, and not in any error a pass can cause.
+        let joining = join(&call(true, &["view"]).unwrap(), Role::Guest, &pass).unwrap();
+        let debug = format!("{joining:?}");
+        assert!(!debug.contains(&pass) && debug.contains("Sam"), "{debug}");
+        let failures = [
+            join(&call(true, &["share"]).unwrap(), Role::Sharer, &pass),
+            join(
+                &call(true, &["view", "--room", "r2"]).unwrap(),
+                Role::Guest,
+                &pass,
+            ),
+            join(
+                &call(true, &["view", "--api-key", "k"]).unwrap(),
+                Role::Guest,
+                &pass,
+            ),
+            join(
+                &call(true, &["view"]).unwrap(),
+                Role::Guest,
+                &format!("{pass}.x"),
+            ),
+        ];
+        for failure in failures {
+            let e = failure.unwrap_err();
+            for text in [format!("{e:#}"), format!("{e:?}")] {
+                for part in pass.split('.') {
+                    assert!(!text.contains(part), "{text}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn without_a_pass_the_engine_mints_its_own_token() {
+        let given = call(false, &["share", "--room", "r1", "--name", "Alex"]).unwrap();
+        let joining = given.join_with(Role::Sharer, None, now_secs()).unwrap();
+        assert_eq!(joining.name, "Alex");
+        assert_eq!(app::role_of(&joining.identity), Role::Sharer);
+        let back = pass::Pass::decode(&joining.token, now_secs()).unwrap();
+        assert_eq!(
+            (back.room.as_str(), back.identity),
+            ("r1", joining.identity)
+        );
+    }
+
+    #[test]
+    fn dev_pass_never_signs_with_a_built_in_key() {
+        let args = DevPassArgs {
+            room: "r1".into(),
+            role: PassRole::Guest,
+            name: "Sam".into(),
+            id: None,
+            ttl: 60,
         };
-        assert_eq!(dev.describe()["has_secret"], false);
-        assert_eq!(dev.describe()["source"], "dev");
+        for (key, secret) in [
+            (Origin::Build, Origin::Build),
+            (Origin::Env, Origin::Build),
+            (Origin::Build, Origin::Env),
+        ] {
+            let server = Server {
+                url: ("wss://example.test".into(), Origin::Env),
+                api_key: ("key".into(), key),
+                api_secret: ("a-secret-long-enough".into(), secret),
+            };
+            let e = dev_pass(&server, &args).unwrap_err().to_string();
+            assert!(e.contains("not ones built into this engine"), "{e}");
+        }
+        let server = Server {
+            url: ("wss://example.test".into(), Origin::Build),
+            api_key: ("key".into(), Origin::Env),
+            api_secret: ("a-secret-long-enough".into(), Origin::Env),
+        };
+        let pass = pass::Pass::decode(&dev_pass(&server, &args).unwrap(), now_secs()).unwrap();
+        assert_eq!(pass.role, Role::Guest);
+        let id = pass.identity.strip_prefix("guest-").unwrap();
+        let groups: Vec<usize> = id.split('-').map(str::len).collect();
+        assert_eq!(groups, [8, 4, 4, 4, 12], "{id}");
+        assert!(
+            id.chars().all(|c| c == '-' || c.is_ascii_hexdigit()),
+            "{id}"
+        );
+        assert_ne!(random_id(), random_id());
     }
 }

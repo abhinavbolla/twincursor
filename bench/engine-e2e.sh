@@ -15,6 +15,11 @@
 #
 # Then the app dies: the engine's stdin closes and it must exit within two seconds.
 #
+# Then the same call with call passes (`tc-engine dev-pass`, in TWINCURSOR_PASS) and no --room or
+# --name: each side sees the other under the pass's identity, name and role, video flows, control
+# is asked for, allowed, used and revoked, and neither pass shows up in any event or log. A
+# guest's pass given to `share`, and a sharer's to `view`, must fail before connecting.
+#
 # Needs `livekit-server --dev` running, jq, swiftc, and a release build:
 #   cargo build --release -p twincursor-engine-cli -p twincursor-media-spike
 # Usage: bench/engine-e2e.sh   (BIN=path/to/tc-engine SPIKE=path/to/tc-spike to use other builds)
@@ -216,6 +221,106 @@ for side in share view; do
     fail "$side took ${ms} ms to exit"
   fi
 done
+
+echo "=== a call with call passes: no --room, no --name, no key or secret"
+# Mints passes as the account server would (dev-pass signs with the dev server's key), and hands
+# them over as the app does, in TWINCURSOR_PASS.
+proom="e2e-pass-$$"
+sid=$(uuidgen | tr '[:upper:]' '[:lower:]')
+gid=$(uuidgen | tr '[:upper:]' '[:lower:]')
+sharer_pass=$("$BIN" dev-pass --room "$proom" --role sharer --name "Alex Account" --id "$sid" --ttl 600)
+guest_pass=$("$BIN" dev-pass --room "$proom" --role guest --name "Sam Account" --id "$gid" --ttl 600)
+mkfifo "$OUT/pass-share.in" "$OUT/pass-view.in"
+
+TWINCURSOR_PASS=$sharer_pass "$BIN" share --ipc --audio off --capture pattern --resolution 720 \
+  --allow-control --inject "record:$OUT/pass-actions.jsonl" \
+  <"$OUT/pass-share.in" >"$OUT/pass-share.jsonl" 2>"$OUT/pass-share.log" &
+psharer=$!
+pids+=("$psharer")
+exec 3>"$OUT/pass-share.in"
+check "$OUT/pass-share.jsonl" '.event == "connection" and .state == "connected"' "sharer connected with its pass"
+check "$OUT/pass-share.jsonl" '.event == "stats" and .fps > 0' "sharer is sending video"
+
+TWINCURSOR_PASS=$guest_pass "$BIN" view --ipc --audio off --headless \
+  --control-script "$OUT/script.json" --sent-log "$OUT/pass-sent.jsonl" \
+  <"$OUT/pass-view.in" >"$OUT/pass-view.jsonl" 2>"$OUT/pass-view.log" &
+pviewer=$!
+pids+=("$pviewer")
+exec 4>"$OUT/pass-view.in"
+check "$OUT/pass-view.jsonl" '.event == "connection" and .state == "connected"' "guest connected with its pass"
+check "$OUT/pass-share.jsonl" ".event == \"participants\" and (.participants | any(.identity == \"guest-$gid\" and .name == \"Sam Account\" and .role == \"guest\"))" \
+  "sharer sees guest-<uuid> as Sam Account, a guest"
+check "$OUT/pass-view.jsonl" ".event == \"participants\" and (.participants | any(.identity == \"sharer-$sid\" and .name == \"Alex Account\" and .role == \"sharer\"))" \
+  "guest sees sharer-<uuid> as Alex Account, the sharer"
+check "$OUT/pass-view.jsonl" '.event == "stats" and .fps > 0' "guest is receiving video"
+
+echo '{"cmd":"request_control"}' >&4
+check "$OUT/pass-share.jsonl" ".event == \"control_asked\" and .name == \"Sam Account\" and .identity == \"guest-$gid\"" "Sam Account's request reaches the app"
+request=$(first "$OUT/pass-share.jsonl" '.event == "control_asked"' | jq -r .request)
+echo "{\"cmd\":\"allow_control\",\"request\":$request}" >&3
+check "$OUT/pass-share.jsonl" '.event == "control" and .state == "controlling" and .by.name == "Sam Account"' "sharer: Sam Account is controlling"
+check "$OUT/pass-view.jsonl" '.event == "control" and .state == "controlling"' "guest: in control"
+label_during=0
+for _ in $(seq 100); do label_shown "$psharer" && { label_during=1; break; }; sleep 0.05; done
+[[ $label_during -eq 1 ]] && pass "the control label is on screen" || fail "no control label during control"
+for _ in $(seq 100); do
+  [[ -s $OUT/pass-actions.jsonl ]] && [[ $(grep -c '"text"' "$OUT/pass-actions.jsonl" || true) -ge 5 ]] && break
+  sleep 0.1
+done
+sleep 0.5
+echo '{"cmd":"revoke_control"}' >&3
+check "$OUT/pass-share.jsonl" '.event == "control" and .state == "none"' "sharer: control taken back"
+check "$OUT/pass-view.jsonl" '.event == "control" and .state == "none"' "guest: no longer in control"
+if "$SPIKE" replay --sent "$OUT/pass-sent.jsonl" --actions "$OUT/pass-actions.jsonl" >"$OUT/pass-replay.log" 2>&1; then
+  pass "what was recorded is what the guest sent ($(tail -1 "$OUT/pass-replay.log"))"
+else
+  fail "replay: $(tail -3 "$OUT/pass-replay.log")"
+fi
+echo '{"cmd":"leave"}' >&4
+check "$OUT/pass-view.jsonl" '.event == "ended" and .reason == "left"' "guest left"
+echo '{"cmd":"leave"}' >&3
+check "$OUT/pass-share.jsonl" '.event == "ended" and .reason == "left"' "sharer left"
+exec 3>&- 4>&-
+for pid in "$psharer" "$pviewer"; do
+  for _ in $(seq 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+  kill -0 "$pid" 2>/dev/null && fail "process $pid still running after leave" || pass "process $pid exited"
+done
+leaked=0
+for pass_value in "$sharer_pass" "$guest_pass"; do
+  for part in $(tr '.' ' ' <<<"$pass_value"); do
+    grep -qF -- "$part" "$OUT"/pass-*.jsonl "$OUT"/pass-*.log 2>/dev/null && leaked=1
+  done
+done
+[[ $leaked -eq 0 ]] && pass "neither pass appears in any event or log" || fail "a pass leaked into events or logs"
+
+echo "=== a pass for the other role fails fast"
+wrong() {
+  local side=$1 pass_value=$2 message=$3 flags=()
+  [[ $side == share ]] && flags=(--capture pattern --resolution 720) || flags=(--headless)
+  TWINCURSOR_PASS=$pass_value "$BIN" "$side" --ipc --audio off "${flags[@]}" \
+    </dev/null >"$OUT/wrong-$side.jsonl" 2>"$OUT/wrong-$side.log" &
+  local pid=$! start end
+  start=$(python3 -c 'import time; print(time.time())')
+  for _ in $(seq 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -INT "$pid" 2>/dev/null || true
+    fail "$side with the wrong pass still running after 5 s"
+    return
+  fi
+  local code=0
+  wait "$pid" || code=$?
+  end=$(python3 -c 'import time; print(time.time())')
+  ms=$(python3 -c "print(round(($end - $start) * 1000))")
+  if [[ $code -ne 0 ]] && jq -e -s --arg m "$message" \
+    'any(.event == "error" and .message == $m) and (last.event == "ended" and last.reason == "failed") and all(.event != "connection" or .state != "connected")' \
+    "$OUT/wrong-$side.jsonl" >/dev/null; then
+    pass "$side refuses it in ${ms} ms: $message"
+  else
+    fail "$side with the wrong pass (exit $code): $(tail -2 "$OUT/wrong-$side.jsonl")"
+  fi
+}
+wrong share "$guest_pass" "This pass is for a guest; it can't be used to share."
+wrong view "$sharer_pass" "This pass is for the sharer; it can't be used to view."
 
 if [[ $failed -eq 0 ]]; then echo "engine-e2e: PASS"; else echo "engine-e2e: FAIL (events and logs in $OUT)"; fi
 exit $failed

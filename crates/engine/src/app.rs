@@ -5,10 +5,16 @@
 //! viewer) report it through an [`Events`] sink; `tc-engine` writes each event as a line.
 //!
 //! **Roles travel in the identity.** A participant's LiveKit identity starts with their role:
-//! `sharer-…` or `guest-…` (`tc-spike` uses the plain `sharer` and `viewer`). The server signs
-//! the identity in the token, and every data packet carries the sender's identity, so the role of
-//! whoever sent a control message is known without a lookup. **Names travel in the token's name
-//! field**, which the person types: it is shown, never trusted.
+//! `sharer-…` or `guest-…` (`tc-spike` uses the plain `sharer` and `viewer`). The token signs
+//! the identity, and every data packet carries the sender's identity, so the role of whoever sent
+//! a control message is known without a lookup. **Names travel in the token's name field.**
+//!
+//! Where both come from depends on how the engine joined. With a **call pass**, the account
+//! server signed the token: the identity is `sharer-<account id>` or `guest-<account id>` (the id
+//! is a UUID, dashes and all), and the name is that account's display name. Without one, the
+//! engine mints its own token: the identity is [`new_identity`]'s and the name is whatever the
+//! person typed, so it is shown, never trusted. Either way the name in a guest's control `Hello`
+//! is the guest's own claim, not the token's.
 
 use std::collections::BTreeMap;
 use std::hash::{BuildHasher, Hasher};
@@ -187,6 +193,11 @@ mod tests {
         assert_eq!(role_of(""), Role::Unknown);
         assert_eq!(role_of(&new_identity(Role::Sharer)), Role::Sharer);
         assert_eq!(role_of(&new_identity(Role::Guest)), Role::Guest);
+        // A call pass's identity carries an account's UUID: only the first dash counts.
+        let uuid = "3f2c8a8e-5b7d-4e8f-9a51-0d6c1e2b7f40";
+        assert_eq!(role_of(&format!("sharer-{uuid}")), Role::Sharer);
+        assert_eq!(role_of(&format!("guest-{uuid}")), Role::Guest);
+        assert_eq!(role_of(&format!("{uuid}-sharer")), Role::Unknown);
     }
 
     #[test]
@@ -232,6 +243,12 @@ mod tests {
             .hello("guest-1", &[Codec::H264, Codec::H265])
             .is_none());
         assert!(people.hello("guest-2", &[Codec::H264]).is_none());
+
+        // Identities from call passes, with dashes in them, are kept apart like any other.
+        let uuid = "3f2c8a8e-5b7d-4e8f-9a51-0d6c1e2b7f40";
+        people.joined(&format!("guest-{uuid}"), "Kim");
+        assert_eq!(people.name(&format!("guest-{uuid}")), Some("Kim"));
+        assert!(people.left(&format!("guest-{uuid}")).is_some());
 
         // A participant without a name in their token shows as their identity.
         people.joined("viewer", "");
