@@ -89,7 +89,8 @@ The latency markers `tc-spike` stamps into the top left of the picture are off i
 | `{"cmd":"leave"}` | both | Leave the call; the engine sends `ended` and exits |
 | `{"cmd":"allow_control","request":N}` | sharer | Grant request `N` from `control_asked` |
 | `{"cmd":"deny_control","request":N}` | sharer | Turn request `N` down |
-| `{"cmd":"revoke_control"}` | sharer | Take control back at once, as the revoke hotkey does |
+| `{"cmd":"revoke_control"}` | sharer | Take control back at once, as the revoke hotkey does, and every trust with it |
+| `{"cmd":"trust_control","identity":"…"}` | sharer | Let this guest take control during this call without a prompt (see [Trusted control](#trusted-control)) |
 | `{"cmd":"request_control"}` | guest | Ask the sharer for control |
 | `{"cmd":"release_control"}` | guest | Give control back, or withdraw the request |
 | `{"cmd":"set_mic","device":"…"}`, `{"cmd":"set_speaker","device":null}` | both | Switch devices mid-call, by name as `devices` lists them; `null` is the system default |
@@ -104,7 +105,7 @@ A command that can't be read, or doesn't fit the role, gets an `error` event; th
 | `connection` | `state`: `connecting`, `connected`, `reconnecting`, `disconnected` |
 | `participants` | Everyone else in the call, after any change: `identity`, `name`, `role`, and for guests the `decoders` they announced (`h264`, `h265`, `vp8`, `vp9`, `av1`) |
 | `control_asked` | Sharer: `request` (counts from 1), the guest's `identity`, `name` and `platform` |
-| `control` | `state`: `none`, `asked` or `controlling`, and `by`: who (on a guest, this guest) |
+| `control` | `state`: `none`, `asked` or `controlling`; `by`: who (on a guest, this guest); `trusted`: on the sharer, the guests trusted with control right now (`identity`, `name`), always `[]` on a guest. Sent again whenever any of it changes |
 | `voice` | `sending`, `muted`, and the `mic` and `speaker` in use |
 | `stats` | About once a second: `width`, `height`, `fps`, `kbps`, `rtt_ms`, `codec`, and on a guest with a window `shown_pct` (100 is 1:1) |
 | `error` | `message`: a sentence for a person. The call may go on |
@@ -118,18 +119,49 @@ Every field is always present, `null` when there is nothing to say.
 event with a request number, and **only an `allow_control` naming that number, while that guest is
 still asking, grants control**. An allow for any other number, for a request that was withdrawn,
 or one sent after control ended is refused with an `error`, so a click meant for one request can
-never grant another. No answer means no control. Without `--allow-control`, requests are turned
-down without reaching the app.
+never grant another. No answer means no control. The one other way to get control is a trust
+the sharer gave that guest beforehand, in this call ([below](#trusted-control)). Without
+`--allow-control`, requests are turned down without reaching the app.
 
 The rest of hard rule 4 stays in the engine, where it doesn't depend on the app: the "is
 controlling" label on the sharer's screen, and the revoke hotkey (⌃⌥⌘R), which works with the
 app hung or gone and the network down. `revoke_control` trips the same switch as the hotkey.
 
-**Names are not proof of who someone is.** Without a call pass, the name in `control_asked` is
-what the guest typed; with one, it is the guest's account name, but it still arrives in the
-guest's own control `hello`, not from the server. The app should show it as such ("Sam (unverified)"
-until accounts exist), and the sharer should grant control because they recognise the person on
-the call, not because of the name.
+### Trusted control
+
+`trust_control` is the sharer's standing grant for one guest, for one call ("Let in with
+control", "Give control"; [ADR 0010](adr/0010-trusted-control.md)). After it, that guest's
+requests are granted at once: no `control_asked`, no request number, straight to a `control`
+event with `state` `controlling`. Everything else about the grant is the same as after an allow:
+the label, the input checks, the revoke hotkey. If the guest is asking when the trust arrives,
+they get control then, and that request's number is closed, so a later `allow_control` for it is
+refused as no longer open. Trust grants nothing by itself: the guest still has to ask.
+
+The trust lasts until any revoke (the hotkey, `revoke_control`, "Take back"), which clears every
+trust whether or not anyone is in control, or until that guest leaves the call. Giving control
+back keeps it. It is never stored anywhere, and nothing a guest or the server sends can create it.
+A revoke that happens after the app sent `trust_control` wins, even if the engine carries it out
+first.
+
+`trust_control` is refused with an `error` event, and trusts nobody, when:
+
+| When | `message` |
+|---|---|
+| The share has no `--allow-control` | "This share doesn't allow remote control." |
+| The identity isn't a guest's (the sharer's own included) | "Only a guest can be given control." |
+| Nobody with that identity is in the call | "That person isn't in the call." |
+| Another guest has control | "Someone else is in control. Take control back first." |
+| A revoke came after the app sent it | "Control was just taken back, so nobody was given it." |
+
+### Names
+
+The name in `control_asked`, in `control` (`by` and `trusted`) and on the sharer's "… is
+controlling" label is the one in the guest's token, as `participants` shows it, and not the one
+the guest's own app puts in its control `hello` (the hello's name is only used for a guest whose
+token has none). With a call pass, the token's name is the guest's account name, signed by the
+account server. Without one, it is still whatever the guest typed: there, a name is not proof of
+who someone is, and the sharer should grant control because they recognise the person on the
+call.
 
 ## Who is who
 
@@ -154,7 +186,11 @@ the same, once, if an engine sharing with HEVC fails before it sends any video).
 pattern and a headless guest, a request, the check that nothing is granted without an answer, an
 allow, typing (recorded, not injected), a revoke, a stale allow, both leaving, and the engine
 exiting when its stdin closes. It then runs a call again with passes from `dev-pass` and no
-`--room` or `--name`, and checks that a pass for the other role is refused before connecting.
+`--room` or `--name`, then trusted control with passes (a trusted request granted with no prompt,
+again after giving control back, a revoke before and after the guest asks, refused trusts, a guest
+who leaves and rejoins with the same pass, a share without `--allow-control`, and a guest whose
+hello claims another name), and checks that a pass for the other role is refused before
+connecting.
 
 `bench/app-e2e.sh` runs the real desktop app instead, in its test-only script mode, against a
 headless guest: a deny, an allow with recorded typing, a revoke and a leave, then the switch from
