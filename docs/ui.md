@@ -61,13 +61,13 @@ when they show is decided in `surfaces.rs`, as plain tested functions).
 
 | State | What it shows |
 | --- | --- |
-| Not set up | "This build isn't connected to a server." and "See the self-hosting guide to set one up." |
+| Not set up | "This build isn't connected to a server." and "See the self-hosting guide to set one up.", where "self-hosting guide" is a link-styled button that opens [the guide](self-hosting.md) in the browser (the address is fixed in Rust, `open_self_hosting_guide`) |
 | Signed out | "Sign in to share your screen and call people." and **Sign in with GitHub**; a sign-in error as one line under it |
 | Signing in | "Finish signing in in your browser…" and a quiet **Cancel** |
 | Home | Rings on top ("**Sam Rivera** is calling", **Decline**, **Join**); **Share my screen**; **Paste link** with "Join with a link someone sent you"; **People**, one 36 px row each with a **Call** button |
 | No people | "People you've been in a call with show up here." |
 | Starting | Share reads "Starting…", nothing moves |
-| Sharing | "You're sharing your screen" with **Stop sharing**, the call link with **Copy link**; Call rings people into the call, and rows say "Ringing…" or "In the call" |
+| Sharing | "You're sharing your screen" with **Stop sharing**, the call link with **Copy link**; Call rings people into the call, and rows say "Ringing…" or "In the call"; a ring that went unanswered or was declined says "No answer" or "Declined" (muted) for 10 s after the panel first sees it, then the row shows **Call** again (`ringOutcomes.ts`) |
 | Knocking | "Waiting for **Alex** to let you in…" with **Cancel** |
 | In a call | "In **Alex**'s call" with **Leave** |
 | Needs Screen Recording | "TwinCursor needs Screen Recording to share your screen." with **Open Settings** |
@@ -75,8 +75,8 @@ when they show is decided in `surfaces.rs`, as plain tested functions).
 | Server problem | A muted line pinned to the bottom |
 
 The header holds the mark, "TwinCursor" and your avatar, which opens: your name and @handle,
-**Settings…** (the server settings, as a second page with a back arrow), **Sign out** and
-**Quit TwinCursor**. Signed out, a More button opens the same menu without Sign out.
+**Sign out** and **Quit TwinCursor**. Signed out, a More button opens a menu with only **Quit
+TwinCursor**. There is no Settings page: the server comes with the call pass.
 
 ## The call bar
 
@@ -111,6 +111,8 @@ Sections under the row:
   keyboard until you take control back", **Deny** and **Allow** (off for `ALLOW_AFTER_MS`, with
   the same line).
 - **Needs Accessibility**: "TwinCursor needs Accessibility to give control." **Open Settings**.
+  Shown after Let in with control, Give control or Allow found it missing; after an Allow, the
+  request is turned down and a notice names who wasn't given control.
 - **Notices**: errors first, then notices; at most two, each closable. A notice goes away by
   itself after 6 s, paused while the pointer is over it; an error stays until closed
   (`notices.ts`).
@@ -145,7 +147,8 @@ Sections under the row:
 `npm run dev` in `apps/desktop`, then open `http://localhost:5173/` with:
 
 - `?view=panel&state=<name>`: `off`, `out`, `out-menu`, `signing`, `home`, `empty`, `many`, `ring`, `rings`,
-  `needs`, `starting`, `hosting`, `knocking`, `joined`, `error`, `settings`, `offline`
+  `needs`, `starting`, `hosting`, `rang-missed`, `rang-declined`, `knocking`, `joined`, `error`,
+  `offline`
 - `?view=bar&state=<name>`: `alone`, `knock`, `knock2`, `knock-nohandle`, `with`, `trusted`,
   `controlling`, `asked`, `needs`, `menu`, `notice`, `g-knocking`, `g-watching`, `g-asked`,
   `g-controlling`, `reconnecting`, `muted`, `long-trusted`, `long-controlling`,

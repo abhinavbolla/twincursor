@@ -7,7 +7,7 @@
 //! `calls.rs` runs calls with accounts (sharing, joining by link, letting in, ringing) and owns
 //! the engine of every call; `engine.rs` starts and stops the engine and reads its events;
 //! `windows.rs` makes the windows and the menu bar icon and decides when they show (with
-//! `surfaces.rs`, `native.rs` and `mark.rs`); `settings.rs` keeps the server overrides;
+//! `surfaces.rs`, `native.rs` and `mark.rs`); `settings.rs` keeps where the bar was left;
 //! `accounts.rs` signs in and out (`backend.rs` says where); `script.rs` is the test-only
 //! `--script` mode. This file connects them.
 
@@ -40,7 +40,6 @@ use engine::{Output, Quality, Sink, TestHooks};
 use seams::{
     EnginePermits, MemoryClipboard, RealEngines, ScriptPermits, SystemClipboard, SystemClock,
 };
-use settings::{Settings, SettingsChange, SettingsView};
 use surfaces::Hold;
 use windows::{HeldPermits, Windows};
 
@@ -64,10 +63,6 @@ fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
         .app_config_dir()
         .map(|dir| dir.join("settings.json"))
         .map_err(|e| format!("No settings folder: {e}."))
-}
-
-fn load_settings(app: &AppHandle) -> Result<Settings, String> {
-    Settings::load(&settings_path(app)?)
 }
 
 #[tauri::command]
@@ -111,8 +106,8 @@ fn quit(windows: tauri::State<'_, Windows>) {
 /// knows get through; an allow names the request the person answered, and is refused if it
 /// comes within a second of that request being shown.
 #[tauri::command]
-fn send_command(calls: tauri::State<'_, Calls>, command: ipc::Command) -> Result<(), String> {
-    calls.send_command(&command)
+async fn send_command(calls: tauri::State<'_, Calls>, command: ipc::Command) -> Result<(), String> {
+    calls.send_command(&command).await
 }
 
 #[tauri::command]
@@ -200,24 +195,7 @@ async fn permissions(request: bool) -> Result<Value, String> {
         } else {
             &["permissions"]
         };
-        engine::run_once(&exe, args, &[], &[])
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-/// The server the engine uses when nothing is overridden: what the build baked in, or the local
-/// dev server. Never the secret.
-#[tauri::command]
-async fn engine_config() -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let exe = engine::engine_path()?;
-        engine::run_once(
-            &exe,
-            &["config"],
-            &[],
-            &[settings::URL_ENV, settings::KEY_ENV, settings::SECRET_ENV],
-        )
+        engine::run_once(&exe, args)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -255,19 +233,20 @@ fn open_settings_pane(pane: Pane) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
-fn read_settings(app: AppHandle) -> Result<SettingsView, String> {
-    Ok(load_settings(&app)?.view())
+/// The self-hosting guide, which the panel offers when the build names no backend.
+const SELF_HOSTING_GUIDE: &str =
+    "https://github.com/abhinavbolla/twincursor/blob/main/docs/self-hosting.md";
+
+/// Opens the self-hosting guide with `open`. The address is fixed here, so the window can't
+/// make the app open any other page.
+fn open_guide(open: impl FnOnce(&str) -> Result<(), String>) -> Result<(), String> {
+    open(SELF_HOSTING_GUIDE).map_err(|e| format!("The guide didn't open: {e}."))
 }
 
-/// Saves overrides. The answer says whether a secret is set, never what it is.
+/// The panel's "self-hosting guide" link, in the default browser. Takes nothing from the window.
 #[tauri::command]
-fn save_settings(app: AppHandle, change: SettingsChange) -> Result<SettingsView, String> {
-    let path = settings_path(&app)?;
-    let mut settings = Settings::load(&path)?;
-    settings.apply(change);
-    settings.save(&path)?;
-    Ok(settings.view())
+fn open_self_hosting_guide() -> Result<(), String> {
+    open_guide(accounts::open_browser)
 }
 
 #[tauri::command]
@@ -479,7 +458,7 @@ fn run_script(app: AppHandle, run: ScriptRun) {
     }
     std::thread::spawn(move || {
         let runtime = tauri::async_runtime::handle();
-        let send = |command: &ipc::Command| calls.send_command(command);
+        let send = |command: &ipc::Command| runtime.block_on(calls.send_command(command));
         let home = || serde_json::to_value(calls.home()).unwrap_or(Value::Null);
         let act = |act: script::Act| -> Result<Value, String> {
             let view = runtime.block_on(async {
@@ -549,10 +528,8 @@ fn main() {
             send_command,
             leave_call,
             permissions,
-            engine_config,
             open_settings_pane,
-            read_settings,
-            save_settings,
+            open_self_hosting_guide,
             account_state,
             sign_in,
             cancel_sign_in,
@@ -625,4 +602,27 @@ fn main() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_guide_command_opens_exactly_the_guide() {
+        let mut opened = Vec::new();
+        open_guide(|url| {
+            opened.push(url.to_owned());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            opened,
+            ["https://github.com/abhinavbolla/twincursor/blob/main/docs/self-hosting.md"]
+        );
+        assert_eq!(
+            open_guide(|_| Err("open failed".into())).unwrap_err(),
+            "The guide didn't open: open failed."
+        );
+    }
 }

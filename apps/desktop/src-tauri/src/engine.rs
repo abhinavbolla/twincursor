@@ -119,9 +119,9 @@ pub struct TestHooks {
     pub inject_record: Option<PathBuf>,
 }
 
-/// The engine's arguments for `plan`. The server's settings are not among them: they go through
-/// the environment ([`crate::settings::Settings::env`]). Values are attached with `=` so a name
-/// that starts with `--` stays a name.
+/// The engine's arguments for `plan`. The server and the call pass are not among them: they go
+/// through the environment ([`Launcher::env`]). Values are attached with `=` so a name that
+/// starts with `--` stays a name.
 pub fn engine_args(plan: &Plan, codec: Codec, app_pid: u32, hooks: &TestHooks) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     let mut push = |a: &str| args.push(a.to_owned());
@@ -254,7 +254,8 @@ pub type EnvHook = Arc<dyn Fn() -> Result<Vec<(String, String)>, String> + Send 
 #[derive(Clone)]
 pub struct Launcher {
     pub exe: PathBuf,
-    /// Settings overrides, as `(name, value)`. May hold the secret, so never logged.
+    /// The engine's environment, as `(name, value)`: the server and the call pass. Holds a
+    /// secret, so never logged.
     pub env: Vec<(String, String)>,
     pub app_pid: u32,
     pub hooks: TestHooks,
@@ -665,24 +666,12 @@ pub fn in_bundle(path: &Path) -> bool {
         .is_some_and(|dir| dir.ends_with("Contents/MacOS"))
 }
 
-/// Runs a short engine command (`permissions`, `config`) and returns the JSON object it printed
-/// last. `clear_env` names variables to leave out of its environment.
-pub fn run_once(
-    exe: &Path,
-    args: &[&str],
-    env: &[(String, String)],
-    clear_env: &[&str],
-) -> Result<Value, String> {
-    let mut command = Command::new(exe);
-    command
+/// Runs a short engine command (`permissions`) and returns the JSON object it printed last.
+pub fn run_once(exe: &Path, args: &[&str]) -> Result<Value, String> {
+    let output = Command::new(exe)
         .args(args)
-        .envs(env.iter().map(|(k, v)| (k, v)))
         .env("NO_COLOR", "1")
-        .stdin(Stdio::null());
-    for name in clear_env {
-        command.env_remove(name);
-    }
-    let output = command
+        .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("couldn't run {}: {e}", exe.display()))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -709,7 +698,6 @@ pub fn last_json<'a>(lines: impl DoubleEndedIterator<Item = &'a str>) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::{SecretChange, Settings, SettingsChange};
 
     const SECRET: &str = "s3cr3t-value-that-must-not-leak";
 
@@ -819,19 +807,14 @@ mod tests {
 
     #[test]
     fn the_secret_is_never_a_flag() {
-        let mut settings = Settings::default();
-        settings.apply(SettingsChange {
-            url: Some("wss://example.test".into()),
-            api_key: Some("key".into()),
-            api_secret: SecretChange::Set {
-                value: SECRET.into(),
-            },
-        });
-        let env = settings.env();
-        assert!(
-            env.iter().any(|(_, v)| v == SECRET),
-            "it reaches the engine"
-        );
+        // What an account call hands the engine (calls.rs `pass_env`).
+        let env = vec![
+            (
+                "TWINCURSOR_SERVER_URL".to_owned(),
+                "wss://example.test".to_owned(),
+            ),
+            ("TWINCURSOR_PASS".to_owned(), SECRET.to_owned()),
+        ];
         let hooks = [
             TestHooks::default(),
             TestHooks {

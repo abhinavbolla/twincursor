@@ -64,7 +64,7 @@ function SurfaceOf({ surface, bridge, scenario }: { surface: Surface; bridge: Br
   const menuOpen = scenario?.menu === true || menuParam();
   const view =
     surface === "panel" ? (
-      <PanelSurface bridge={bridge} settings={scenario?.settings === true} menuOpen={menuOpen} />
+      <PanelSurface bridge={bridge} menuOpen={menuOpen} />
     ) : (
       <CallBarSurface bridge={bridge} menuOpen={menuOpen} />
     );

@@ -142,11 +142,12 @@ engine's own native window (ADR 0007, and [the IPC protocol](ipc.md)).
   it holds no secret, and LiveKit verifies the pass on connect. Without a pass, it mints its own
   token from an API key and secret for `--room` and `--name`, as below. See
   [IPC](ipc.md#getting-into-the-room).
-- **Settings.** The server the build baked into `tc-engine` is the default (`tc-engine config`).
-  Overrides are saved by the Rust side as JSON in the app's config folder (mode 0600) and handed
-  to a room-code call's engine in its environment, never its flags (calls with accounts take
-  their server from the call pass, and only scripts start room-code calls now). The window learns whether a secret is set,
-  never its value.
+- **The server.** Calls with accounts take their server from the call pass; the app has no
+  place to type a LiveKit address, key or secret. Room-code calls, which only `--script` runs
+  start now, leave the engine to the server in its environment (`TWINCURSOR_SERVER_URL`,
+  `TWINCURSOR_API_KEY`, `TWINCURSOR_API_SECRET`) or the one the build baked in (`tc-engine
+  config`). The app's settings file (JSON in its config folder, mode 0600) keeps only where the
+  call bar was left.
 - **Permissions.** Each is asked for when it is first needed, in a fresh `tc-engine
   permissions` process since macOS applies a new grant only to processes started after it:
   `--request screen_recording` on Share, `accessibility` on giving control. Sharing is blocked

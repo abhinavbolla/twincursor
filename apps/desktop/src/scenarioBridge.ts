@@ -10,7 +10,7 @@ import { ALEX, asGuest, asSharer, boot, guestIdentity, LINK, out, peer, type Sce
 import { replay } from "./useSurface";
 
 /**
- * A bridge over `base` (the mock, for settings and everything else) whose home view and call
+ * A bridge over `base` (the mock, for everything else) whose home view and call
  * come from the scenario and change as the person clicks.
  */
 export function scenarioBridge(scenario: Scenario, base: Bridge): Bridge {

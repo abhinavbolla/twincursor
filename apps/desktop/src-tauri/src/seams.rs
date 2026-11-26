@@ -187,7 +187,7 @@ pub struct EnginePermits;
 
 fn engine_says(args: &[&str], which: Permission) -> Result<bool, String> {
     let exe = engine::engine_path()?;
-    let status = engine::run_once(&exe, args, &[], &[])?;
+    let status = engine::run_once(&exe, args)?;
     Ok(status[which.word()] == "granted" || status[which.word()] == "not_applicable")
 }
 
