@@ -81,47 +81,16 @@ pub trait Clipboard: Send + Sync {
     fn write(&self, text: &str) -> Result<(), String>;
 }
 
-/// The general pasteboard, through AppKit.
+/// The system clipboard (`platform::clipboard_read` and `clipboard_write`).
 pub struct SystemClipboard;
 
-#[cfg(target_os = "macos")]
 impl Clipboard for SystemClipboard {
     fn read(&self, limit: usize) -> Result<Option<String>, String> {
-        use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
-        let board = NSPasteboard::generalPasteboard();
-        // SAFETY: an AppKit constant, valid for the life of the process.
-        let kind = unsafe { NSPasteboardTypeString };
-        let Some(text) = board.stringForType(kind) else {
-            return Ok(None);
-        };
-        if text.length() > limit {
-            return Err("What's on the clipboard is too long to be a call link.".into());
-        }
-        Ok(Some(text.to_string()))
+        crate::platform::clipboard_read(limit)
     }
 
     fn write(&self, text: &str) -> Result<(), String> {
-        use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
-        use objc2_foundation::NSString;
-        let board = NSPasteboard::generalPasteboard();
-        board.clearContents();
-        // SAFETY: as above.
-        let kind = unsafe { NSPasteboardTypeString };
-        if board.setString_forType(&NSString::from_str(text), kind) {
-            Ok(())
-        } else {
-            Err("The link couldn't be put on the clipboard.".into())
-        }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-impl Clipboard for SystemClipboard {
-    fn read(&self, _limit: usize) -> Result<Option<String>, String> {
-        Err("The clipboard is only used on macOS so far.".into())
-    }
-    fn write(&self, _text: &str) -> Result<(), String> {
-        Err("The clipboard is only used on macOS so far.".into())
+        crate::platform::clipboard_write(text)
     }
 }
 
@@ -174,7 +143,7 @@ impl Permission {
     }
 }
 
-/// macOS permissions.
+/// macOS permissions. Where the platform has none to ask for (Windows), all are granted.
 pub trait Permits: Send + Sync {
     fn granted(&self, which: Permission) -> Result<bool, String>;
     /// Asks macOS (its prompt, the first time). Returns whether it is granted afterwards.
@@ -193,9 +162,15 @@ fn engine_says(args: &[&str], which: Permission) -> Result<bool, String> {
 
 impl Permits for EnginePermits {
     fn granted(&self, which: Permission) -> Result<bool, String> {
+        if !crate::platform::ASKS_PERMISSIONS {
+            return Ok(true);
+        }
         engine_says(&["permissions"], which)
     }
     fn request(&self, which: Permission) -> Result<bool, String> {
+        if !crate::platform::ASKS_PERMISSIONS {
+            return Ok(true);
+        }
         engine_says(&["permissions", "--request", which.word()], which)
     }
 }
@@ -272,39 +247,13 @@ impl Awake {
         let _ = std::thread::Builder::new()
             .name("awake".into())
             .spawn(move || {
-                let token = begin_activity(&reason);
+                let token = crate::platform::begin_activity(&reason);
                 let _ = wait.recv();
-                end_activity(token);
+                crate::platform::end_activity(token);
             });
         Arc::new(Awake { _stop: stop })
     }
 }
-
-#[cfg(target_os = "macos")]
-type ActivityToken =
-    objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2::runtime::NSObjectProtocol>>;
-
-#[cfg(target_os = "macos")]
-fn begin_activity(reason: &str) -> ActivityToken {
-    use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
-    NSProcessInfo::processInfo().beginActivityWithOptions_reason(
-        NSActivityOptions::UserInitiatedAllowingIdleSystemSleep,
-        &NSString::from_str(reason),
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn end_activity(token: ActivityToken) {
-    use objc2_foundation::NSProcessInfo;
-    // SAFETY: the token is the one beginActivityWithOptions returned, ended once.
-    unsafe { NSProcessInfo::processInfo().endActivity(&token) };
-}
-
-#[cfg(not(target_os = "macos"))]
-fn begin_activity(_reason: &str) {}
-
-#[cfg(not(target_os = "macos"))]
-fn end_activity(_token: ()) {}
 
 #[cfg(test)]
 mod tests {

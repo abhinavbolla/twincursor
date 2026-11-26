@@ -16,8 +16,12 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// The engine's file name, next to this app's executable.
-pub const ENGINE: &str = "tc-engine";
+/// The engine's file name, next to this app's executable (`tc-engine.exe` on Windows).
+pub const ENGINE: &str = if cfg!(windows) {
+    "tc-engine.exe"
+} else {
+    "tc-engine"
+};
 /// How long an engine may take to exit once its stdin closes, before it is killed.
 const EXIT_TIMEOUT: Duration = Duration::from_secs(3);
 /// How long after `leave` the engine's stdin is closed, if it hasn't gone by itself.
@@ -435,20 +439,22 @@ impl Controller {
             self.launcher.app_pid,
             &self.launcher.hooks,
         );
-        let mut child = Command::new(&self.launcher.exe)
+        let mut command = Command::new(&self.launcher.exe);
+        command
             .args(&args)
             .envs(self.launcher.env.iter().map(|(k, v)| (k, v)))
             .env("NO_COLOR", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| {
-                format!(
-                    "The engine couldn't start ({}): {e}.",
-                    self.launcher.exe.display()
-                )
-            })?;
+            .stderr(Stdio::piped());
+        crate::platform::prepare_engine(&mut command);
+        let mut child = command.spawn().map_err(|e| {
+            format!(
+                "The engine couldn't start ({}): {e}.",
+                self.launcher.exe.display()
+            )
+        })?;
+        crate::platform::adopt_engine(&child);
         if let Some(stdout) = child.stdout.take() {
             let tx = self.tx.clone();
             std::thread::spawn(move || {
@@ -668,10 +674,10 @@ pub fn in_bundle(path: &Path) -> bool {
 
 /// Runs a short engine command (`permissions`) and returns the JSON object it printed last.
 pub fn run_once(exe: &Path, args: &[&str]) -> Result<Value, String> {
-    let output = Command::new(exe)
-        .args(args)
-        .env("NO_COLOR", "1")
-        .stdin(Stdio::null())
+    let mut command = Command::new(exe);
+    command.args(args).env("NO_COLOR", "1").stdin(Stdio::null());
+    crate::platform::prepare_engine(&mut command);
+    let output = command
         .output()
         .map_err(|e| format!("couldn't run {}: {e}", exe.display()))?;
     let stdout = String::from_utf8_lossy(&output.stdout);

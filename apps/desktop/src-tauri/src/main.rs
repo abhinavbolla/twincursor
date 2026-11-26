@@ -8,18 +8,21 @@
 //! the engine of every call; `engine.rs` starts and stops the engine and reads its events;
 //! `windows.rs` makes the windows and the menu bar icon and decides when they show (with
 //! `surfaces.rs`, `native.rs` and `mark.rs`); `settings.rs` keeps where the bar was left;
-//! `accounts.rs` signs in and out (`backend.rs` says where); `script.rs` is the test-only
-//! `--script` mode. This file connects them.
+//! `accounts.rs` signs in and out (`backend.rs` says where); `platform.rs` is what differs
+//! between macOS and Windows beyond the windows; `applog.rs` is the log file; `script.rs` is the
+//! test-only `--script` mode. This file connects them.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod accounts;
+mod applog;
 mod backend;
 mod calls;
 mod engine;
 mod link;
 mod mark;
 mod native;
+mod platform;
 mod script;
 mod seams;
 mod settings;
@@ -30,7 +33,7 @@ mod windows;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewWindow};
 
@@ -201,36 +204,16 @@ async fn permissions(request: bool) -> Result<Value, String> {
     .map_err(|e| e.to_string())?
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Pane {
-    ScreenRecording,
-    Accessibility,
-    Microphone,
+/// Opens the System Settings privacy pane for one permission (macOS; elsewhere a sentence).
+#[tauri::command]
+fn open_settings_pane(pane: platform::Pane) -> Result<(), String> {
+    platform::open_settings_pane(pane)
 }
 
-/// Opens the System Settings privacy pane for one permission.
+/// What this platform can do: the panel offers sharing and calling only where it can share.
 #[tauri::command]
-fn open_settings_pane(pane: Pane) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let anchor = match pane {
-            Pane::ScreenRecording => "Privacy_ScreenCapture",
-            Pane::Accessibility => "Privacy_Accessibility",
-            Pane::Microphone => "Privacy_Microphone",
-        };
-        let url = format!("x-apple.systempreferences:com.apple.preference.security?{anchor}");
-        std::process::Command::new("/usr/bin/open")
-            .arg(url)
-            .status()
-            .map_err(|e| format!("System Settings didn't open: {e}."))
-            .map(|_| ())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = pane;
-        Err("Permissions are only needed on macOS.".into())
-    }
+fn platform_info() -> platform::PlatformInfo {
+    platform::INFO
 }
 
 /// The self-hosting guide, which the panel offers when the build names no backend.
@@ -296,23 +279,32 @@ async fn sign_out(
 fn account_shell(app: &AppHandle) -> AccountShell {
     let backend = match backend::from_environment() {
         Ok(Some(backend)) => backend,
-        Ok(None) => return AccountShell::none(),
+        Ok(None) => {
+            applog::line("backend: none named, so the app isn't connected to a server");
+            return AccountShell::none();
+        }
         Err(e) => {
             eprintln!("accounts: {e}");
+            applog::line(format!("backend: set up wrongly, left out: {e}"));
             return AccountShell::none();
         }
     };
+    applog::line(format!("backend: {}", applog::host_of(backend.url())));
     let session_file = match std::env::var_os(SESSION_FILE_ENV).filter(|v| !v.is_empty()) {
         Some(path) => Ok(PathBuf::from(path)),
-        None => app
-            .path()
-            .app_config_dir()
-            .map(|dir| dir.join(accounts::SESSION_FILE))
-            .map_err(|e| format!("No config folder: {e}.")),
+        None => platform::session_dir(app).map(|dir| dir.join(accounts::SESSION_FILE)),
     };
+    if let Ok(file) = &session_file {
+        applog::line(format!(
+            "session file: {} ({})",
+            file.display(),
+            if file.exists() { "there" } else { "not yet" }
+        ));
+    }
     let shell = session_file.and_then(|file| AccountShell::new(backend, file));
     shell.unwrap_or_else(|e| {
         eprintln!("accounts: {e}");
+        applog::line(format!("accounts: {e}"));
         AccountShell::none()
     })
 }
@@ -343,6 +335,28 @@ fn load_script(
     })
 }
 
+/// What of the engine's output goes to the log: its start, exit and restarts, its own log lines,
+/// and the events that say where the call is. Never a command's or the call's secrets: the
+/// engine gets those in its environment, which isn't logged.
+fn log_engine(output: &Output) {
+    match output {
+        Output::Started {
+            role, codec, pid, ..
+        } => applog::line(format!("engine: started ({role:?}, {codec:?}, pid {pid})")),
+        Output::Exited { code } => applog::line(format!("engine: exited ({code:?})")),
+        Output::Restarting { codec, message } => {
+            applog::line(format!("engine: restarting in {codec:?}: {message}"))
+        }
+        Output::Log { line } => applog::line(format!("engine| {line}")),
+        Output::Event { event } => {
+            let kind = event["event"].as_str().unwrap_or("");
+            if matches!(kind, "hello" | "connection" | "ended" | "error" | "control") {
+                applog::line(format!("engine event: {event}"));
+            }
+        }
+    }
+}
+
 /// The call flows, wired to the windows (and, in script mode, to the report).
 fn make_calls(
     app: &AppHandle,
@@ -358,6 +372,7 @@ fn make_calls(
         let report = report.clone();
         let tee = tee.map(std::sync::Mutex::new);
         Arc::new(move |output: Output| {
+            log_engine(&output);
             if let Some(report) = &report {
                 report.output(&output);
             }
@@ -405,6 +420,7 @@ fn make_calls(
             options: Options {
                 quality: run.script.quality(),
                 voice: false,
+                can_share: platform::INFO.can_share,
             },
             on_home,
             on_engine,
@@ -425,6 +441,7 @@ fn make_calls(
             options: Options {
                 quality: Quality::K4,
                 voice: true,
+                can_share: platform::INFO.can_share,
             },
             on_home,
             on_engine,
@@ -444,6 +461,15 @@ fn run_script(app: AppHandle, run: ScriptRun) {
         ..
     } = run;
     let calls = app.state::<Calls>().inner().clone();
+    // What the app found at start, so a test can check it without a window.
+    let info = engine_info();
+    report.write(serde_json::json!({
+        "kind": "engine_info",
+        "found": info.path.is_some(),
+        "path": info.path,
+        "error": info.error,
+        "platform": platform::INFO,
+    }));
     let fail = |app: &AppHandle, message: String| {
         eprintln!("script: {message}");
         app.exit(2);
@@ -506,8 +532,50 @@ fn run_script(app: AppHandle, run: ScriptRun) {
     });
 }
 
+/// Opens the log and writes what a failed run on someone else's computer needs first: which
+/// build, where it runs from, the webview, and where the engine is.
+fn start_log(script: bool) {
+    match applog::init() {
+        Some(Ok(path)) => eprintln!("log: {}", path.display()),
+        Some(Err(e)) => eprintln!("log: couldn't open {e}"),
+        None => {}
+    }
+    applog::line(format!(
+        "TwinCursor {} starting: {} {}, pid {}{}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        std::process::id(),
+        if script { ", script mode" } else { "" }
+    ));
+    if let Ok(exe) = std::env::current_exe() {
+        applog::line(format!("app: {}", exe.display()));
+    }
+    applog::line(format!(
+        "platform: {} (can share: {})",
+        platform::INFO.os,
+        platform::INFO.can_share
+    ));
+    match tauri::webview_version() {
+        Ok(v) => applog::line(format!("webview: {v}")),
+        Err(e) => applog::line(format!(
+            "webview: not found ({e}). On Windows, TwinCursor needs the Microsoft Edge WebView2 Runtime."
+        )),
+    }
+    match engine::engine_path() {
+        Ok(path) => applog::line(format!("engine: found at {}", path.display())),
+        Err(e) => applog::line(format!("engine: not found: {e}")),
+    }
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        applog::line(format!("panic: {info}"));
+        default_hook(info);
+    }));
+}
+
 fn main() {
     let script_args = script::args_from(std::env::args_os().skip(1));
+    start_log(script_args.is_some());
     let run = match &script_args {
         Some((script_path, report_path)) => match load_script(script_path, report_path) {
             Ok(run) => Some(run),
@@ -529,6 +597,7 @@ fn main() {
             leave_call,
             permissions,
             open_settings_pane,
+            platform_info,
             open_self_hosting_guide,
             account_state,
             sign_in,
@@ -577,8 +646,16 @@ fn main() {
             }
             Ok(())
         })
-        .build(tauri::generate_context!())
-        .expect("starting TwinCursor");
+        .build(tauri::generate_context!());
+    let app = match app {
+        Ok(app) => app,
+        Err(e) => {
+            // Without the WebView2 Runtime, Tauri has shown its own message by now.
+            eprintln!("TwinCursor couldn't start: {e}");
+            applog::line(format!("couldn't start: {e}"));
+            std::process::exit(1);
+        }
+    };
     app.run(|app, event| match event {
         // Windows closing never quits a menu bar app; Quit and a finished script do.
         RunEvent::ExitRequested { code, api, .. } => {
@@ -595,6 +672,7 @@ fn main() {
             }
         }
         RunEvent::Exit => {
+            applog::line("exiting");
             // Closing the engine's stdin ends it; the kernel does the same if we die instead.
             if let Some(calls) = app.try_state::<Calls>() {
                 calls.shutdown();

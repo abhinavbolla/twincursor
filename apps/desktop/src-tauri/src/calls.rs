@@ -195,6 +195,9 @@ pub struct HomeView {
 pub struct Options {
     pub quality: Quality,
     pub voice: bool,
+    /// This platform can share its screen (`platform::INFO`). Without it, sharing and ringing
+    /// (which shares first) are refused before anything starts.
+    pub can_share: bool,
 }
 
 /// What the flows are wired to.
@@ -1177,6 +1180,9 @@ impl Calls {
     /// Share my screen: start a call, get its pass, start the engine as sharer, put the link on
     /// the clipboard.
     pub async fn share(&self) -> Result<HomeView, String> {
+        if !self.inner.setup.options.can_share {
+            return Err(crate::platform::CANT_SHARE.into());
+        }
         let account = self.signed_in().await?;
         if !self.lock().free() {
             return Err(IN_CALL.into());
@@ -1483,6 +1489,9 @@ impl Calls {
 
     /// Rings a contact into this app's call, sharing first if there is no call yet.
     pub async fn ring(&self, user_id: &str) -> Result<HomeView, String> {
+        if !self.inner.setup.options.can_share {
+            return Err(crate::platform::CANT_SHARE.into());
+        }
         let account = self.signed_in().await?;
         let hosting = {
             let s = self.lock();

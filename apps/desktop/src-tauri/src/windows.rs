@@ -24,18 +24,16 @@ use tauri::menu::{Menu, MenuBuilder, MenuEvent, MenuItemBuilder, SubmenuBuilder}
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::window::Color;
 use tauri::{
-    AppHandle, Manager, Theme, TitleBarStyle, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
-    WindowEvent,
+    AppHandle, Manager, Theme, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 
 use crate::calls::{Calls, HomeView};
-use crate::mark;
 use crate::native;
 use crate::seams::{Permission, Permits};
 use crate::settings::Settings;
 use crate::surfaces::{
-    bar_origin, bar_wanted, clamp_height, icon_in_points, panel_origin, Hold, Holds, Kind,
-    PanelToggle, Rect, TrayClick, BAR_MIN_HEIGHT,
+    bar_origin, bar_wanted, clamp_height, icon_in_points, Hold, Holds, Kind, PanelToggle, Rect,
+    TrayClick, BAR_MIN_HEIGHT,
 };
 
 pub const PANEL: &str = "panel";
@@ -43,8 +41,6 @@ pub const BAR: &str = "bar";
 const TRAY: &str = "tray";
 const MENU_OPEN: &str = "open";
 const MENU_QUIT: &str = "quit";
-/// The menu bar icon's image size in pixels: 18 pt at 2×.
-const TRAY_PIXELS: u32 = 36;
 /// How long a panel asked to show waits for its page to say how tall it is.
 const READY_TIMEOUT: Duration = Duration::from_millis(1500);
 /// How long after the bar stops moving its place is saved.
@@ -143,14 +139,20 @@ impl Windows {
         }
         let dark = native::dark();
         for kind in [Kind::Panel, Kind::Bar] {
-            let window = windows.build(kind, dark)?;
+            let window = windows.build(kind, dark).inspect_err(|e| {
+                crate::applog::line(format!("window {kind:?}: couldn't be made: {e}"));
+            })?;
+            crate::applog::line(format!("window {kind:?}: made (hidden)"));
             native::dress(&window, kind);
             let me = windows.clone();
             let w = window.clone();
             window.on_window_event(move |event| me.on_window_event(&w, kind, event));
         }
         if live {
-            windows.menus()?;
+            windows.menus().inspect_err(|e| {
+                crate::applog::line(format!("tray icon: couldn't be made: {e}"));
+            })?;
+            crate::applog::line("tray icon: made");
         }
         Ok(windows)
     }
@@ -161,15 +163,14 @@ impl Windows {
             Kind::Bar => (BAR, BAR_MIN_HEIGHT),
         };
         let url = WebviewUrl::App(format!("index.html?view={label}").into());
-        WebviewWindowBuilder::new(&self.inner.app, label, url)
+        let builder = WebviewWindowBuilder::new(&self.inner.app, label, url);
+        native::style(builder, kind)
             .title("TwinCursor")
             .inner_size(kind.width(), height)
             .resizable(false)
             .maximizable(false)
             .minimizable(false)
             .closable(false)
-            .title_bar_style(TitleBarStyle::Overlay)
-            .hidden_title(true)
             .visible(false)
             .focused(false)
             .always_on_top(true)
@@ -184,6 +185,33 @@ impl Windows {
 
     /// The menu bar icon, and the app menu (its Quit ends a call properly first).
     fn menus(&self) -> tauri::Result<()> {
+        let app = &self.inner.app;
+        if native::APP_MENU {
+            self.app_menu()?;
+        }
+        let tray_menu: Menu<tauri::Wry> = MenuBuilder::new(app)
+            .text(MENU_OPEN, "Open TwinCursor")
+            .separator()
+            .text(MENU_QUIT, "Quit TwinCursor")
+            .build()?;
+        let me = self.clone();
+        let on_tray = move |tray: &TrayIcon, event: TrayIconEvent| me.on_tray(tray, event);
+        let me = self.clone();
+        let (rgba, pixels, template) = native::tray_image();
+        TrayIconBuilder::with_id(TRAY)
+            .icon(Image::new_owned(rgba, pixels, pixels))
+            .icon_as_template(template)
+            .tooltip("TwinCursor")
+            .menu(&tray_menu)
+            .show_menu_on_left_click(false)
+            .on_tray_icon_event(on_tray)
+            .on_menu_event(move |_, event| me.on_menu(&event))
+            .build(app)?;
+        Ok(())
+    }
+
+    /// The app menu: Quit (which ends a call properly first) and Edit, for copy and paste.
+    fn app_menu(&self) -> tauri::Result<()> {
         let app = &self.inner.app;
         let quit = MenuItemBuilder::with_id(MENU_QUIT, "Quit TwinCursor")
             .accelerator("CmdOrCtrl+Q")
@@ -209,28 +237,6 @@ impl Windows {
             .build()?;
         let menu = MenuBuilder::new(app).items(&[&app_menu, &edit]).build()?;
         app.set_menu(menu)?;
-
-        let tray_menu: Menu<tauri::Wry> = MenuBuilder::new(app)
-            .text(MENU_OPEN, "Open TwinCursor")
-            .separator()
-            .text(MENU_QUIT, "Quit TwinCursor")
-            .build()?;
-        let me = self.clone();
-        let on_tray = move |tray: &TrayIcon, event: TrayIconEvent| me.on_tray(tray, event);
-        let me = self.clone();
-        TrayIconBuilder::with_id(TRAY)
-            .icon(Image::new_owned(
-                mark::template_rgba(TRAY_PIXELS),
-                TRAY_PIXELS,
-                TRAY_PIXELS,
-            ))
-            .icon_as_template(true)
-            .tooltip("TwinCursor")
-            .menu(&tray_menu)
-            .show_menu_on_left_click(false)
-            .on_tray_icon_event(on_tray)
-            .on_menu_event(move |_, event| me.on_menu(&event))
-            .build(app)?;
         Ok(())
     }
 
@@ -361,11 +367,8 @@ impl Windows {
         self.on_main(move |me| me.present_panel(focus));
     }
 
-    fn present_panel(&self, focus: bool) {
-        let Some(panel) = self.window(Kind::Panel) else {
-            return;
-        };
-        let displays = native::displays();
+    /// Where the panel goes for its height: by the tray icon.
+    fn panel_at(&self, height: f64, displays: &[crate::surfaces::Display]) -> Option<(f64, f64)> {
         let icon = self
             .inner
             .app
@@ -374,11 +377,23 @@ impl Windows {
             .and_then(|r| {
                 let p = r.position.to_physical::<f64>(1.0);
                 let s = r.size.to_physical::<f64>(1.0);
-                icon_in_points(Rect::new(p.x, p.y, s.width, s.height), &displays)
+                icon_in_points(Rect::new(p.x, p.y, s.width, s.height), displays)
             });
+        native::panel_origin(icon, height, displays)
+    }
+
+    fn present_panel(&self, focus: bool) {
+        let Some(panel) = self.window(Kind::Panel) else {
+            return;
+        };
+        let displays = native::displays(&panel);
         let height = self.lock().panel_height;
-        if let Some((x, y)) = panel_origin(icon, &displays) {
+        if let Some((x, y)) = self.panel_at(height, &displays) {
             native::set_frame(&panel, Rect::new(x, y, Kind::Panel.width(), height));
+            crate::applog::line(format!(
+                "window Panel: shown at ({x:.0}, {y:.0}) pt, {height:.0} pt tall{}",
+                if focus { ", focused" } else { "" }
+            ));
         }
         if focus {
             let _ = panel.show();
@@ -437,7 +452,7 @@ impl Windows {
 
     /// Puts the bar where it was left (or its first place), onto a display that is there.
     fn place_bar(&self, bar: &WebviewWindow) {
-        let displays = native::displays();
+        let displays = native::displays(bar);
         let (from, height) = {
             let mut s = self.lock();
             let from = if s.bar_placed {
@@ -543,7 +558,7 @@ impl Windows {
         };
         let window = window.clone();
         self.on_main(move |me| {
-            let displays = native::displays();
+            let displays = native::displays(&window);
             let Some(frame) = native::frame(&window) else {
                 return;
             };
@@ -558,6 +573,9 @@ impl Windows {
                 let mut s = me.lock();
                 match kind {
                     Kind::Panel => {
+                        if !s.panel_ready {
+                            crate::applog::line(format!("window Panel: page drawn ({h} pt tall)"));
+                        }
                         s.panel_height = h;
                         s.panel_ready = true;
                         s.panel_pending.take()
@@ -570,6 +588,12 @@ impl Windows {
             };
             if kind == Kind::Bar {
                 if let Some(origin) = bar_origin(Some(at), h, &displays) {
+                    at = origin;
+                }
+            }
+            // A panel standing on the taskbar (Windows) keeps its bottom edge by the icon.
+            if kind == Kind::Panel && !native::PANEL_KEEPS_TOP {
+                if let Some(origin) = me.panel_at(h, &displays) {
                     at = origin;
                 }
             }

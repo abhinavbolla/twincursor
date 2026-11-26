@@ -117,10 +117,17 @@ fn sh_quote(value: &str) -> String {
 
 fn open_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    let opener = "/usr/bin/open";
-    #[cfg(not(target_os = "macos"))]
-    let opener = "xdg-open";
-    std::process::Command::new(opener)
+    let mut command = std::process::Command::new("/usr/bin/open");
+    // No shell in between, so `&` in the address means nothing special.
+    #[cfg(windows)]
+    let mut command = {
+        let mut c = std::process::Command::new("rundll32.exe");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    };
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let mut command = std::process::Command::new("xdg-open");
+    command
         .arg(url)
         .status()
         .map_err(|e| e.to_string())

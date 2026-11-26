@@ -1,12 +1,21 @@
-//! What the windows need from AppKit that Tauri doesn't offer: no traffic lights, kept out of
-//! the Window menu and the window cycle, the call bar on every Space and over full-screen apps,
-//! showing a window without making it key, the displays' usable areas, and frames set in one
-//! step. Public AppKit API only (no private API, no transparent windows). Everything here must
-//! run on the main thread; off it, it does nothing. Other platforms get Tauri's nearest
-//! equivalents until their milestone.
+//! What the windows need from the platform that Tauri doesn't offer, as one set of functions
+//! per platform.
 //!
-//! Rects are in [`crate::surfaces`]' space: points, origin at the main display's top left, y
-//! downward. AppKit's has its origin at the bottom left, so they are flipped here.
+//! macOS (AppKit): no traffic lights, kept out of the Window menu and the window cycle, the
+//! call bar on every Space and over full-screen apps, showing a window without making it key,
+//! the displays' usable areas, and frames set in one step. Public AppKit API only (no private
+//! API, no transparent windows).
+//!
+//! Windows (Win32, `win` below): undecorated windows kept off the taskbar (Tauri's builder),
+//! shown without taking focus (`SW_SHOWNOACTIVATE`), moved and sized in one `SetWindowPos`,
+//! displays from Tauri's monitors in points, the light or dark setting from the registry, and
+//! rounded corners on Windows 11 (`DWMWA_WINDOW_CORNER_PREFERENCE`; Windows 10 keeps square
+//! ones, and the page draws a hairline inside the edge). The panel stands on the taskbar.
+//!
+//! Everything here must run on the main thread; off it, it does nothing. Rects are in
+//! [`crate::surfaces`]' space: points, origin at the main display's top left, y downward.
+//! AppKit's has its origin at the bottom left, so they are flipped here; Windows' are physical
+//! pixels, converted with each display's scale.
 
 use crate::surfaces::{Display, Kind, Rect};
 
@@ -19,7 +28,7 @@ mod mac {
         NSWindowCollectionBehavior,
     };
     use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize};
-    use tauri::WebviewWindow;
+    use tauri::{Runtime, WebviewWindow, WebviewWindowBuilder};
 
     use super::{Display, Kind, Rect};
 
@@ -102,8 +111,37 @@ mod mac {
         )
     }
 
+    /// The window's look, at build time: a title bar that shows nothing (it gives the
+    /// system's corners, hairline and shadow).
+    pub fn style<'a, R: Runtime, M: tauri::Manager<R>>(
+        builder: WebviewWindowBuilder<'a, R, M>,
+        _kind: Kind,
+    ) -> WebviewWindowBuilder<'a, R, M> {
+        builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true)
+    }
+
+    /// The panel hangs from the menu bar icon and keeps its top edge as it grows.
+    pub const PANEL_KEEPS_TOP: bool = true;
+    /// The app menu (Quit, and Edit for copy and paste) is the menu bar's.
+    pub const APP_MENU: bool = true;
+
+    /// The menu bar icon: a template image, 18 pt at 2×, tinted by macOS.
+    pub fn tray_image() -> (Vec<u8>, u32, bool) {
+        (crate::mark::template_rgba(36), 36, true)
+    }
+
+    pub fn panel_origin(
+        icon: Option<Rect>,
+        _height: f64,
+        displays: &[Display],
+    ) -> Option<(f64, f64)> {
+        crate::surfaces::panel_origin(icon, displays)
+    }
+
     /// The displays, the main one (with the menu bar) first.
-    pub fn displays() -> Vec<Display> {
+    pub fn displays(_w: &WebviewWindow) -> Vec<Display> {
         let Some(mtm) = MainThreadMarker::new() else {
             return Vec::new();
         };
@@ -171,11 +209,240 @@ mod mac {
 #[cfg(target_os = "macos")]
 pub use mac::*;
 
-#[cfg(not(target_os = "macos"))]
-mod other {
-    use tauri::{LogicalPosition, LogicalSize, WebviewWindow};
+#[cfg(windows)]
+mod win {
+    use tauri::{Runtime, WebviewWindow, WebviewWindowBuilder};
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+    };
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_NOZORDER, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
+    };
 
     use super::{Display, Kind, Rect};
+    use crate::surfaces::{to_pixels, to_points};
+
+    fn hwnd(w: &WebviewWindow) -> Option<HWND> {
+        let h = w.hwnd().ok()?;
+        let h = h.0 as HWND;
+        (!h.is_null()).then_some(h)
+    }
+
+    /// No title bar or frame, off the taskbar (the tray icon is the app's place), with the
+    /// system's shadow.
+    pub fn style<'a, R: Runtime, M: tauri::Manager<R>>(
+        builder: WebviewWindowBuilder<'a, R, M>,
+        _kind: Kind,
+    ) -> WebviewWindowBuilder<'a, R, M> {
+        builder.decorations(false).skip_taskbar(true)
+    }
+
+    /// The panel stands on the taskbar, so as it grows its top edge moves, not its bottom.
+    pub const PANEL_KEEPS_TOP: bool = false;
+    /// No menu bar: a menu set on the app would show in every window.
+    pub const APP_MENU: bool = false;
+
+    /// A full-colour icon (Windows doesn't tint tray icons): white mark on an indigo tile.
+    pub fn tray_image() -> (Vec<u8>, u32, bool) {
+        (crate::mark::badge_rgba(32), 32, false)
+    }
+
+    pub fn panel_origin(
+        icon: Option<Rect>,
+        height: f64,
+        displays: &[Display],
+    ) -> Option<(f64, f64)> {
+        crate::surfaces::panel_origin_at_taskbar(icon, height, displays)
+    }
+
+    /// Rounded corners where Windows offers them (11). Windows 10 ignores the request.
+    pub fn dress(w: &WebviewWindow, _kind: Kind) {
+        let Some(h) = hwnd(w) else { return };
+        let round = DWMWCP_ROUND;
+        // SAFETY: a live window handle and a 4-byte value of the documented type. A failure
+        // (Windows 10) changes nothing.
+        let result = unsafe {
+            DwmSetWindowAttribute(
+                h,
+                DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+                &round as *const _ as *const core::ffi::c_void,
+                std::mem::size_of_val(&round) as u32,
+            )
+        };
+        crate::applog::line(format!(
+            "window {}: rounded corners {}",
+            w.label(),
+            if result == 0 {
+                "on"
+            } else {
+                "not offered (square)"
+            }
+        ));
+    }
+
+    /// On screen and on top, without activating it: the app the person is in keeps the
+    /// keyboard.
+    pub fn show_without_focus(w: &WebviewWindow) {
+        let Some(h) = hwnd(w) else {
+            let _ = w.show();
+            return;
+        };
+        // SAFETY: a live window handle; no activation flags.
+        unsafe {
+            ShowWindow(h, SW_SHOWNOACTIVATE);
+            SetWindowPos(
+                h,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
+        }
+    }
+
+    /// The monitors in points (each divided by its own scale), the primary one first.
+    pub fn displays(w: &WebviewWindow) -> Vec<Display> {
+        let primary = w.primary_monitor().ok().flatten();
+        let mut monitors = w.available_monitors().unwrap_or_default();
+        if let Some(p) = &primary {
+            if let Some(i) = monitors.iter().position(|m| m.position() == p.position()) {
+                let m = monitors.remove(i);
+                monitors.insert(0, m);
+            }
+        }
+        monitors
+            .iter()
+            .map(|m| {
+                let s = m.scale_factor();
+                let (p, z) = (m.position(), m.size());
+                let work = m.work_area();
+                let pt = |x: i32, y: i32, w: u32, h: u32| {
+                    Rect::new(
+                        f64::from(x) / s,
+                        f64::from(y) / s,
+                        f64::from(w) / s,
+                        f64::from(h) / s,
+                    )
+                };
+                Display {
+                    frame: pt(p.x, p.y, z.width, z.height),
+                    work: pt(
+                        work.position.x,
+                        work.position.y,
+                        work.size.width,
+                        work.size.height,
+                    ),
+                    scale: s,
+                }
+            })
+            .collect()
+    }
+
+    pub fn frame(w: &WebviewWindow) -> Option<Rect> {
+        let p = w.outer_position().ok()?;
+        let z = w.outer_size().ok()?;
+        let pixels = Rect::new(
+            f64::from(p.x),
+            f64::from(p.y),
+            f64::from(z.width),
+            f64::from(z.height),
+        );
+        Some(to_points(pixels, &displays(w)))
+    }
+
+    /// Moves and sizes the window in pixels of the display it goes to. Sized a second time:
+    /// moving onto a display with another scale makes Windows rescale the window first.
+    pub fn set_frame(w: &WebviewWindow, r: Rect) {
+        let (x, y, cx, cy) = to_pixels(r, &displays(w));
+        let Some(h) = hwnd(w) else { return };
+        // SAFETY: a live window handle; no activation, no change of z-order.
+        unsafe {
+            SetWindowPos(
+                h,
+                std::ptr::null_mut(),
+                x,
+                y,
+                cx,
+                cy,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            SetWindowPos(
+                h,
+                std::ptr::null_mut(),
+                0,
+                0,
+                cx,
+                cy,
+                SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE,
+            );
+        }
+    }
+
+    /// Whether apps are drawn dark: `AppsUseLightTheme` is 0.
+    pub fn dark() -> bool {
+        let key: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0"
+            .encode_utf16()
+            .collect();
+        let name: Vec<u16> = "AppsUseLightTheme\0".encode_utf16().collect();
+        let mut value: u32 = 1;
+        let mut size = std::mem::size_of::<u32>() as u32;
+        // SAFETY: NUL-terminated names and a 4-byte buffer whose size is passed.
+        let status = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                key.as_ptr(),
+                name.as_ptr(),
+                RRF_RT_REG_DWORD,
+                std::ptr::null_mut(),
+                &mut value as *mut u32 as *mut core::ffi::c_void,
+                &mut size,
+            )
+        };
+        status == 0 && value == 0
+    }
+
+    pub fn force_appearance(_dark: bool) {}
+
+    pub fn control_down() -> bool {
+        false
+    }
+}
+
+#[cfg(windows)]
+pub use win::*;
+
+#[cfg(not(any(target_os = "macos", windows)))]
+mod other {
+    use tauri::{LogicalPosition, LogicalSize, Runtime, WebviewWindow, WebviewWindowBuilder};
+
+    use super::{Display, Kind, Rect};
+
+    pub fn style<'a, R: Runtime, M: tauri::Manager<R>>(
+        builder: WebviewWindowBuilder<'a, R, M>,
+        _kind: Kind,
+    ) -> WebviewWindowBuilder<'a, R, M> {
+        builder
+    }
+
+    pub const PANEL_KEEPS_TOP: bool = true;
+    pub const APP_MENU: bool = false;
+
+    pub fn tray_image() -> (Vec<u8>, u32, bool) {
+        (crate::mark::badge_rgba(32), 32, false)
+    }
+
+    pub fn panel_origin(
+        icon: Option<Rect>,
+        _height: f64,
+        displays: &[Display],
+    ) -> Option<(f64, f64)> {
+        crate::surfaces::panel_origin(icon, displays)
+    }
 
     pub fn dress(_w: &WebviewWindow, _kind: Kind) {}
 
@@ -183,7 +450,7 @@ mod other {
         let _ = w.show();
     }
 
-    pub fn displays() -> Vec<Display> {
+    pub fn displays(_w: &WebviewWindow) -> Vec<Display> {
         Vec::new()
     }
 
@@ -210,5 +477,5 @@ mod other {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 pub use other::*;
