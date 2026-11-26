@@ -29,7 +29,7 @@ jobs:
             webrtc: win-x64-release
             platform: windows-x64
             binary: tc-spike.exe
-            # The testers' viewer (packaging/windows) runs tc-engine.
+            # The terminal viewer (packaging/windows) runs tc-engine.
             packages: -p twincursor-media-spike -p twincursor-engine-cli
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -61,13 +61,14 @@ jobs:
           fi
           rm -r "$name"
 
-      # Windows testers get a viewer: tc-engine and a script that asks for a name and a room
-      # code. No server settings go in here; whoever hands the zip to testers adds their own
-      # server.txt (packaging/windows/assemble.sh).
-      - name: Package the Windows viewer
+      # The terminal viewer: tc-engine and a script that asks for a name and a room code, for
+      # joining a room-code call on a LiveKit server whose key is in server.txt (added by whoever
+      # hands it out: packaging/windows/assemble.sh). It can't sign in or join a call link; the
+      # Windows app (windows-app below) is what people want.
+      - name: Package the Windows terminal viewer
         if: runner.os == 'Windows'
         run: |
-          name="TwinCursor-viewer-${GITHUB_REF_NAME//\//-}-${{ matrix.platform }}"
+          name="TwinCursor-terminal-viewer-${GITHUB_REF_NAME//\//-}-${{ matrix.platform }}"
           mkdir -p "dist/$name"
           cp target/release/tc-engine.exe LICENSE "dist/$name/"
           cp "packaging/windows/Join TwinCursor.cmd" packaging/windows/server.txt.example \
@@ -81,10 +82,15 @@ jobs:
           name: ${{ matrix.platform }}
           path: dist/*
 
+  # The Windows app (TwinCursor-<version>-windows-x64.zip), with the backend from the
+  # repository variables (windows-package.yml).
+  windows-app:
+    uses: ./.github/workflows/windows-package.yml
+
   # Creates a draft: a maintainer reads it and presses publish.
   release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: build
+    needs: [build, windows-app]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
