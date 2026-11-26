@@ -62,7 +62,7 @@ describe("engine events", () => {
     expect(s.connection).toBe("reconnecting");
     // The last participants event is the empty one.
     expect(s.participants).toEqual([]);
-    expect(s.control).toEqual({ state: "none", by: null });
+    expect(s.control).toEqual({ state: "none", by: null, trusted: [] });
     expect(s.asked).toBeNull();
     expect(s.voice?.sending).toBe(false);
     expect(s.stats?.codec).toBe("h265");
@@ -89,6 +89,24 @@ describe("engine events", () => {
     );
     expect(controlling.asked).toBeNull();
     expect(controlling.control.by?.name).toBe("Sam");
+  });
+
+  it("keeps who is trusted with control, and reads an older engine as trusting nobody", () => {
+    const sam = { identity: "guest-1f2e3d4c", name: "Sam" };
+    let s = run(initialCall, started(), ev({ event: "control", state: "none", by: null, trusted: [sam] }));
+    expect(s.control.trusted).toEqual([sam]);
+    s = run(s, ev({ event: "control", state: "controlling", by: sam, trusted: [sam] }));
+    expect(s.control).toEqual({ state: "controlling", by: sam, trusted: [sam] });
+    s = run(s, ev({ event: "control", state: "none", by: null, trusted: [] }));
+    expect(s.control.trusted).toEqual([]);
+    expect(parseEvent({ event: "control", state: "none", by: null })).toEqual({
+      event: "control",
+      state: "none",
+      by: null,
+      trusted: [],
+    });
+    expect(parseEvent({ event: "control", state: "none", by: null, trusted: [{ identity: 1 }] })).toBeNull();
+    expect(parseEvent({ event: "control", state: "none", by: null, trusted: null })).toBeNull();
   });
 
   it("warns when the engine speaks another protocol", () => {

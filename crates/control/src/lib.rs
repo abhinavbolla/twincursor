@@ -16,7 +16,7 @@ mod revoke;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
 use held::Held;
@@ -54,7 +54,8 @@ impl Default for Config {
 pub struct Guest {
     /// The LiveKit identity, which the server vouches for.
     pub identity: String,
-    /// What the guest calls themself. Not verified.
+    /// The name to show: the one in the guest's token (see [`Controller::joined`]) when it has
+    /// one, else what the guest's own hello says.
     pub name: String,
     pub platform: Platform,
 }
@@ -68,6 +69,19 @@ pub enum Effect {
     Ask(Guest),
     /// Control, or a pending request, ended without the sharer deciding it.
     Ended { identity: String, reason: EndReason },
+    /// Something the sharer asked for was not done. Tell the sharer why.
+    Refused(Refusal),
+}
+
+/// Why [`Controller::trust`] or a grant didn't happen. Each reads as a sentence for the sharer.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Refusal {
+    /// Only someone in the call can be trusted with control.
+    #[error("That person isn't in the call.")]
+    NotInCall,
+    /// One controller at a time: trusting anyone else would queue a second.
+    #[error("Someone else is in control. Take control back first.")]
+    SomeoneElseControls,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +135,11 @@ pub struct Controller<I> {
     config: Config,
     phase: Phase,
     hellos: HashMap<String, (String, Platform)>,
+    /// Everyone else in the call, with the name their token carries (empty if none).
+    present: HashMap<String, String>,
+    /// Guests the sharer let take control without asking again, for this call. Only
+    /// [`Controller::trust`] adds to it; a revoke empties it and leaving takes the guest out.
+    trusted: BTreeSet<String>,
     counters: Counters,
 }
 
@@ -131,6 +150,8 @@ impl<I: Injector> Controller<I> {
             config,
             phase: Phase::Idle,
             hellos: HashMap::new(),
+            present: HashMap::new(),
+            trusted: BTreeSet::new(),
             counters: Counters::default(),
         }
     }
@@ -144,7 +165,7 @@ impl<I: Injector> Controller<I> {
                 self.hellos.insert(from.to_owned(), (name, platform));
                 vec![send(from.to_owned(), Message::HelloAck)]
             }
-            Message::RequestControl => self.on_request(from),
+            Message::RequestControl => self.on_request(from, now),
             Message::ReleaseControl => self.end_by_guest(from, EndReason::Released),
             Message::Heartbeat { sent_at_us } => {
                 let max_lateness = self.config.max_lateness;
@@ -171,6 +192,39 @@ impl<I: Injector> Controller<I> {
             | Message::Revoke
             | Message::Released => vec![],
         }
+    }
+
+    /// Someone joined the call (or was already in it), with the name their token carries.
+    /// The server signs the token, so this name is shown in place of the one in their hello.
+    /// Joining grants and trusts nothing.
+    pub fn joined(&mut self, identity: &str, name: &str) {
+        self.present.insert(identity.to_owned(), name.to_owned());
+    }
+
+    /// The sharer lets `identity` take control during this call without being asked again:
+    /// their requests are granted at once, until a revoke or until they leave. Only the sharer
+    /// can call this; nothing a guest sends does. If they are asking right now, they get control
+    /// now. Refused for someone not in the call, or while someone else has control.
+    pub fn trust(&mut self, identity: &str, now: Instant) -> Vec<Effect> {
+        if !self.present.contains_key(identity) {
+            return vec![Effect::Refused(Refusal::NotInCall)];
+        }
+        if let Phase::Granted(guest, _) = &self.phase {
+            if guest.identity != identity {
+                return vec![Effect::Refused(Refusal::SomeoneElseControls)];
+            }
+        }
+        self.trusted.insert(identity.to_owned());
+        tracing::info!(guest = %identity, "trusted with control for this call");
+        match &self.phase {
+            Phase::Requested(guest) if guest.identity == identity => self.grant(now),
+            _ => vec![],
+        }
+    }
+
+    /// Who may take control without asking, in identity order.
+    pub fn trusted(&self) -> Vec<Guest> {
+        self.trusted.iter().map(|id| self.guest(id)).collect()
     }
 
     /// The sharer accepts the pending request.
@@ -215,8 +269,11 @@ impl<I: Injector> Controller<I> {
         }
     }
 
-    /// The sharer ends control, or turns down a pending request. Releases everything held.
+    /// The sharer ends control, or turns down a pending request. Releases everything held, and
+    /// takes back every standing grant from [`Controller::trust`], in every phase: after a
+    /// revoke, anyone who asks is asked about again.
     pub fn revoke(&mut self) -> Vec<Effect> {
+        self.trusted.clear();
         match std::mem::replace(&mut self.phase, Phase::Idle) {
             Phase::Idle => vec![],
             Phase::Requested(guest) => vec![send(guest.identity, Message::Deny)],
@@ -230,6 +287,9 @@ impl<I: Injector> Controller<I> {
     /// A participant left the call.
     pub fn left(&mut self, identity: &str) -> Vec<Effect> {
         self.hellos.remove(identity);
+        self.present.remove(identity);
+        // Someone who comes back with the same identity is asked about again.
+        self.trusted.remove(identity);
         self.end_by_guest(identity, EndReason::Left)
     }
 
@@ -285,20 +345,34 @@ impl<I: Injector> Controller<I> {
         &mut self.injector
     }
 
-    fn on_request(&mut self, from: &str) -> Vec<Effect> {
+    /// Who `identity` is, for the prompt and the label: the token's name, else the hello's,
+    /// else the identity; the platform from the hello.
+    fn guest(&self, identity: &str) -> Guest {
+        let (said, platform) = self.hellos.get(identity).cloned().unwrap_or_default();
+        let name = [
+            self.present.get(identity).cloned().unwrap_or_default(),
+            said,
+        ]
+        .into_iter()
+        .find(|name| !name.is_empty())
+        .unwrap_or_else(|| identity.to_owned());
+        Guest {
+            identity: identity.to_owned(),
+            name,
+            platform,
+        }
+    }
+
+    fn on_request(&mut self, from: &str, now: Instant) -> Vec<Effect> {
         match &self.phase {
             Phase::Idle => {
-                let (name, platform) = self.hellos.get(from).cloned().unwrap_or_default();
-                let guest = Guest {
-                    identity: from.to_owned(),
-                    name: if name.is_empty() {
-                        from.to_owned()
-                    } else {
-                        name
-                    },
-                    platform,
-                };
+                let guest = self.guest(from);
                 self.phase = Phase::Requested(guest.clone());
+                if self.trusted.contains(from) {
+                    // The sharer said yes in advance, for this call: no prompt.
+                    tracing::info!(guest = %from, "a trusted guest asked; granted");
+                    return self.grant(now);
+                }
                 vec![Effect::Ask(guest)]
             }
             Phase::Requested(guest) | Phase::Granted(guest, _) if guest.identity == from => vec![],

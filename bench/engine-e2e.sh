@@ -20,6 +20,13 @@
 # is asked for, allowed, used and revoked, and neither pass shows up in any event or log. A
 # guest's pass given to `share`, and a sharer's to `view`, must fail before connecting.
 #
+# Then trusted control, with passes (docs/adr/0010-trusted-control.md): after `trust_control` the
+# guest's requests are granted with no `control_asked`, again after giving control back; a revoke,
+# before or after the guest asks, takes the trust back, so the next request is a prompt; trusting
+# someone not in the call, or the sharer, is an error; a guest who leaves and comes back with the
+# same pass is asked again; a share without --allow-control refuses both trust and requests. The
+# guest claims another name in its hello (`--hello-name`): the sharer must show the pass's.
+#
 # Needs `livekit-server --dev` running, jq, swiftc, and a release build:
 #   cargo build --release -p twincursor-engine-cli -p twincursor-media-spike
 # Usage: bench/engine-e2e.sh   (BIN=path/to/tc-engine SPIKE=path/to/tc-spike to use other builds)
@@ -292,6 +299,205 @@ for pass_value in "$sharer_pass" "$guest_pass"; do
   done
 done
 [[ $leaked -eq 0 ]] && pass "neither pass appears in any event or log" || fail "a pass leaked into events or logs"
+
+echo "=== trusted control, with call passes"
+# How many lines of events file $1 match jq filter $2.
+count() { jq -s "map(select($2)) | length" "$1"; }
+# Waits up to 20 s for at least $3 lines of $1 to match $2.
+wait_count() {
+  for _ in $(seq 200); do [[ $(count "$1" "$2") -ge $3 ]] && return 0; sleep 0.1; done
+  return 1
+}
+texts() { if [[ -s $1 ]]; then grep -c '"text"' "$1" || true; else echo 0; fi; }
+troom="e2e-trust-$$"
+tsid=$(uuidgen | tr '[:upper:]' '[:lower:]')
+tgid=$(uuidgen | tr '[:upper:]' '[:lower:]')
+tsharer_pass=$("$BIN" dev-pass --room "$troom" --role sharer --name "Alex Account" --id "$tsid" --ttl 600)
+tguest_pass=$("$BIN" dev-pass --room "$troom" --role guest --name "Sam Account" --id "$tgid" --ttl 600)
+guest="guest-$tgid"
+TS=$OUT/trust-share.jsonl
+TV=$OUT/trust-view.jsonl
+mkfifo "$OUT/trust-share.in" "$OUT/trust-view.in"
+# Two grants with typing, then stay in the call until told to leave.
+cat >"$OUT/trust-script.json" <<'EOF'
+[{"do":"await_control"},{"do":"type","text":"hello","gap_ms":20},{"do":"await_end"},
+ {"do":"await_control"},{"do":"type","text":"again","gap_ms":20},{"do":"await_end"},
+ {"do":"wait","ms":600000}]
+EOF
+
+TWINCURSOR_PASS=$tsharer_pass "$BIN" share --ipc --audio off --capture pattern --resolution 720 \
+  --allow-control --inject "record:$OUT/trust-actions.jsonl" \
+  <"$OUT/trust-share.in" >"$TS" 2>"$OUT/trust-share.log" &
+tsharer=$!
+pids+=("$tsharer")
+exec 3>"$OUT/trust-share.in"
+check "$TS" '.event == "connection" and .state == "connected"' "sharer connected with its pass"
+# The guest's own app claims to be Mallory; its pass says Sam Account.
+TWINCURSOR_PASS=$tguest_pass "$BIN" view --ipc --audio off --headless --hello-name Mallory \
+  --control-script "$OUT/trust-script.json" --sent-log "$OUT/trust-sent.jsonl" \
+  <"$OUT/trust-view.in" >"$TV" 2>"$OUT/trust-view.log" &
+tviewer=$!
+pids+=("$tviewer")
+exec 4>"$OUT/trust-view.in"
+check "$TV" '.event == "connection" and .state == "connected"' "guest connected with its pass"
+check "$TS" ".event == \"participants\" and (.participants | any(.identity == \"$guest\" and .name == \"Sam Account\"))" \
+  "sharer sees Sam Account"
+check "$TV" '.event == "stats" and .fps > 0' "guest is receiving video"
+
+trusted_sam=".event == \"control\" and (.trusted | length == 1 and .[0].identity == \"$guest\" and .[0].name == \"Sam Account\")"
+echo "{\"cmd\":\"trust_control\",\"identity\":\"$guest\"}" >&3
+check "$TS" "$trusted_sam and .state == \"none\"" "trust_control: the control event lists Sam Account as trusted"
+echo '{"cmd":"request_control"}' >&4
+check "$TS" '.event == "control" and .state == "controlling" and .by.name == "Sam Account"' "Sam Account's request is granted at once, under the pass's name"
+check "$TV" '.event == "control" and .state == "controlling"' "guest: in control"
+label_during=0
+for _ in $(seq 100); do label_shown "$tsharer" && { label_during=1; break; }; sleep 0.05; done
+[[ $label_during -eq 1 ]] && pass "the control label is on screen" || fail "no control label during trusted control"
+for _ in $(seq 100); do [[ $(texts "$OUT/trust-actions.jsonl") -ge 5 ]] && break; sleep 0.1; done
+[[ $(texts "$OUT/trust-actions.jsonl") -ge 5 ]] && pass "the guest's typing is recorded" || fail "typing not recorded"
+[[ $(count "$TS" '.event == "control_asked"') -eq 0 ]] && pass "no control_asked for a trusted guest" || fail "a trusted request raised a prompt"
+[[ $(count "$TS" '.event == "control" and .state == "asked"') -eq 0 ]] && pass "never in the asked state" || fail "a trusted request was shown as asking"
+
+sleep 0.5
+echo '{"cmd":"release_control"}' >&4
+if wait_count "$TS" "$trusted_sam and .state == \"none\"" 2; then pass "the guest gives control back and is still trusted"; else fail "release lost the trust"; fi
+if wait_count "$TV" '.event == "control" and .state == "none"' 2; then pass "guest: no longer in control"; else fail "guest still in control"; fi
+sleep 0.3
+echo '{"cmd":"request_control"}' >&4
+if wait_count "$TS" '.event == "control" and .state == "controlling"' 2; then pass "asking again is granted again"; else fail "second trusted request not granted"; fi
+for _ in $(seq 100); do [[ $(texts "$OUT/trust-actions.jsonl") -ge 10 ]] && break; sleep 0.1; done
+[[ $(count "$TS" '.event == "control_asked"') -eq 0 ]] && pass "still no control_asked" || fail "the second trusted request raised a prompt"
+sleep 0.5
+
+echo '{"cmd":"revoke_control"}' >&3
+check "$TS" '.event == "control" and .state == "none" and (.trusted | length == 0)' "revoke_control: control ends and nobody is trusted"
+if wait_count "$TV" '.event == "control" and .state == "none"' 3; then pass "guest: no longer in control"; else fail "guest still in control after the revoke"; fi
+if "$SPIKE" replay --sent "$OUT/trust-sent.jsonl" --actions "$OUT/trust-actions.jsonl" >"$OUT/trust-replay.log" 2>&1; then
+  pass "what was recorded is what the guest sent, both grants ($(tail -1 "$OUT/trust-replay.log"))"
+else
+  fail "replay: $(tail -3 "$OUT/trust-replay.log")"
+fi
+sleep 0.3
+echo '{"cmd":"request_control"}' >&4
+if wait_count "$TS" ".event == \"control_asked\" and .identity == \"$guest\" and .name == \"Sam Account\"" 1; then
+  pass "after the revoke, the next request asks the app (as Sam Account, not Mallory)"
+else
+  fail "no control_asked after the revoke"
+fi
+request=$(first "$TS" '.event == "control_asked"' | jq -r .request)
+echo "{\"cmd\":\"deny_control\",\"request\":$request}" >&3
+if wait_count "$TV" '.event == "control" and .state == "none"' 4; then pass "denied by its number"; else fail "deny after revoke"; fi
+sleep 0.5
+
+trusts=$(count "$TS" "$trusted_sam")
+echo "{\"cmd\":\"trust_control\",\"identity\":\"$guest\"}" >&3
+if wait_count "$TS" "$trusted_sam" $((trusts + 1)); then pass "trusted again"; else fail "second trust_control"; fi
+untrusts=$(count "$TS" '.event == "control" and .state == "none" and (.trusted | length == 0)')
+echo '{"cmd":"revoke_control"}' >&3
+if wait_count "$TS" '.event == "control" and .state == "none" and (.trusted | length == 0)' $((untrusts + 1)); then
+  pass "a revoke before the guest asks takes the trust back"
+else
+  fail "revoke while idle left the trust"
+fi
+echo '{"cmd":"request_control"}' >&4
+if wait_count "$TS" '.event == "control_asked"' 2; then pass "so the request asks the app"; else fail "no prompt after an idle revoke"; fi
+request=$(jq -c -s 'map(select(.event == "control_asked")) | last' "$TS" | jq -r .request)
+[[ $(count "$TS" '.event == "control" and .state == "controlling"') -eq 2 ]] && pass "and nothing was granted" || fail "granted after an idle revoke"
+echo "{\"cmd\":\"deny_control\",\"request\":$request}" >&3
+wait_count "$TV" '.event == "control" and .state == "none"' 5 || true
+sleep 0.3
+
+errors_before=$(count "$TS" '.event == "error"')
+trusts=$(count "$TS" "$trusted_sam")
+echo '{"cmd":"trust_control","identity":"guest-not-in-this-call"}' >&3
+check "$TS" ".event == \"error\" and .message == \"That person isn't in the call.\"" "trusting someone not in the call is an error"
+echo "{\"cmd\":\"trust_control\",\"identity\":\"sharer-$tsid\"}" >&3
+check "$TS" '.event == "error" and .message == "Only a guest can be given control."' "trusting the sharer itself is an error"
+sleep 0.3
+[[ $(count "$TS" '.event == "error"') -eq $((errors_before + 2)) && $(count "$TS" "$trusted_sam") -eq $trusts \
+  && $(count "$TS" '.event == "control" and (.trusted | any(.identity != "'"$guest"'"))') -eq 0 ]] \
+  && pass "neither trusted anyone" || fail "a refused trust changed something"
+
+echo "{\"cmd\":\"trust_control\",\"identity\":\"$guest\"}" >&3
+if wait_count "$TS" "$trusted_sam" $((trusts + 1)); then pass "trusted once more"; else fail "third trust_control"; fi
+untrusts=$(count "$TS" '.event == "control" and .state == "none" and (.trusted | length == 0)')
+echo '{"cmd":"leave"}' >&4
+exec 4>&-
+check "$TS" '.event == "participants" and (.participants | length == 0)' "the guest leaves"
+if wait_count "$TS" '.event == "control" and .state == "none" and (.trusted | length == 0)' $((untrusts + 1)); then
+  pass "leaving takes the trust away"
+else
+  fail "the trust outlived the guest"
+fi
+for _ in $(seq 50); do kill -0 "$tviewer" 2>/dev/null || break; sleep 0.1; done
+# The same pass, so the same identity, back in the call.
+mkfifo "$OUT/trust-back.in"
+TWINCURSOR_PASS=$tguest_pass "$BIN" view --ipc --audio off --headless \
+  <"$OUT/trust-back.in" >"$OUT/trust-back.jsonl" 2>"$OUT/trust-back.log" &
+tback=$!
+pids+=("$tback")
+exec 4>"$OUT/trust-back.in"
+check "$OUT/trust-back.jsonl" '.event == "connection" and .state == "connected"' "the same pass joins again"
+if wait_count "$TS" ".event == \"participants\" and (.participants | any(.identity == \"$guest\"))" 2; then pass "the sharer sees $guest again"; else fail "rejoin not seen"; fi
+sleep 0.5
+echo '{"cmd":"request_control"}' >&4
+if wait_count "$TS" ".event == \"control_asked\" and .identity == \"$guest\"" 3; then
+  pass "the returning guest's request asks the app"
+else
+  fail "the returning guest was not asked about"
+fi
+[[ $(count "$TS" '.event == "control" and .state == "controlling"') -eq 2 ]] && pass "and isn't granted" || fail "the returning guest got control"
+request=$(jq -c -s 'map(select(.event == "control_asked")) | last' "$TS" | jq -r .request)
+echo "{\"cmd\":\"deny_control\",\"request\":$request}" >&3
+if wait_count "$OUT/trust-back.jsonl" '.event == "control" and .state == "none"' 2; then pass "denied"; else fail "deny for the returning guest"; fi
+echo '{"cmd":"leave"}' >&4
+echo '{"cmd":"leave"}' >&3
+check "$TS" '.event == "ended" and .reason == "left"' "sharer left"
+exec 3>&- 4>&-
+for pid in "$tsharer" "$tviewer" "$tback"; do
+  for _ in $(seq 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+  kill -0 "$pid" 2>/dev/null && fail "process $pid still running after leave" || pass "process $pid exited"
+done
+[[ $(count "$TS" '.event == "control_asked" and .name == "Mallory"') -eq 0 \
+  && $(count "$TS" '.event == "control" and (.by.name == "Mallory" or (.trusted | any(.name == "Mallory")))') -eq 0 ]] \
+  && pass "the name in the guest's hello (Mallory) is never shown" || fail "the hello's name was shown"
+
+echo "=== trusted control in a share without --allow-control"
+nroom="e2e-notrust-$$"
+nsid=$(uuidgen | tr '[:upper:]' '[:lower:]')
+ngid=$(uuidgen | tr '[:upper:]' '[:lower:]')
+nsharer_pass=$("$BIN" dev-pass --room "$nroom" --role sharer --name "Alex Account" --id "$nsid" --ttl 600)
+nguest_pass=$("$BIN" dev-pass --room "$nroom" --role guest --name "Sam Account" --id "$ngid" --ttl 600)
+NS=$OUT/notrust-share.jsonl
+NV=$OUT/notrust-view.jsonl
+mkfifo "$OUT/notrust-share.in" "$OUT/notrust-view.in"
+TWINCURSOR_PASS=$nsharer_pass "$BIN" share --ipc --audio off --capture pattern --resolution 720 \
+  <"$OUT/notrust-share.in" >"$NS" 2>"$OUT/notrust-share.log" &
+nsharer=$!
+pids+=("$nsharer")
+exec 3>"$OUT/notrust-share.in"
+check "$NS" '.event == "connection" and .state == "connected"' "sharer connected, control not allowed"
+TWINCURSOR_PASS=$nguest_pass "$BIN" view --ipc --audio off --headless \
+  <"$OUT/notrust-view.in" >"$NV" 2>"$OUT/notrust-view.log" &
+nviewer=$!
+pids+=("$nviewer")
+exec 4>"$OUT/notrust-view.in"
+check "$NS" ".event == \"participants\" and (.participants | any(.identity == \"guest-$ngid\"))" "sharer sees the guest"
+echo "{\"cmd\":\"trust_control\",\"identity\":\"guest-$ngid\"}" >&3
+check "$NS" ".event == \"error\" and .message == \"This share doesn't allow remote control.\"" "trust_control is an error"
+echo '{"cmd":"request_control"}' >&4
+check "$NV" '.event == "control" and .state == "asked"' "the guest asks"
+if wait_count "$NV" '.event == "control" and .state == "none"' 2; then pass "the request is turned down"; else fail "the request wasn't turned down"; fi
+[[ $(count "$NS" '.event == "control_asked" or (.event == "control" and (.state != "none" or (.trusted | length > 0)))') -eq 0 ]] \
+  && pass "nothing asked, granted or trusted" || fail "control state changed without --allow-control"
+echo '{"cmd":"leave"}' >&4
+echo '{"cmd":"leave"}' >&3
+check "$NS" '.event == "ended" and .reason == "left"' "sharer left"
+exec 3>&- 4>&-
+for pid in "$nsharer" "$nviewer"; do
+  for _ in $(seq 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+  kill -0 "$pid" 2>/dev/null && fail "process $pid still running after leave" || pass "process $pid exited"
+done
 
 echo "=== a pass for the other role fails fast"
 wrong() {

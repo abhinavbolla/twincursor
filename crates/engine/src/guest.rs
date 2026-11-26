@@ -306,7 +306,11 @@ impl AppSeam {
             GuestState::Requested => (ControlState::Asked, self.me.clone()),
             GuestState::InControl => (ControlState::Controlling, self.me.clone()),
         };
-        (self.events)(Event::Control { state, by });
+        (self.events)(Event::Control {
+            state,
+            by,
+            trusted: Vec::new(),
+        });
     }
 }
 

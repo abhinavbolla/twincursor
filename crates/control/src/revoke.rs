@@ -20,8 +20,14 @@ impl RevokeSwitch {
         self.0.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn generation(&self) -> u64 {
+    /// How many times it was tripped, ever. A command stamped with this can tell whether a
+    /// revoke came after it.
+    pub fn count(&self) -> u64 {
         self.0.load(Ordering::SeqCst)
+    }
+
+    fn generation(&self) -> u64 {
+        self.count()
     }
 }
 
