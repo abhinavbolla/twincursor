@@ -50,6 +50,16 @@ The Rust core is split into crates:
 - Capture on macOS uses ScreenCaptureKit directly (ADR 0001).
 
 #### What is captured
+- **One display per share.** A share is about one display, chosen once when it starts
+  (`engine::screen::choose`): the main display (the one with the menu bar, `CGMainDisplayID`),
+  or the one `--display <id>` names (`tc-engine displays` / `tc-spike displays` list them). It
+  is found among ScreenCaptureKit's displays by its id; if ScreenCaptureKit doesn't list it, the
+  share fails with a message instead of capturing another display. That id is handed to
+  everything that needs a screen: the capture (`CaptureConfig::display`), the injector
+  (`sharer::Surface::Display`), the label and the guest-pointer tag (`SharerUi::new`), the size
+  the tiers start from (`capture::display_pixels`), and the permissions check. None of them
+  picks a display on its own. ScreenCaptureKit's `displays()` comes in no promised order, and
+  its first entry isn't necessarily the main display.
 - **The whole display** (the default) leaves out every TwinCursor window: the sharer's own
   (such as the remote-control label), the desktop app that started it (`--exclude-app-pid`,
   ADR 0007) and any other TwinCursor process, so a viewer on the same Mac doesn't show the
@@ -72,8 +82,13 @@ The Rust core is split into crates:
   or several, lists them and exits rather than guessing.
 - **One app** (`share --app`): the display filter that includes only that app's windows, at the
   display's size.
-- Remote control needs the whole display: the guest's pointer is mapped onto it, so
-  `--allow-control` is refused with `--window` or `--app`.
+- **No control while one window or app is shared.** Input is mapped onto a whole display, so a
+  click on the window's picture would land somewhere unrelated. `--allow-control` with
+  `--window` or `--app` is accepted, but the control session is closed from the start
+  (`Controller::close`): every request is turned down with "Control isn't available while one
+  window is shared.", which the guest and the sharer both see, every trust is refused with the
+  same sentence, and nothing is injected. That holds until input is mapped onto windows. The
+  protocol's `Deny` carries the reason; peers from before it ignore it.
 - The viewer asks for a window whose inner size in physical pixels is the frame's, and
   softbuffer draws into a layer at the screen's scale, so a frame that fits on the monitor is
   shown one stream pixel per screen pixel. Its HUD says "shown 1:1" or "scaled to N%". When
@@ -214,9 +229,16 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
   thread then revokes properly, telling the guest and releasing everything held.
 - On macOS, `control::macos::MacInjector` posts real events through `enigo` (CGEvent). Events
   come from a private event source, so the sharer's own held keys don't leak into the guest's
-  input. Positions map onto one display in global points, the one `control::display::input_target`
-  picks: the main display (the one with the menu bar), wherever the others are. Fractional scroll is carried
-  over, so slow trackpad scrolls aren't lost. Keys go as Mac virtual key codes from a table of
+  input. Positions map onto the shared display in global points (`control::display::to_points`):
+  the injector is made with that display's id and maps onto nothing else. It looks the display
+  up again every 100 ms, so a new resolution or arrangement mid-call is followed. If the display
+  goes away (unplugged, or asleep), the injector stops injecting anything but releases, the
+  control session takes control back, tells the guest, and is closed for the rest of the share:
+  the sharer sees "The shared display is gone, so control isn't available.", and later requests
+  are turned down with it. If ScreenCaptureKit stops capturing it too, the share ends with its
+  message. With the
+  synthetic pattern (benches), input maps onto the main display, as before. Fractional scroll is
+  carried over, so slow trackpad scrolls aren't lost. Keys go as Mac virtual key codes from a table of
   `KeyboardEvent.code` names. Nothing but releases is injected while the screen is locked (see
   the threat model). It is made at the first grant (or the first trust), not when sharing
   starts, so sharing with `--allow-control` needs no Accessibility until someone is given
@@ -229,8 +251,8 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
   Mac with a notch, a full-screen window starts below the camera housing (32 pt on a 14-inch
   MacBook Pro), so window-relative positions read a few percent too high.
 - Real input lands wherever the pointer and the key window are, so that check sends nothing on
-  trust. The probe opens on the display the injector targets (it asks `input_display`, the
-  injector's own function: a full-screen window otherwise opens wherever macOS likes, and once
+  trust. The probe opens on the display the injector targets (it asks `engine::screen::choose`,
+  as the share does, with the same `--display`: a full-screen window otherwise opens wherever macOS likes, and once
   opened on an external display above the laptop's while the input went to the laptop's), and
   its first record says it is the key window of the frontmost app and covers that display. It
   records `lost_focus` the moment that stops being true. The guest's script holds at two gates

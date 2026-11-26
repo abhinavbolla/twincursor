@@ -60,6 +60,13 @@ weaken them won't be merged.
   during a grant, with a known version and values in range. The viewer isn't trusted.
 - **Nothing stays held down.** Every held key and button is released on revoke, on disconnect, when
   the guest's window loses focus, and after 1 s without a heartbeat.
+- **Input lands on the display the guest sees, and nowhere else.** A share is about one display
+  (the main one unless the sharer picks another), and the capture, the injector and the label
+  all get that same display. If it goes away mid-call, control is taken back and stays off for
+  the rest of the share; input never moves to another display. While one window or app is
+  shared, nobody can be given control, since a click on the window's picture would land
+  elsewhere on the screen: every request is turned down with "Control isn't available while
+  one window is shared."
 - **Nothing is injected while the sharer's screen is locked.** Typed keys would land in the lock
   screen's password field, so a guest could try to unlock the computer. Input pauses until the
   sharer unlocks it; releases still go through.

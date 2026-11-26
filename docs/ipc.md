@@ -11,19 +11,26 @@ every command and event, which the Rust tests read back and the app's tests can 
 ```
 tc-engine share --ipc --room ROOM --name "Alex" [--resolution 720|1080|1440|2160|native]
                 [--codec h264|h265] [--audio mic|off] [--mic DEVICE] [--speaker DEVICE]
-                [--window ID|TEXT | --app NAME] [--allow-control] [--exclude-app-pid PID]
+                [--window ID|TEXT | --app NAME] [--display ID] [--allow-control]
+                [--exclude-app-pid PID]
 tc-engine view  --ipc --room ROOM --name "Sam" [--audio mic|off] [--mic DEVICE] [--speaker DEVICE]
 tc-engine permissions [--request]     # one JSON object: Screen Recording, Accessibility, Microphone
 tc-engine devices                     # {"mics": [...], "speakers": [...]}
 tc-engine windows                     # [{"id", "app", "pid", "title", "pixels"}, ...]
+tc-engine displays                    # [{"id", "main", "capturable", "x", "y", "width", "height", "pixels"}, ...]
 tc-engine config                      # {"url", "api_key", "has_secret", "has_pass", "source"}
 ```
 
 With a call pass in `TWINCURSOR_PASS`, `share` and `view` need neither `--room` nor `--name`
 (see [Getting into the room](#getting-into-the-room)).
 
-`--window` and `--app` share one window or one app instead of the display, and are refused with
-`--allow-control`: control maps the guest's pointer onto the whole display.
+A share is about one display: the main one (with the menu bar), or the one `--display` names by
+the id `displays` lists. The capture shows it and control input goes to it, never to another.
+If screen capture can't see it, `share` fails before connecting, with an `error` saying so.
+
+`--window` and `--app` share one window or one app instead of the whole display. Together with
+`--allow-control` they are accepted, but nobody can be given control: input is mapped onto a
+whole display, not onto the window in the picture. See [Consent](#consent).
 
 ### Getting into the room
 
@@ -124,6 +131,18 @@ never grant another. No answer means no control. The one other way to get contro
 the sharer gave that guest beforehand, in this call ([below](#trusted-control)). Without
 `--allow-control`, requests are turned down without reaching the app.
 
+Two things make control unavailable for the whole share. Each request is then turned down
+without a `control_asked`; the guest's app and the sharer's app both get an `error` with the
+reason, and every `trust_control` and `trust_on_arrival` is refused with it:
+
+| When | `message` |
+|---|---|
+| One window or app is shared (`--window`, `--app`) | "Control isn't available while one window is shared." |
+| The shared display went away (unplugged, or asleep) | "The shared display is gone, so control isn't available." |
+
+When the shared display goes away during control, control is taken back at once (the guest's
+`control` event goes to `none`) and the sharer's app gets that `error` then too.
+
 Real input needs Accessibility, which the engine first checks when control is given, not when
 sharing starts. If it is missing, an `allow_control` (or a `trust_control` for the guest who is
 asking) turns the guest down, a `trust_control` trusts nobody, a `trust_on_arrival` expects
@@ -166,6 +185,7 @@ in the call yet isn't an error.
 | When | `message` |
 |---|---|
 | The share has no `--allow-control` | "This share doesn't allow remote control." |
+| Control isn't available in this share | one of the sentences [above](#consent) |
 | The identity isn't a guest's (the sharer's own included) | "Only a guest can be given control." |
 | Nobody with that identity is in the call | "That person isn't in the call." |
 | Another guest has control | "Someone else is in control. Take control back first." |

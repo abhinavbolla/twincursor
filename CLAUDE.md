@@ -63,7 +63,10 @@ Fill these in as code lands; keep them accurate.
   `--capture pattern` pretends to be a 3840x2160 display, so every tier up to 2160 is 16:9
 - One window or app: `tc-spike windows [--json]` lists shareable windows (id, pixels, app, title);
   `tc-spike share --window <id or text> [--resolution native]` sends that window at its own pixel
-  size, `--app <name>` the display with only that app's windows. Not with `--allow-control`.
+  size, `--app <name>` the display with only that app's windows. With `--allow-control` every
+  request is turned down ("Control isn't available while one window is shared.")
+- Which display: a share captures the main display and control input goes to the same one;
+  `share --display <id>` picks another, `tc-spike displays` / `tc-engine displays` list the ids
   A whole-display share leaves out every TwinCursor window, so share and view work on one Mac.
   To judge sharpness on one Mac: `tc-spike share --window <text> --resolution native --no-adapt
   --audio off` and `tc-spike view --audio off` (the HUD says "shown 1:1" or "scaled to N%")
