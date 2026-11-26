@@ -85,10 +85,21 @@ The Rust core is split into crates:
   line of text. Frames are scaled only when larger than the window, or at least 5% smaller.
 
 #### The desktop app
-`apps/desktop` is one plain window. It starts the engine, `tc-engine`, for each call and shows
-only text and controls; the shared screen is the engine's own native window (ADR 0007, and
-[the IPC protocol](ipc.md)).
+`apps/desktop` is a menu bar app with two small windows: the **panel**, which hangs from the
+menu bar icon (sign in, Share my screen, Paste link, people), and the **call bar**, which is on
+screen, on top and on every Space for as long as a call is ([the UI](ui.md)). It starts the
+engine, `tc-engine`, for each call and shows only text and controls; the shared screen is the
+engine's own native window (ADR 0007, and [the IPC protocol](ipc.md)).
 
+- **Windows** (`windows.rs`, with the rules in `surfaces.rs`). Both windows are made hidden at
+  launch and are real titled windows whose title bar shows nothing (no title, no traffic lights;
+  the web content fills them), so macOS draws their rounded corners, hairline and shadow; no
+  transparent windows and no private API. Each is as tall as its page says (`fit_window`),
+  keeping its top edge. The panel hides when it loses focus, except while a sign-in or a
+  permission prompt it started is up. The call bar is shown without becoming key, so the app the
+  person is typing in keeps the keyboard, and the time it came on screen is when arming starts.
+  Closing windows never quits; Quit (the panel's menu, the icon's menu, ⌘Q) ends or leaves the
+  call first.
 - **Rust side** (`src-tauri`). `engine.rs` builds the engine's flags (role, quality, voice, and
   the room and name for a room-code call), starts it with its stdin held open for the call, reads
   every stdout line as an event and every stderr line as a log line, and ends it: `leave`, then
@@ -96,17 +107,17 @@ only text and controls; the shared screen is the engine's own native window (ADR
   It holds no Tauri types, so its lifecycle is tested against a stand-in engine script. A
   sharer's engine always gets `--allow-control` (requests reach the window; nothing is granted
   until the person clicks Allow for that request) and `--exclude-app-pid` with the app's own
-  process id, so the window is never in the picture. A control request brings the window to the
-  front. The window's commands are typed (`ipc::Command`), so only commands the protocol knows
-  reach the engine.
+  process id, so the app's windows are never in the picture. A control request makes sure the
+  call bar is on screen, without focusing it. The window's commands are typed (`ipc::Command`),
+  so only commands the protocol knows reach the engine.
 - **Calls with accounts** (`calls.rs`, [calls](calls.md)). Share, join by link, let in, ring and
   leave run in the Rust side, which calls the backend through `crates/account`, starts every
   engine with a call pass in its environment (no `--room` or `--name`), and keeps one view of it
   all that it sends to the window on every change (the `home` event). It enforces arming: a
-  knock can't be let in, and a control request can't be allowed, within a second of the window
-  first showing it, so a click or key press already on its way can't do it. For "Let in with
-  control" it sends the engine `trust_on_arrival` once, and the engine keeps that promise, so
-  every revoke cancels it; the window itself can't send a trust. It polls the backend every two
+  knock can't be let in, and a control request can't be allowed, within a second of it first
+  being on screen (delivered to the window, with the call bar visible), so a click or key press
+  already on its way can't do it. For "Let in with control" it sends the engine
+  `trust_on_arrival` once, and the engine keeps that promise, so every revoke cancels it; the window itself can't send a trust. It polls the backend every two
   seconds while signed in (the host's heartbeat and the guest's knock), backing off to ten after
   repeated network failures.
 - **Quality.** 1080p and 1440p share with H.264; 4K with HEVC, which calls with accounts always
@@ -124,23 +135,24 @@ only text and controls; the shared screen is the engine's own native window (ADR
   [IPC](ipc.md#getting-into-the-room).
 - **Settings.** The server the build baked into `tc-engine` is the default (`tc-engine config`).
   Overrides are saved by the Rust side as JSON in the app's config folder (mode 0600) and handed
-  to the engine in its environment, never its flags. The window learns whether a secret is set,
+  to a room-code call's engine in its environment, never its flags (calls with accounts take
+  their server from the call pass, and only scripts start room-code calls now). The window learns whether a secret is set,
   never its value.
-- **Permissions.** While the start screen is showing, the window runs `tc-engine permissions` in
-  a fresh process every two seconds, since macOS applies a new grant only to processes started
-  after it. Each row opens its System Settings pane, and Ask runs `tc-engine permissions
-  --request`. Sharing is blocked only by a missing Screen Recording grant; joining never is.
-  Calls with accounts ask for one permission when it is first needed (`tc-engine permissions
-  --request screen_recording` on Share, `accessibility` on giving control).
+- **Permissions.** Each is asked for when it is first needed, in a fresh `tc-engine
+  permissions` process since macOS applies a new grant only to processes started after it:
+  `--request screen_recording` on Share, `accessibility` on giving control. Sharing is blocked
+  only by a missing Screen Recording grant; joining never is. While one is missing, the panel or
+  the bar offers to open its System Settings pane.
 - **Webview** (`src`, React). A pure reducer turns the engine's output into call state; it is
   tested against `crates/ipc/fixtures`. Outside Tauri, in development builds only, a mock engine
-  plays a call so the window can be checked in a browser.
+  and a page with every state of the panel and the bar let them be checked in a browser.
 - **Script mode.** `twincursor-desktop --script PATH --report PATH` shares the synthetic pattern
   with voice off and input recorded, uses a clipboard in memory, answers knocks and control
   requests as the script says (through the same arming checks as a click), and writes what it
   sees as JSON lines, including every `home` view. It is the only path that answers a request
   without a click, exists only behind that flag, and can't inject real input or touch the real
-  clipboard. `bench/app-e2e.sh` and `bench/app-accounts-e2e.sh` use it.
+  clipboard. Its windows exist but stay hidden unless the script sets `"windows": true`.
+  `bench/app-e2e.sh` and `bench/app-accounts-e2e.sh` use it.
 
 ### 2. WebRTC through LiveKit (self-hostable SFU)
 - LiveKit's Rust SDK (`livekit` crate, built on libwebrtc) gives us congestion control,
@@ -255,8 +267,8 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
   when capture starts, so both windows are made, hidden, before the network thread starts
   capture; made on the first grant, they were captured. `bench/control-e2e.sh` checks that the
   label is on screen during control and gone after.
-- macOS needs Screen Recording and Accessibility permissions. The desktop app's start screen
-  lists them with their live status (see [The desktop app](#the-desktop-app)).
+- macOS needs Screen Recording and Accessibility permissions. The desktop app asks for each
+  when it is first needed (see [The desktop app](#the-desktop-app)).
 - Keyboard layouts: the viewer sends the physical key and the text it produced, and the sharer
   types the text unless it's a shortcut. ADR 0004 has the rules.
 

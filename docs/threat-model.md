@@ -46,8 +46,9 @@ weaken them won't be merged.
   revoke, even with nobody in control, takes every trust back.
 - **A request can't be answered by a stray click.** A knock or a control request can appear
   while you're typing or about to click something else. The app's Rust side refuses to let
-  someone in until a second after it first showed you their knock, and refuses an Allow until a
-  second after it showed you that request ("Too soon. Try again."), whatever the window does.
+  someone in until a second after their knock was first on screen, and refuses an Allow until a
+  second after that request was ("Too soon. Try again."), whatever the window does. The call bar
+  that shows them never takes the keyboard when it appears.
   An Allow names its request and reaches only the engine that asked. Turning away and denying
   are never delayed. "Let in with control" trusts that one identity if they join within a
   minute, a promise kept in the engine, so any revoke (the hotkey included, even before they
@@ -80,8 +81,7 @@ hotkey, the on-screen label, and real input on macOS.*
 ## Voice
 
 - **Your mic is on from the moment you join,** unless you start with `--audio off`. In the
-  desktop app, voice is a choice on the start screen, and turning it off means no mic and no
-  sound for that call.
+  desktop app, voice is on in every call, and the call bar's mic button mutes it.
 - **Mute stops the sound at its source.** A muted track sends silence, not your voice at a lower
   level, and the other side is shown that you're muted. Mute is yours alone: the other side
   can't unmute you.

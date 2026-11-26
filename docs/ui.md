@@ -12,8 +12,48 @@ by replaying `call_snapshot` and then listening to the engine (`useCall`, in `us
 What each shows is a pure function, tested over every state: `panelModel` (`panelModel.ts`) and
 `barModel` (`barModel.ts`). The components only draw what those return.
 
-A window loads one surface with `?view=panel` or `?view=bar`. Without `view`, the page is the
-older single window.
+A window loads one surface with `?view=panel` or `?view=bar`; without `view`, the page is the
+panel.
+
+## In the app
+
+The app lives in the menu bar. Each surface is its own native window, made hidden at launch so
+it is ready the moment it is needed (`apps/desktop/src-tauri/src/windows.rs`; where they go and
+when they show is decided in `surfaces.rs`, as plain tested functions).
+
+| | The panel | The call bar |
+| --- | --- | --- |
+| Window | `panel`, 340 pt wide | `bar`, 440 pt wide |
+| Height | Its content's, from 120 to 560 pt; the people list scrolls inside | Its content's, from 48 pt; it grows downward |
+| Where | Centred under the menu bar icon, 6 pt below the menu bar, on the icon's display, kept 8 pt from its edges. Before the icon's place is known: top right of the main display | Where it was last dragged (kept with the app's settings), moved onto a display if that one is gone or it would hang off. At first: top centre of the main display, 12 pt under the menu bar |
+| Shows | On a click on the icon, its menu's **Open TwinCursor**, the Dock icon, or launching the app (with focus); on a ring while not in a call (without focus) | Whenever a call is: starting, sharing, knocking, in a call, ending. Never takes focus when it appears |
+| Hides | When it loses focus, on a second click on the icon, on Escape. Not while a sign-in it started is in the browser (it comes back when that ends) or a macOS permission prompt it brought up is showing | When the call is over |
+| Level | Above other windows, on the current Space | Above other windows, on every Space and over full-screen apps |
+
+- **The menu bar icon** is the mark as a template image (drawn in code, `mark.rs`), so macOS
+  tints it for light and dark menu bars. A click opens or closes the panel; a right click or a
+  Control-click opens its menu: **Open TwinCursor**, **Quit TwinCursor**.
+- **Native look.** The windows are ordinary titled windows whose title bar shows nothing: no
+  title, no traffic lights, no separator, and the page fills the window edge to edge. So macOS
+  draws the corners, the hairline and the shadow, as for any window, in light and dark. Inside a
+  window the surface drops its own radius, border and shadow (`.in-window` in `styles.css`), and
+  the page and the window behind it are the surface's colour, so nothing else shows at the
+  corners. No transparent windows and no private API. In the controlling state the row keeps
+  its wash, keycaps and **Take back**; the red hairline is left out, since a line along the edge
+  would be cut by the window's rounded corners.
+- **Fitting.** The page measures the surface (`useWindowFit`, `inWindow.ts`) and the app resizes
+  the window in one step, keeping its top edge: the panel hangs from the icon, the bar grows
+  downward.
+- **Focus.** Nothing is focused when a window shows or after it loses focus, so a stray Enter or
+  Space can't press a button. The call bar doesn't become key when it appears, and its first
+  click acts, so answering a knock takes one click and typing stays in the app you were in.
+- **Dragging.** The call bar moves by its row's background; buttons in the row stay buttons.
+- **Arming.** Let in and Allow wait a second from when the knock or request could be seen: the
+  later of when it reached the bar and when the bar came on screen ([calls](calls.md)).
+- **Quitting.** Closing or hiding a window never quits. **Quit TwinCursor** (in the panel's menu,
+  the icon's menu, or ⌘Q) ends or leaves any call first, then quits.
+- **Looking at the other appearance.** `TWINCURSOR_APPEARANCE=light` or `=dark` in the app's
+  environment draws it that way whatever the system says, without changing System Settings.
 
 ## The panel
 
