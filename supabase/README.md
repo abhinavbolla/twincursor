@@ -34,8 +34,9 @@ rewritten by the signed-in user, so it is used only for accounts without a GitHu
 - **A call is live** while it hasn't been ended and its host's app sent a heartbeat in the last 45
   seconds. The heartbeat is `inbox(hosting => call_id)`, sent only while the app is actually
   sharing that call; it also brings back a call that went stale after missed polls. Ringing someone
-  counts too. Ended calls never come back. A host has one open call at a time: starting a call ends
-  the previous one.
+  counts too. Ended calls never come back, and neither does a call silent for more than 10
+  minutes: it is over, so a guest admitted long ago can't get back in when the host calls again.
+  A host has one open call at a time: starting a call ends the previous one.
 - **After a restart,** `inbox()` without `hosting` still shows the host's open call if it is live.
   An app that isn't sharing it should call `end_call` on it.
 - **Joining by link (a knock).** Anyone signed in with a live call's code can knock. The host sees

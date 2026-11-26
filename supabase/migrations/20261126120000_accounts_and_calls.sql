@@ -120,6 +120,16 @@ as $$
 $$;
 comment on function private.is_live(timestamptz, timestamptz) is 'A call is live while it isn''t ended and its host was seen in the last 45 s.';
 
+create function private.can_revive(p_ended_at timestamptz, p_seen_at timestamptz)
+returns boolean
+language sql
+stable
+set search_path = ''
+as $$
+  select p_ended_at is null and p_seen_at > now() - interval '10 minutes';
+$$;
+comment on function private.can_revive(timestamptz, timestamptz) is 'A stale call may come back (through a heartbeat or a ring) only if it isn''t ended and its host was seen in the last 10 minutes. A call silent for longer is over for good.';
+
 -- Removes control characters (Unicode Cc, as Rust's char::is_control), trims, caps the length.
 create function private.clean_text(p_text text, p_max int)
 returns text
@@ -483,10 +493,11 @@ begin
     raise exception 'not_a_contact' using errcode = '42501';
   end if;
 
-  -- Ringing is the host acting, so it counts as a heartbeat for their open call, stale or not: the
-  -- app may still be sharing it after a missed poll. Only without an open call is one started.
+  -- Ringing is the host acting, so it counts as a heartbeat for their open call, even a stale one:
+  -- the app may still be sharing it after a missed poll. A call silent for over 10 minutes is over,
+  -- though: open_call ends it and starts a new one, so its old members don't come back with it.
   update public.calls k set seen_at = now()
-  where k.host = uid and k.ended_at is null
+  where k.host = uid and private.can_revive(k.ended_at, k.seen_at)
   returning * into c;
   if c.id is null then
     select o.call_id into v_call from private.open_call(uid) o;
@@ -502,7 +513,7 @@ begin
   return query select c.id, c.code;
 end;
 $$;
-comment on function public.ring(uuid) is 'Rings a contact (who must have the caller as a contact too) into the caller''s open call (refreshing its heartbeat, so a stale one comes back), starting one if there is none. Ringing again restarts the 60 s; someone admitted or knocking is left as they are.';
+comment on function public.ring(uuid) is 'Rings a contact (who must have the caller as a contact too) into the caller''s open call (refreshing its heartbeat, so a call stale for under 10 minutes comes back); otherwise it ends any open call and starts a new one. Ringing again restarts the 60 s; someone admitted or knocking is left as they are.';
 
 create function public.answer_ring(call_id uuid, accept boolean)
 returns text
@@ -637,9 +648,12 @@ declare
   v_hosting jsonb;
 begin
   -- Host heartbeat, only for the call the app says it is sharing. This also revives a call that
-  -- went stale (a missed poll or two), but never an ended one. A wrong or foreign id is ignored.
+  -- went stale (a missed poll or two) if it was seen in the last 10 minutes. One silent for longer
+  -- is over: it is ended, so nothing can bring it back. A wrong or foreign id is ignored.
   if inbox.hosting is not null then
-    update public.calls k set seen_at = now()
+    update public.calls k
+      set seen_at = case when private.can_revive(k.ended_at, k.seen_at) then now() else k.seen_at end,
+          ended_at = case when private.can_revive(k.ended_at, k.seen_at) then null else now() end
     where k.id = inbox.hosting and k.host = uid and k.ended_at is null;
   end if;
 
@@ -691,7 +705,7 @@ begin
   );
 end;
 $$;
-comment on function public.inbox(uuid) is 'Everything the app polls for, as one JSON object (see supabase/README.md). With hosting => the id of the call the app is sharing, also the host''s heartbeat for that call. Call it with POST.';
+comment on function public.inbox(uuid) is 'Everything the app polls for, as one JSON object (see supabase/README.md). With hosting => the id of the call the app is sharing, also the host''s heartbeat for that call: it revives the call if it was seen in the last 10 minutes and ends it otherwise. Call it with POST.';
 
 revoke execute on function
   public.start_call(),
