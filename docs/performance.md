@@ -616,7 +616,7 @@ Mac (the other steps play sound out loud or press the mute hotkey for real):
 STEPS="3 4" bench/audio-acceptance.sh
 ```
 
-Results land in `bench/results/`. Two machines take a few more steps: see [Try it](../README.md#try-it),
+Results land in `bench/results/`. Two machines take a few more steps: see [Between two machines](../README.md#between-two-machines),
 then run the viewer with `--headless --measure-input`.
 
 ## Not measured yet

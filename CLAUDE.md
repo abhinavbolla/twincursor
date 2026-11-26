@@ -8,6 +8,8 @@ Read before larger work:
 - `docs/ARCHITECTURE.md`: how the pieces fit together, and why
 - `docs/ROADMAP.md`: milestones; work on the current one only
 - `docs/performance.md`: current numbers and how to reproduce them
+- `docs/calls.md` and `docs/accounts.md`: calls with accounts, and the backend they use
+  (`supabase/README.md`); `docs/self-hosting.md` sets one up
 - `docs/research/hopp-lessons.md`: what we learned from Hopp's public engineering blog
 - `docs/research/rustdesk-lessons.md`: what RustDesk's design teaches us, and what not to take
 
@@ -30,20 +32,25 @@ Read before larger work:
    AGPL-compatible (MIT, Apache-2.0, BSD, ISC, Zlib, Unicode-3.0, MPL-2.0, LGPL, GPL-3.0, AGPL-3.0).
    `cargo deny` enforces this in CI (`deny.toml`).
 
-## Repo layout (planned; create as milestones need them)
+## Repo layout
 
 ```
-apps/desktop/     Tauri 2 shell (Rust + TypeScript/React UI)
-crates/media/     screen capture, encoding, LiveKit/WebRTC session, voice
-crates/control/   remote input: event protocol, injection (enigo)
-crates/engine/    what owns the main thread: native viewer, sharer hotkeys and overlay,
-                  the control threads on both sides
+apps/desktop/        Tauri 2 menu bar app (Rust in src-tauri/, TypeScript/React UI in src/),
+                     packaging scripts in scripts/
+crates/media/        screen capture, encoding, LiveKit/WebRTC session, voice
+crates/control/      remote input: consent rules, injection (enigo)
+crates/engine/       what owns the main thread: native viewer, sharer hotkeys and overlay,
+                     the control threads on both sides
+crates/engine-cli/   tc-engine, the engine process the app starts (JSON lines over stdin/stdout)
+crates/ipc/          the commands and events between the app and tc-engine
 crates/media-spike/  tc-spike, the development CLI over engine and media
-crates/protocol/  shared message types (serde), versioned
-crates/account/   accounts: GitHub sign-in via Supabase Auth, session, backend calls; tc-account tool
-server/           Rust (axum) API: auth, rooms, LiveKit token issuing
-deploy/           docker compose for self-hosting (server + LiveKit + Postgres)
-docs/             product, architecture, roadmap, research, ADRs
+crates/protocol/     shared message types between the two ends of a call (serde), versioned
+crates/account/      accounts: GitHub sign-in via Supabase Auth, session, backend calls; tc-account
+supabase/            the backend: migration, call-pass Edge Function, tests
+bench/               latency, quality, control and end-to-end scripts; netlab/ (Docker)
+deploy/dev/          docker compose for a local LiveKit dev server
+packaging/windows/   the Windows viewer zip for testers
+docs/                product, architecture, roadmap, research, ADRs
 ```
 
 ## Commands
@@ -140,16 +147,26 @@ Fill these in as code lands; keep them accurate.
   twincursor-engine-cli`, then `target/release/twincursor-desktop` (finds `tc-engine` next to
   it). Bundle: `apps/desktop/scripts/bundle.sh` → `target/release/bundle/macos/TwinCursor.app`
   (ad-hoc signed, `tc-engine` inside)
-- Test builds (`docs/RELEASING.md`, "Test builds"): `apps/desktop/scripts/package.sh
-  [testbuild.env]` → `target/release/packages/TwinCursor-<version>-macos-arm64.dmg` (bakes the
-  env file's server in, mounts the image and prints what the bundled `tc-engine config` sees;
-  rerun without the file afterwards so `target` holds no secret). Windows viewer zip: built by
-  `release.yml`, then `packaging/windows/assemble.sh VIEWER.zip testbuild.env` adds `server.txt`.
-  Testers read `docs/testing-guide.md`
+- Packaging (`docs/RELEASING.md`): `apps/desktop/scripts/package.sh [BACKEND_FILE]` →
+  `target/release/packages/TwinCursor-<version>-macos-arm64.dmg`. The backend file holds the
+  Supabase project URL and public key (`apps/desktop/backend.example.conf`; keep the real one
+  outside the repo, e.g. `~/.config/twincursor/backend.conf`); without it the app has no backend.
+  It clears every LiveKit variable from the build and fails if the bundled `tc-engine config`
+  reports a key source other than `dev`. `--legacy-keys testbuild.env` bakes a LiveKit key and
+  secret into `tc-engine` instead (no backend; only for the Windows viewer's test server; rerun
+  without it afterwards). Windows viewer zip: built by `release.yml`, then
+  `packaging/windows/assemble.sh VIEWER.zip testbuild.env` adds `server.txt`. Testers read
+  `docs/testing-guide.md`
 - Desktop dev in a browser, no engine: `npm run dev` in `apps/desktop`, then
-  `http://localhost:5173/?mock=share` or `?mock=join` (`&quality=4k`, `&voice=off`); the mock
-  engine's panel in the corner triggers control requests, the HEVC switch, errors and endings.
-  Development builds only; the bundled app has no mock
+  `http://localhost:5173/?view=panel&state=home` or `?view=bar&state=knock` (every state is
+  listed in `docs/ui.md`; `?view=gallery&of=bar` shows them all; add `&theme=light|dark`,
+  `&window=1`, `&frame=desktop`, `&menu=1`). `?view=panel` or `?view=bar` alone runs the live
+  mock engine. Development builds only; the bundled app has no mock
+- Desktop app against a backend: build the engine once (`cargo build --release -p
+  twincursor-engine-cli`), then in `apps/desktop`
+  `TWINCURSOR_SUPABASE_URL=… TWINCURSOR_SUPABASE_KEY=… npm run tauri dev` (a debug build of the
+  app with the Vite dev server; it finds `target/release/tc-engine`). For the local stack:
+  `http://127.0.0.1:54421` and the anon key from `supabase status`
 - App end to end: `bench/app-e2e.sh` (the real app in its test-only `--script`/`--report` mode
   shares the pattern to a headless guest: deny, allow, recorded typing, revoke, leave; then a 4K
   HEVC share switching to H.264 for a guest without HEVC, and the engine dying with the app.
