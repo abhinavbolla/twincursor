@@ -19,14 +19,62 @@ export function markInWindow(view: WindowView): void {
   document.documentElement.dataset.view = view;
 }
 
-/** The surface's height in whole points, or null while it has nothing to show yet. */
+/** The top and bottom of a box on the page, as `getBoundingClientRect` gives them. */
+export interface Box {
+  top: number;
+  bottom: number;
+}
+
+/** Room left under an open popover, the panel's inner padding, so it doesn't touch the edge. */
+export const POPOVER_MARGIN = 12;
+
+/** What opens over the surface instead of in its flow (the panel's account menu). */
+export const POPOVERS = ".menu";
+
+/**
+ * The window's height in whole points: the surface, or further down to the bottom of an open
+ * popover (and a margin under it), so a menu that hangs below a short panel isn't cut off.
+ * Null when there is nothing to fit.
+ */
+export function fitHeight(surface: Box, popovers: readonly Box[]): number | null {
+  const bottom = Math.max(surface.bottom, ...popovers.map((p) => p.bottom + POPOVER_MARGIN));
+  const height = Math.ceil(bottom - surface.top);
+  return surface.bottom - surface.top > 0 && height > 0 ? height : null;
+}
+
+/** The height to fit the window to, or null while the surface has nothing to show yet. */
 export function measure(el: HTMLElement): number | null {
   // The panel's placeholder before its first answer: not worth fitting a window to.
   if (el.querySelector(".panel-loading") !== null) {
     return null;
   }
-  const height = Math.ceil(el.getBoundingClientRect().height);
-  return height > 0 ? height : null;
+  const popovers = Array.from(el.querySelectorAll<HTMLElement>(POPOVERS), (p) => p.getBoundingClientRect());
+  return fitHeight(el.getBoundingClientRect(), popovers);
+}
+
+/**
+ * Calls `report` with the height whenever it changes: the surface resizing, or something
+ * appearing or going (a popover opening doesn't resize the surface). Returns a stop function.
+ */
+export function observeHeight(el: HTMLElement, report: (height: number) => void): () => void {
+  let last: number | null = null;
+  const check = () => {
+    const height = measure(el);
+    if (height !== null && height !== last) {
+      last = height;
+      report(height);
+    }
+  };
+  const observer = new ResizeObserver(check);
+  observer.observe(el);
+  // The placeholder going away, or a menu opening, doesn't always change the surface's size.
+  const changes = new MutationObserver(check);
+  changes.observe(el, { childList: true, subtree: true });
+  check();
+  return () => {
+    observer.disconnect();
+    changes.disconnect();
+  };
 }
 
 /** How close to the window becoming key a focus counts as WebKit's, not the person's. */
@@ -55,24 +103,9 @@ export function useWindowFit(view: WindowView): RefObject<HTMLDivElement | null>
     if (el === null) {
       return;
     }
-    let last: number | null = null;
-    const report = () => {
-      const height = measure(el);
-      if (height !== null && height !== last) {
-        last = height;
-        invoke("fit_window", { height }).catch(() => undefined);
-      }
-    };
-    const observer = new ResizeObserver(report);
-    observer.observe(el);
-    // The placeholder going away doesn't always change the height.
-    const changes = new MutationObserver(report);
-    changes.observe(el, { childList: true, subtree: true });
-    report();
-    return () => {
-      observer.disconnect();
-      changes.disconnect();
-    };
+    return observeHeight(el, (height) => {
+      invoke("fit_window", { height }).catch(() => undefined);
+    });
   }, []);
 
   useEffect(() => {

@@ -134,12 +134,17 @@ Sections under the row:
 - Copy is plain and short, in sentence case; no exclamation marks, no "please", no periods on
   labels and hints.
 - Everything is reachable by Tab with a visible focus ring; cards are labelled alert dialogs.
+- A window shows with nothing focused, so a stray Enter or Space can't act; the first Tab moves
+  focus to the first control.
+- Inside a window the window draws the corners and edge, so the controlled bar loses its red
+  hairline and gets a stronger wash instead (`--bad-wash-strong`). The window grows to fit an open
+  account menu and shrinks back when it closes (`fitHeight` in `inWindow.ts`).
 
 ## Seeing every state
 
 `npm run dev` in `apps/desktop`, then open `http://localhost:5173/` with:
 
-- `?view=panel&state=<name>`: `off`, `out`, `signing`, `home`, `empty`, `many`, `ring`, `rings`,
+- `?view=panel&state=<name>`: `off`, `out`, `out-menu`, `signing`, `home`, `empty`, `many`, `ring`, `rings`,
   `needs`, `starting`, `hosting`, `knocking`, `joined`, `error`, `settings`, `offline`
 - `?view=bar&state=<name>`: `alone`, `knock`, `knock2`, `knock-nohandle`, `with`, `trusted`,
   `controlling`, `asked`, `needs`, `menu`, `notice`, `g-knocking`, `g-watching`, `g-asked`,
@@ -149,7 +154,9 @@ Sections under the row:
 - `?view=panel` or `?view=bar` without a state: the live mock with its dev panel;
   `?view=both`: the panel and the bar side by side on the live mock
 - add `&frame=desktop` for a busy pretend desktop behind, `&theme=light` or `&theme=dark` to pin
-  the theme
+  the theme, `&window=1` to see a surface as its native window shows it (edge to edge, in a frame
+  of the height the window would be given), `&menu=1` to open the panel's account menu or the
+  bar's menu in any state
 
 An unknown state lists the valid ones. The states are plain data in `src/scenarios.ts` (a home
 view and the engine output so far) and are also the fixtures for the view-model tests. Each

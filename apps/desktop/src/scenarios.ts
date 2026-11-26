@@ -17,7 +17,7 @@ export interface Scenario {
   title: string;
   home: HomeView;
   outputs: EngineOutput[];
-  /** Bar: the menu section starts open. */
+  /** Bar: the menu section starts open. Panel: the account menu does. */
   menu?: boolean;
   /** Panel: opens on the Settings page. */
   settings?: boolean;
@@ -202,6 +202,10 @@ const bar = (name: string, title: string, home: HomeView, outputs: EngineOutput[
 export const SCENARIOS: readonly Scenario[] = [
   panel("off", "This build names no server", homeView({ account: { configured: false, signed_in: false, me: null, signing_in: false } })),
   panel("out", "Signed out", homeView({ account: { configured: true, signed_in: false, me: null, signing_in: false }, contacts: [] })),
+  {
+    ...panel("out-menu", "Signed out, with the menu open", homeView({ account: { configured: true, signed_in: false, me: null, signing_in: false }, contacts: [] })),
+    menu: true,
+  },
   panel("signing", "Signing in, waiting for the browser", homeView({ account: { configured: true, signed_in: false, me: null, signing_in: true }, contacts: [] })),
   panel("home", "Signed in, three people", homeView()),
   panel("empty", "Signed in, nobody yet", homeView({ contacts: [] })),

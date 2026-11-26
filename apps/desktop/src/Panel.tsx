@@ -18,10 +18,10 @@ import { useCall, useHome } from "./useSurface";
 /** How long "Copied" shows after a copy. */
 export const COPIED_MS = 2000;
 
-export function PanelSurface({ bridge, settings = false }: { bridge: Bridge; settings?: boolean }) {
+export function PanelSurface({ bridge, settings = false, menuOpen = false }: { bridge: Bridge; settings?: boolean; menuOpen?: boolean }) {
   const home = useHome(bridge);
   const call = useCall(bridge);
-  return <Panel bridge={bridge} home={home} call={call} settings={settings} />;
+  return <Panel bridge={bridge} home={home} call={call} settings={settings} menuOpen={menuOpen} />;
 }
 
 interface Props {
@@ -30,12 +30,14 @@ interface Props {
   call: CallState;
   /** Opens on the Settings page (the dev page's `settings` state). */
   settings?: boolean;
+  /** Opens with the account menu open (the dev page's `out-menu` state). */
+  menuOpen?: boolean;
 }
 
 /** A flow's refusal, as the sentence the Rust side gave. */
 const sentence = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-export function Panel({ bridge, home, call, settings = false }: Props) {
+export function Panel({ bridge, home, call, settings = false, menuOpen = false }: Props) {
   const [page, setPage] = useState<"home" | "settings">(settings ? "settings" : "home");
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
@@ -125,7 +127,7 @@ export function Panel({ bridge, home, call, settings = false }: Props) {
           <Mark className="mark" />
           TwinCursor
         </span>
-        {model.kind !== "loading" && <AccountMenu me={model.kind === "home" ? model.me : null} items={menuItems} />}
+        {model.kind !== "loading" && <AccountMenu me={model.kind === "home" ? model.me : null} items={menuItems} startOpen={menuOpen} />}
       </header>
 
       {model.kind === "loading" && <div className="panel-loading" aria-busy="true" />}
@@ -215,8 +217,8 @@ export function Panel({ bridge, home, call, settings = false }: Props) {
   );
 }
 
-function AccountMenu({ me, items }: { me: MeView | null; items: MenuItem[] }) {
-  const [open, setOpen] = useState(false);
+function AccountMenu({ me, items, startOpen }: { me: MeView | null; items: MenuItem[]; startOpen: boolean }) {
+  const [open, setOpen] = useState(startOpen);
   const trigger = useRef<HTMLButtonElement>(null);
   const close = useCallback(() => setOpen(false), []);
   return (

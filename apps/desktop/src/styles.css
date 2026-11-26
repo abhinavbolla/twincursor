@@ -20,6 +20,8 @@
   --good: #15803d;
   --bad: #dc2626;
   --bad-wash: rgb(220 38 38 / 0.06);
+  /* The controlled state inside a window, where there's no red hairline to carry it. */
+  --bad-wash-strong: rgb(220 38 38 / 0.11);
   --shadow: 0 1px 2px rgb(0 0 0 / 0.05);
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
   --float: #ffffff;
@@ -50,6 +52,7 @@
     --good: #4cc38a;
     --bad: #e5484d;
     --bad-wash: rgb(229 72 77 / 0.1);
+    --bad-wash-strong: rgb(229 72 77 / 0.18);
     --shadow: none;
     /* Floating surfaces sit one step above the card, with a top highlight and a deep shadow,
        so they hold their edge over a dark desktop. */
@@ -79,6 +82,7 @@
   --good: #4cc38a;
   --bad: #e5484d;
   --bad-wash: rgb(229 72 77 / 0.1);
+  --bad-wash-strong: rgb(229 72 77 / 0.18);
   --shadow: none;
   /* Floating surfaces sit one step above the card, with a top highlight and a deep shadow,
      so they hold their edge over a dark desktop. */
@@ -579,6 +583,9 @@ button.icon-button.muted:hover:not(:disabled) {
 .panel {
   width: 340px;
   max-height: 520px;
+  /* The account menu hangs below a short panel (the window grows for it; inWindow.ts). The
+     people list scrolls on its own, so nothing else needs clipping. */
+  overflow: visible;
 }
 
 .panel-head {
@@ -1343,5 +1350,27 @@ button.menu-item.separated::before {
 }
 
 /* Someone is controlling this Mac. A hairline drawn inside the window's edge would be cut off by
-   its rounded corners (their radius differs between macOS versions), so in a window the row's
+   its rounded corners (their radius differs between macOS versions), so in a window a stronger
    wash, the keycaps and Take back carry the state. */
+.in-window .bar.live .bar-row {
+  background: var(--bad-wash-strong);
+}
+
+/* The dev page's `&window=1`: the surface as its window shows it, edge to edge in a frame of the
+   height the window would be given (the window's own corners and shadow, drawn here). */
+.dev-window {
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--float);
+  box-shadow: var(--float-shadow);
+  outline: 1px solid var(--float-line);
+  flex-shrink: 0;
+}
+
+.dev-window.panel-window {
+  width: 340px;
+}
+
+.dev-window.bar-window {
+  width: 440px;
+}
