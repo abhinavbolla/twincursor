@@ -49,9 +49,9 @@ weaken them won't be merged.
   someone in until a second after it first showed you their knock, and refuses an Allow until a
   second after it showed you that request ("Too soon. Try again."), whatever the window does.
   An Allow names its request and reaches only the engine that asked. Turning away and denying
-  are never delayed. "Let in with control" gives control to that one identity, once, if they
-  arrive within a minute, in that call, to that engine process; a revoke, the end of the call or
-  a restart of the engine cancels it ([calls](calls.md#arming-why-let-in-and-allow-wait-a-second)).
+  are never delayed. "Let in with control" trusts that one identity if they join within a
+  minute, a promise kept in the engine, so any revoke (the hotkey included, even before they
+  join), the end of the call or a restart of the engine cancels it ([calls](calls.md#arming-why-let-in-and-allow-wait-a-second)).
 - **Names come from the token.** The name in "Sam wants control", in "Sam is controlling" and in
   the list of trusted guests is the one in that person's token, not the one their own app sends.
   With a call pass, that is the account's name, signed by the account server. Without one, it is

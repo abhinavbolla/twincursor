@@ -26,6 +26,9 @@ use lateness::Lateness;
 use protocol::{InputEvent, Message, Platform};
 pub use revoke::{Gated, RevokeSwitch};
 
+/// How long [`Controller::expect`] waits for that guest to join.
+pub const EXPECT_FOR: Duration = Duration::from_secs(60);
+
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Moves later than this are dropped (ADR 0003).
@@ -73,7 +76,7 @@ pub enum Effect {
     Refused(Refusal),
 }
 
-/// Why [`Controller::trust`] or a grant didn't happen. Each reads as a sentence for the sharer.
+/// Why [`Controller::trust`], [`Controller::expect`] or a grant didn't happen. Each reads as a sentence for the sharer.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Refusal {
     /// Only someone in the call can be trusted with control.
@@ -140,6 +143,9 @@ pub struct Controller<I> {
     /// Guests the sharer let take control without asking again, for this call. Only
     /// [`Controller::trust`] adds to it; a revoke empties it and leaving takes the guest out.
     trusted: BTreeSet<String>,
+    /// Guests to trust if they join before their deadline ([`Controller::expect`]). A revoke
+    /// empties it, as it empties `trusted`.
+    expected: HashMap<String, Instant>,
     counters: Counters,
 }
 
@@ -152,6 +158,7 @@ impl<I: Injector> Controller<I> {
             hellos: HashMap::new(),
             present: HashMap::new(),
             trusted: BTreeSet::new(),
+            expected: HashMap::new(),
             counters: Counters::default(),
         }
     }
@@ -196,9 +203,48 @@ impl<I: Injector> Controller<I> {
 
     /// Someone joined the call (or was already in it), with the name their token carries.
     /// The server signs the token, so this name is shown in place of the one in their hello.
-    /// Joining grants and trusts nothing.
-    pub fn joined(&mut self, identity: &str, name: &str) {
+    /// Joining grants nothing. It trusts only a guest the sharer expected
+    /// ([`Controller::expect`]), before the deadline, and not while someone else has control
+    /// (then the expectation is dropped and the refusal returned).
+    pub fn joined(&mut self, identity: &str, name: &str, now: Instant) -> Vec<Effect> {
         self.present.insert(identity.to_owned(), name.to_owned());
+        let Some(deadline) = self.expected.remove(identity) else {
+            return vec![];
+        };
+        if now >= deadline {
+            tracing::info!(guest = %identity, "joined too late to be given control");
+            return vec![];
+        }
+        if matches!(&self.phase, Phase::Granted(guest, _) if guest.identity != identity) {
+            return vec![Effect::Refused(Refusal::SomeoneElseControls)];
+        }
+        self.trusted.insert(identity.to_owned());
+        tracing::info!(guest = %identity, "joined as expected: trusted with control for this call");
+        vec![]
+    }
+
+    /// The sharer will trust `identity` with control if they join within [`EXPECT_FOR`] ("Let
+    /// in with control" for someone not in the call yet). Only the sharer can call this; nothing
+    /// a guest sends does. For someone already in the call it is [`Controller::trust`]. Refused
+    /// while someone else has control. Any revoke cancels it, as it cancels every trust; so does
+    /// that guest leaving, and the deadline passing. A hello doesn't extend it.
+    pub fn expect(&mut self, identity: &str, now: Instant) -> Vec<Effect> {
+        if self.present.contains_key(identity) {
+            return self.trust(identity, now);
+        }
+        if matches!(&self.phase, Phase::Granted(..)) {
+            return vec![Effect::Refused(Refusal::SomeoneElseControls)];
+        }
+        self.expected.insert(identity.to_owned(), now + EXPECT_FOR);
+        tracing::info!(guest = %identity, "will be trusted with control on joining");
+        vec![]
+    }
+
+    /// Who is expected ([`Controller::expect`]) and hasn't joined yet, in identity order.
+    pub fn expected(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.expected.keys().cloned().collect();
+        out.sort();
+        out
     }
 
     /// The sharer lets `identity` take control during this call without being asked again:
@@ -274,6 +320,7 @@ impl<I: Injector> Controller<I> {
     /// revoke, anyone who asks is asked about again.
     pub fn revoke(&mut self) -> Vec<Effect> {
         self.trusted.clear();
+        self.expected.clear();
         match std::mem::replace(&mut self.phase, Phase::Idle) {
             Phase::Idle => vec![],
             Phase::Requested(guest) => vec![send(guest.identity, Message::Deny)],
@@ -290,11 +337,14 @@ impl<I: Injector> Controller<I> {
         self.present.remove(identity);
         // Someone who comes back with the same identity is asked about again.
         self.trusted.remove(identity);
+        self.expected.remove(identity);
         self.end_by_guest(identity, EndReason::Left)
     }
 
-    /// Call often, every 100 ms or so: it runs the deadman.
+    /// Call often, every 100 ms or so: it runs the deadman, and drops expectations past their
+    /// deadline.
     pub fn tick(&mut self, now: Instant) {
+        self.expected.retain(|_, deadline| now < *deadline);
         let Phase::Granted(_, control) = &mut self.phase else {
             return;
         };

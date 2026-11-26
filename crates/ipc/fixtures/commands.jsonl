@@ -5,6 +5,7 @@
 {"cmd":"deny_control","request":2}
 {"cmd":"revoke_control"}
 {"cmd":"trust_control","identity":"guest-1f2e3d4c"}
+{"cmd":"trust_on_arrival","identity":"guest-5a3f09c1"}
 {"cmd":"request_control"}
 {"cmd":"release_control"}
 {"cmd":"set_mic","device":"MacBook Pro Microphone"}

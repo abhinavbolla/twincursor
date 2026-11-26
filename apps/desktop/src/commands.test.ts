@@ -25,6 +25,8 @@ function rebuild(fixture: Record<string, unknown>): EngineCommand {
       return build.revokeControl();
     case "trust_control":
       return build.trustControl(String(fixture.identity));
+    case "trust_on_arrival":
+      return build.trustOnArrival(String(fixture.identity));
     case "request_control":
       return build.requestControl();
     case "release_control":
@@ -50,5 +52,6 @@ describe("commands", () => {
     expect(build.allowControl(7)).toEqual({ cmd: "allow_control", request: 7 });
     expect(build.denyControl(8)).toEqual({ cmd: "deny_control", request: 8 });
     expect(build.trustControl("guest-1")).toEqual({ cmd: "trust_control", identity: "guest-1" });
+    expect(build.trustOnArrival("guest-2")).toEqual({ cmd: "trust_on_arrival", identity: "guest-2" });
   });
 });

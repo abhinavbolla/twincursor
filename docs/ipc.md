@@ -97,6 +97,7 @@ The latency markers `tc-spike` stamps into the top left of the picture are off i
 | `{"cmd":"deny_control","request":N}` | sharer | Turn request `N` down |
 | `{"cmd":"revoke_control"}` | sharer | Take control back at once, as the revoke hotkey does, and every trust with it |
 | `{"cmd":"trust_control","identity":"…"}` | sharer | Let this guest take control during this call without a prompt (see [Trusted control](#trusted-control)) |
+| `{"cmd":"trust_on_arrival","identity":"…"}` | sharer | The same for a guest who may not have joined yet: trusted if they join within a minute, unless a revoke comes first |
 | `{"cmd":"request_control"}` | guest | Ask the sharer for control |
 | `{"cmd":"release_control"}` | guest | Give control back, or withdraw the request |
 | `{"cmd":"set_mic","device":"…"}`, `{"cmd":"set_speaker","device":null}` | both | Switch devices mid-call, by name as `devices` lists them; `null` is the system default |
@@ -148,6 +149,16 @@ trust whether or not anyone is in control, or until that guest leaves the call. 
 back keeps it. It is never stored anywhere, and nothing a guest or the server sends can create it.
 A revoke that happens after the app sent `trust_control` wins, even if the engine carries it out
 first.
+
+`trust_on_arrival` is "Let in with control" for someone who isn't in the call yet. If they are
+in it, it is `trust_control`. Otherwise the engine remembers the identity for one minute and
+trusts them when they join; it sends no event until then (the `control` event's `trusted` lists
+them once they are in). Any revoke cancels it, the hotkey included, also while nobody is in
+control or asking; so does that guest leaving, and the minute passing, after which joining
+trusts nothing. A hello or a reconnect doesn't extend it. If they join while someone else has
+control, they are not trusted, the promise is gone, and the app gets "Someone else is in
+control. Take control back first." It is refused as `trust_control` is, except that someone not
+in the call yet isn't an error.
 
 `trust_control` is refused with an `error` event, and trusts nobody, when:
 

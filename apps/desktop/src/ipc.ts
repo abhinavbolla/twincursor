@@ -73,6 +73,7 @@ export type EngineCommand =
   | { cmd: "deny_control"; request: number }
   | { cmd: "revoke_control" }
   | { cmd: "trust_control"; identity: string }
+  | { cmd: "trust_on_arrival"; identity: string }
   | { cmd: "request_control" }
   | { cmd: "release_control" }
   | { cmd: "set_mic"; device: string | null }

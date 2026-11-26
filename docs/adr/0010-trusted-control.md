@@ -30,6 +30,15 @@ can revoke it instantly with a global hotkey.
   that happens after the app sent `trust_control`, even one the control thread carries out
   before it reads the trust, wins: that trust is dropped. After any revoke the next request is
   a prompt again.
+- **A promise for someone who hasn't arrived yet lives in the engine too.** "Let in with
+  control" usually comes before the guest is in the media room. The app sends
+  `trust_on_arrival {identity}`: for someone already in the call it is `trust_control`;
+  otherwise the engine trusts that guest if they join within a minute, and drops the promise
+  silently after that. Every revoke cancels it, in every state, also before the guest arrives:
+  the revoke hotkey never passes through the app, so the promise can't be kept anywhere the
+  hotkey doesn't reach. The guest leaving cancels it too, and nothing they send (a hello, a
+  reconnect) extends it. It is refused as `trust_control` is, and when the guest joins while
+  someone else has control, they are not trusted and the promise is gone.
 - **It ends with the call.** Giving control back keeps the trust, so the guest can take it again.
   Leaving the call ends it: a guest who comes back, even with the same identity (a call pass
   gives one per account), is asked again. Trust lives in the engine's memory only; it is never

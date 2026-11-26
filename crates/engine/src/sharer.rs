@@ -80,6 +80,8 @@ enum In {
     Trust {
         identity: String,
         revokes: u64,
+        /// `trust_on_arrival`: for someone who may not have joined yet.
+        on_arrival: bool,
     },
     Stop,
 }
@@ -108,7 +110,23 @@ impl SharerHandle {
     /// prompt. Only the desktop app sends it; with [`Consent::Terminal`] it does nothing.
     pub fn trust(&self, identity: String) {
         let revokes = self.revoke.count();
-        let _ = self.tx.send(In::Trust { identity, revokes });
+        let _ = self.tx.send(In::Trust {
+            identity,
+            revokes,
+            on_arrival: false,
+        });
+    }
+
+    /// The app's `trust_on_arrival`: trust `identity` as [`SharerHandle::trust`] does, now if
+    /// they are in the call, else if they join within a minute. Any revoke cancels it, the
+    /// hotkey included, even one pressed before they join.
+    pub fn trust_on_arrival(&self, identity: String) {
+        let revokes = self.revoke.count();
+        let _ = self.tx.send(In::Trust {
+            identity,
+            revokes,
+            on_arrival: true,
+        });
     }
 
     /// Ends any control and releases everything held, without waiting.
@@ -309,23 +327,30 @@ fn run<I: Injector>(
                 controller.left(&identity)
             }
             Ok(In::Link(event)) => {
-                if let LinkEvent::Joined { identity, name } = &event {
-                    controller.joined(identity, name);
-                }
+                let effects = match &event {
+                    LinkEvent::Joined { identity, name } => {
+                        controller.joined(identity, name, Instant::now())
+                    }
+                    _ => vec![],
+                };
                 if let Seam::App(app) = seam {
                     link_event(app, event);
                 }
-                vec![]
+                effects
             }
             Ok(In::Line(line)) => answer(&mut controller, line.trim(), revoke),
             Ok(In::Answer(answer)) => match seam {
                 Seam::App(app) => app_answer(&mut controller, app, answer),
                 Seam::Terminal => vec![],
             },
-            Ok(In::Trust { identity, revokes }) => match seam {
+            Ok(In::Trust {
+                identity,
+                revokes,
+                on_arrival,
+            }) => match seam {
                 Seam::App(app) => {
                     let stale = revokes != revoke.count();
-                    app_trust(&mut controller, app, &identity, stale)
+                    app_trust(&mut controller, app, &identity, stale, on_arrival)
                 }
                 Seam::Terminal => vec![],
             },
@@ -473,14 +498,16 @@ fn app_answer<I: Injector>(
     }
 }
 
-/// The app trusts `identity` with control for this call. Refused without `--allow-control`, for
-/// anyone but a guest, and if control was taken back after the app sent it (`stale`): a revoke
-/// always wins over a trust given just before it. [`Controller::trust`] checks the rest.
+/// The app trusts `identity` with control for this call (with `on_arrival`, also if they join
+/// within a minute). Refused without `--allow-control`, for anyone but a guest, and if control
+/// was taken back after the app sent it (`stale`): a revoke always wins over a trust given just
+/// before it. [`Controller::trust`] and [`Controller::expect`] check the rest.
 fn app_trust<I: Injector>(
     controller: &mut Controller<Gated<I>>,
     app: &mut AppSeam,
     identity: &str,
     stale: bool,
+    on_arrival: bool,
 ) -> Vec<Effect> {
     let refused = if !app.allow {
         Some("This share doesn't allow remote control.")
@@ -498,7 +525,11 @@ fn app_trust<I: Injector>(
         });
         return vec![];
     }
-    let effects = controller.trust(identity, Instant::now());
+    let effects = if on_arrival {
+        controller.expect(identity, Instant::now())
+    } else {
+        controller.trust(identity, Instant::now())
+    };
     // A request this granted can't be answered any more.
     if controller.requester().is_none() {
         app.open = None;
@@ -562,9 +593,9 @@ mod tests {
         };
         let injector = Gated::new(RecordInjector::new(Vec::new()), RevokeSwitch::default());
         let mut controller = Controller::new(injector, Config::default());
-        controller.joined(SAM, "Sam Account");
-        controller.joined("sharer-00ff", "Alex");
-        controller.joined("recorder-1", "Recorder");
+        controller.joined(SAM, "Sam Account", Instant::now());
+        controller.joined("sharer-00ff", "Alex", Instant::now());
+        controller.joined("recorder-1", "Recorder", Instant::now());
         (controller, AppSeam::new(events, allow), seen)
     }
 
@@ -586,6 +617,16 @@ mod tests {
     /// Runs the whole control thread over what `inputs` queues, with Sam in the call, until it
     /// stops at the end. Returns the app's events.
     fn control_thread(inputs: impl FnOnce(&SharerHandle, &Sender<In>)) -> Vec<Event> {
+        control_thread_from(true, true, inputs)
+    }
+
+    /// As [`control_thread`], with Sam in the call from the start or not, and with `stop`
+    /// false, ending only when `inputs` sends [`In::Stop`] itself.
+    fn control_thread_from(
+        sam_first: bool,
+        stop: bool,
+        inputs: impl FnOnce(&SharerHandle, &Sender<In>),
+    ) -> Vec<Event> {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let events: Events = {
             let seen = seen.clone();
@@ -599,13 +640,13 @@ mod tests {
             tx: tx.clone(),
             revoke: revoke.clone(),
         };
-        tx.send(In::Link(LinkEvent::Joined {
-            identity: SAM.into(),
-            name: "Sam Account".into(),
-        }))
-        .unwrap();
+        if sam_first {
+            tx.send(sam_joins()).unwrap();
+        }
         inputs(&handle, &tx);
-        tx.send(In::Stop).unwrap();
+        if stop {
+            tx.send(In::Stop).unwrap();
+        }
         let mut seam = Seam::App(AppSeam::new(events, true));
         run(
             Controller::new(injector, Config::default()),
@@ -617,6 +658,95 @@ mod tests {
         );
         let seen = seen.lock().unwrap().clone();
         seen
+    }
+
+    fn sam_joins() -> In {
+        In::Link(LinkEvent::Joined {
+            identity: SAM.into(),
+            name: "Sam Account".into(),
+        })
+    }
+
+    fn asked(events: &[Event]) -> bool {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::ControlAsked { identity, .. } if identity == SAM))
+    }
+
+    #[test]
+    fn trust_on_arrival_trusts_a_guest_who_joins_later() {
+        let events = control_thread_from(false, true, |handle, tx| {
+            handle.trust_on_arrival(SAM.into());
+            tx.send(sam_joins()).unwrap();
+            tx.send(from_sam(&Message::RequestControl)).unwrap();
+        });
+        assert!(
+            ever_trusted(&events) && ever_controlling(&events),
+            "{events:?}"
+        );
+        assert!(!asked(&events), "{events:?}");
+        // For someone already in the call, it is trust_control.
+        let events = control_thread(|handle, tx| {
+            handle.trust_on_arrival(SAM.into());
+            tx.send(from_sam(&Message::RequestControl)).unwrap();
+        });
+        assert!(ever_controlling(&events) && !asked(&events), "{events:?}");
+    }
+
+    #[test]
+    fn any_revoke_before_they_join_cancels_trust_on_arrival() {
+        // The hotkey after the command reached the thread, with nobody in control and nobody
+        // asking: the switch is tripped from the injector's side, as the hotkey does.
+        let events = control_thread_from(false, false, |handle, tx| {
+            handle.trust_on_arrival(SAM.into());
+            std::thread::spawn({
+                let revoke = handle.revoke.clone();
+                let tx = tx.clone();
+                move || {
+                    std::thread::sleep(Duration::from_millis(300));
+                    revoke.trip();
+                    std::thread::sleep(Duration::from_millis(300));
+                    let _ = tx.send(sam_joins());
+                    let _ = tx.send(from_sam(&Message::RequestControl));
+                    std::thread::sleep(Duration::from_millis(300));
+                    let _ = tx.send(In::Stop);
+                }
+            });
+        });
+        assert!(!ever_trusted(&events), "{events:?}");
+        assert!(!ever_controlling(&events), "{events:?}");
+        assert!(asked(&events), "the request is a prompt: {events:?}");
+
+        // A revoke between the app sending it and the thread reading it wins too.
+        let events = control_thread_from(false, true, |handle, tx| {
+            handle.trust_on_arrival(SAM.into());
+            handle.revoke.trip();
+            tx.send(sam_joins()).unwrap();
+            tx.send(from_sam(&Message::RequestControl)).unwrap();
+        });
+        assert!(
+            !ever_trusted(&events) && !ever_controlling(&events),
+            "{events:?}"
+        );
+        assert!(events.contains(&Event::Error {
+            message: "Control was just taken back, so nobody was given it.".into()
+        }));
+    }
+
+    #[test]
+    fn trust_on_arrival_is_refused_as_trust_is() {
+        let (mut c, mut app, seen) = setup(false);
+        assert!(app_trust(&mut c, &mut app, "guest-later", false, true).is_empty());
+        assert_eq!(errors(&seen), ["This share doesn't allow remote control."]);
+        assert!(c.expected().is_empty());
+        let (mut c, mut app, seen) = setup(true);
+        for who in ["sharer-later", "recorder-2"] {
+            assert!(app_trust(&mut c, &mut app, who, false, true).is_empty());
+            assert_eq!(errors(&seen), ["Only a guest can be given control."]);
+        }
+        assert!(c.expected().is_empty());
+        assert!(app_trust(&mut c, &mut app, "guest-later", false, true).is_empty());
+        assert_eq!(c.expected(), ["guest-later"]);
     }
 
     fn from_sam(message: &Message) -> In {
@@ -715,17 +845,17 @@ mod tests {
     #[test]
     fn the_app_can_only_trust_a_guest_in_a_share_that_allows_control() {
         let (mut c, mut app, seen) = setup(false);
-        assert!(app_trust(&mut c, &mut app, SAM, false).is_empty());
+        assert!(app_trust(&mut c, &mut app, SAM, false, false).is_empty());
         assert_eq!(errors(&seen), ["This share doesn't allow remote control."]);
         assert!(c.trusted().is_empty());
 
         let (mut c, mut app, seen) = setup(true);
         for who in ["sharer-00ff", "recorder-1"] {
-            assert!(app_trust(&mut c, &mut app, who, false).is_empty());
+            assert!(app_trust(&mut c, &mut app, who, false, false).is_empty());
             assert_eq!(errors(&seen), ["Only a guest can be given control."]);
         }
         // A revoke after the app sent it wins.
-        assert!(app_trust(&mut c, &mut app, SAM, true).is_empty());
+        assert!(app_trust(&mut c, &mut app, SAM, true, false).is_empty());
         assert_eq!(
             errors(&seen),
             ["Control was just taken back, so nobody was given it."]
@@ -733,12 +863,12 @@ mod tests {
         assert!(c.trusted().is_empty());
         // Someone not in the call: refused by the controller, told to the app as an error.
         assert_eq!(
-            app_trust(&mut c, &mut app, "guest-gone", false),
+            app_trust(&mut c, &mut app, "guest-gone", false, false),
             vec![Effect::Refused(Refusal::NotInCall)]
         );
         assert!(c.trusted().is_empty());
 
-        assert!(app_trust(&mut c, &mut app, SAM, false).is_empty());
+        assert!(app_trust(&mut c, &mut app, SAM, false, false).is_empty());
         assert_eq!(c.trusted().len(), 1);
         assert!(errors(&seen).is_empty());
     }
@@ -747,7 +877,7 @@ mod tests {
     fn a_trusted_request_skips_the_prompt_and_a_trusted_pending_one_closes_it() {
         // Trusted first: the request is granted with no control_asked and no number.
         let (mut c, mut app, seen) = setup(true);
-        app_trust(&mut c, &mut app, SAM, false);
+        app_trust(&mut c, &mut app, SAM, false, false);
         let effects = request(&mut c, SAM);
         let effects = ask_app(&mut c, &mut app, effects);
         assert_eq!(
@@ -774,7 +904,7 @@ mod tests {
         });
         assert_eq!(asked, Some((1, "Sam Account".to_owned())));
         assert_eq!(
-            app_trust(&mut c, &mut app, SAM, false),
+            app_trust(&mut c, &mut app, SAM, false, false),
             vec![Effect::Send {
                 to: SAM.into(),
                 message: Message::Grant
@@ -795,7 +925,7 @@ mod tests {
         let show =
             |c: &Test, app: &mut AppSeam| app.show(c.requester(), c.controller(), &c.trusted());
         show(&c, &mut app);
-        app_trust(&mut c, &mut app, SAM, false);
+        app_trust(&mut c, &mut app, SAM, false, false);
         show(&c, &mut app);
         // Nothing changed: nothing sent.
         show(&c, &mut app);
