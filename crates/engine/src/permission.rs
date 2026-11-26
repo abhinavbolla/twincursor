@@ -182,6 +182,31 @@ pub fn request_missing(before: &Status) {
     }
 }
 
+/// One of the permissions [`Status`] reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Which {
+    ScreenRecording,
+    Accessibility,
+    Microphone,
+}
+
+/// Asks macOS for this one permission if `before` shows it missing, as [`request_missing`] does
+/// for all of them. Nothing else is asked.
+pub fn request_one(which: Which, before: &Status) {
+    match which {
+        Which::ScreenRecording if before.screen_recording != Access::Granted => {
+            sys::request_screen_recording()
+        }
+        Which::Accessibility if before.accessibility != Access::Granted => {
+            sys::request_accessibility()
+        }
+        Which::Microphone if before.microphone == Access::NotAsked => {
+            request_mic_permission(std::time::Duration::from_secs(120))
+        }
+        _ => {}
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod sys {
     use std::ffi::c_void;

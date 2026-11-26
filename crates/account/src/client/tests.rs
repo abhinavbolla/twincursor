@@ -720,6 +720,29 @@ async fn the_call_pass() {
 }
 
 #[tokio::test]
+async fn can_join_asks_pass_claims() {
+    let fake = Fake::start(|r| match r.json()["call_id"].as_str() {
+        Some("in") => Reply::json(
+            200,
+            json!([{ "room": "r1", "identity": "guest-u2", "name": "Sam", "role": "guest" }]),
+        ),
+        Some("out") => Reply::json(
+            403,
+            json!({ "code": "42501", "message": "not_allowed", "details": null, "hint": null }),
+        ),
+        _ => Reply::json(503, json!({})),
+    })
+    .await;
+    let (account, _) = make(&fake.url, Some(session(3600)));
+    assert_eq!(account.can_join("in").await, Ok(true));
+    assert_eq!(account.can_join("out").await, Ok(false));
+    assert_eq!(account.can_join("x").await, Err(Error::Server(503)));
+    let r = &fake.requests()[0];
+    assert_eq!(r.target, "/rest/v1/rpc/pass_claims");
+    assert_eq!(r.json(), json!({ "call_id": "in" }));
+}
+
+#[tokio::test]
 async fn an_account_on_disk_starts_signed_in() {
     let dir =
         std::env::temp_dir().join(format!("twincursor-account-client-{}", std::process::id()));
