@@ -1,15 +1,16 @@
 // The panel: the home, opened from the menu bar icon. 340 px wide; the people list scrolls
 // inside it. What it shows comes from `panelModel`; this file only draws it and runs the flows.
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import { Avatar, NoticeRow, PhraseLine } from "./bits";
+import { Avatar, NoticeRow, PhraseLine, useNoticeClock } from "./bits";
 import type { Bridge } from "./bridge";
 import type { CallState } from "./call";
 import { copyText } from "./clipboard";
 import type { HomeView } from "./home";
 import { BackIcon, Mark, MoreIcon } from "./icons";
 import { Menu, type MenuItem } from "./Menu";
+import { forget, type ShownLine } from "./notices";
 import { panelModel, type MeView, type PanelMain, type PersonRow, type RingCard } from "./panelModel";
 import { SettingsPanel } from "./Settings";
 import { useCall, useHome } from "./useSurface";
@@ -17,23 +18,25 @@ import { useCall, useHome } from "./useSurface";
 /** How long "Copied" shows after a copy. */
 export const COPIED_MS = 2000;
 
-export function PanelSurface({ bridge }: { bridge: Bridge }) {
+export function PanelSurface({ bridge, settings = false }: { bridge: Bridge; settings?: boolean }) {
   const home = useHome(bridge);
   const call = useCall(bridge);
-  return <Panel bridge={bridge} home={home} call={call} />;
+  return <Panel bridge={bridge} home={home} call={call} settings={settings} />;
 }
 
 interface Props {
   bridge: Bridge;
   home: HomeView | null;
   call: CallState;
+  /** Opens on the Settings page (the dev page's `settings` state). */
+  settings?: boolean;
 }
 
 /** A flow's refusal, as the sentence the Rust side gave. */
 const sentence = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-export function Panel({ bridge, home, call }: Props) {
-  const [page, setPage] = useState<"home" | "settings">("home");
+export function Panel({ bridge, home, call, settings = false }: Props) {
+  const [page, setPage] = useState<"home" | "settings">(settings ? "settings" : "home");
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
@@ -54,6 +57,21 @@ export function Panel({ bridge, home, call }: Props) {
       setError(null);
     }
   };
+  const lines: ShownLine[] =
+    model.kind === "home"
+      ? [
+          ...(model.error === null ? [] : [{ text: model.error, tone: "bad" as const }]),
+          ...(model.notice === null ? [] : [{ text: model.notice, tone: "plain" as const }]),
+        ]
+      : [];
+  const hoverNotice = useNoticeClock(lines, dismiss);
+  // A closed line that is no longer sent is forgotten, so the same words can show again.
+  const present = [error, home?.error ?? null, home?.notice ?? null];
+  const presentKey = present.join("\n");
+  useEffect(() => {
+    setDismissed((d) => forget(d, present));
+    // `presentKey` stands for `present`.
+  }, [presentKey]);
 
   const signIn = async () => {
     setSigningIn(true);
@@ -160,7 +178,12 @@ export function Panel({ bridge, home, call }: Props) {
             )}
             {model.error !== null && <NoticeRow text={model.error} tone="bad" close={() => dismiss(model.error ?? "")} />}
             {model.notice !== null && (
-              <NoticeRow text={model.notice} tone="plain" close={() => dismiss(model.notice ?? "")} />
+              <NoticeRow
+                text={model.notice}
+                tone="plain"
+                close={() => dismiss(model.notice ?? "")}
+                hover={(over) => model.notice !== null && hoverNotice(model.notice, over)}
+              />
             )}
             <Main main={model.main} sharing={sharing} share={share} paste={() => run(() => bridge.joinFromClipboard())} act={(op) => run(() => (op === "end" ? bridge.end() : bridge.cancelKnock()))} />
           </div>

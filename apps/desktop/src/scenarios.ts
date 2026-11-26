@@ -19,6 +19,8 @@ export interface Scenario {
   outputs: EngineOutput[];
   /** Bar: the menu section starts open. */
   menu?: boolean;
+  /** Panel: opens on the Settings page. */
+  settings?: boolean;
 }
 
 // ---------------------------------------------------------------- people
@@ -31,6 +33,9 @@ export const KIM = person("u3", "Kim Lee", "kimlee");
 export const PRIYA = person("u4", "Priya Natarajan", "priya");
 /** Forty characters: the longest name the surfaces are checked with. */
 export const LONG = person("u5", "Bartholomew Montgomery-Fitzgerald Junior", "bartholomew-montgomery");
+
+/** Someone without a GitHub handle. */
+export const DEV = person("u13", "Dev Patel", null);
 
 /** Twelve contacts, with a long name and names in non-Latin scripts. */
 export const TWELVE: Person[] = [
@@ -45,7 +50,7 @@ export const TWELVE: Person[] = [
   person("u10", "Zoë Ångström", "zoe"),
   person("u11", "Noah Williams", "noahw"),
   person("u12", "Lena Fischer", "lfischer"),
-  person("u13", "Dev Patel", null),
+  DEV,
 ];
 
 /** The engine identity of a guest with an account (`guest-<user id>`, as calls.rs makes it). */
@@ -217,11 +222,13 @@ export const SCENARIOS: readonly Scenario[] = [
   panel("knocking", "Waiting to be let in", guestHome({ kind: "knocking", host: ALEX })),
   panel("joined", "In Alex's call", guestHome({ kind: "joined", host: ALEX }), watching()),
   panel("error", "A paste that wasn't a link", homeView({ error: "That isn't a TwinCursor call link." })),
+  { ...panel("settings", "The Settings page", homeView()), settings: true },
   panel("offline", "The server can't be reached", homeView({ server_problem: "Can't reach the server." })),
 
   bar("alone", "Sharing, nobody yet", hosting(), boot("share")),
   bar("knock", "Sam knocks, Let in not armed yet", hosting({ knocks: [knock(SAM, false)] }), boot("share")),
   bar("knock2", "Two knocks, both armed", hosting({ knocks: [knock(SAM, true), knock(LONG, true)] }), boot("share")),
+  bar("knock-nohandle", "A knock from someone without a handle", hosting({ knocks: [knock(DEV, true)] }), boot("share")),
   bar("with", "Sam is in the call", hosting({ members: admitted(SAM) }), withSam()),
   bar("trusted", "Sam may take control", hosting({ members: admitted(SAM) }), withSam(out.control("none", null, [peer(SAM_IN)]))),
   bar(
@@ -273,6 +280,28 @@ export const SCENARIOS: readonly Scenario[] = [
   ),
   bar("reconnecting", "The connection dropped", hosting({ members: admitted(SAM) }), withSam(out.connection("reconnecting"))),
   bar("muted", "Your mic is muted", hosting({ members: admitted(SAM) }), withSam(out.voice(true))),
+  bar(
+    "long-trusted",
+    "A long first name, trusted, with four guests",
+    hosting({ members: admitted(LONG, SAM, KIM, PRIYA) }),
+    [
+      ...boot("share"),
+      out.participants([asGuest(LONG), SAM_IN, KIM_IN, asGuest(PRIYA)]),
+      out.control("none", null, [peer(asGuest(LONG))]),
+    ],
+  ),
+  bar(
+    "long-controlling",
+    "A long first name, controlling",
+    hosting({ members: admitted(LONG) }),
+    [...boot("share"), out.participants([asGuest(LONG)]), out.control("controlling", peer(asGuest(LONG)), [peer(asGuest(LONG))])],
+  ),
+  bar(
+    "long-g-controlling",
+    "Guest: controlling the Mac of a host with a long first name",
+    guestHome({ kind: "joined", host: LONG }),
+    [...boot("join"), out.participants([asSharer(LONG)]), out.control("controlling", SAM_WATCHING)],
+  ),
 ];
 
 export const scenariosOf = (surface: Surface): Scenario[] => SCENARIOS.filter((s) => s.surface === surface);

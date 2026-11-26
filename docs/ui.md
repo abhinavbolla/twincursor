@@ -71,7 +71,7 @@ when they show is decided in `surfaces.rs`, as plain tested functions).
 | Knocking | "Waiting for **Alex** to let you in…" with **Cancel** |
 | In a call | "In **Alex**'s call" with **Leave** |
 | Needs Screen Recording | "TwinCursor needs Screen Recording to share your screen." with **Open Settings** |
-| Error, notice | One line each, closable; an error in the bad colour |
+| Error, notice | One line each, closable; an error in the bad colour and stays until closed, a notice goes after 6 s (paused under the pointer) |
 | Server problem | A muted line pinned to the bottom |
 
 The header holds the mark, "TwinCursor" and your avatar, which opens: your name and @handle,
@@ -93,22 +93,27 @@ row's one button, **Mute**, **More**, and **Stop** (sharer) or **Leave** (guest)
 | Reconnecting | "Reconnecting…" | |
 | Guest knocking | "Waiting for **Alex** to let you in…" | **Cancel** in place of Leave |
 | Guest watching | "**Alex**'s screen" | **Control** |
-| Guest asked | "Asked **Alex** for control…" | **Never mind** |
+| Guest asked | "Asked for control…" (the face says whose call) | **Never mind** |
 | Guest controlling | "Controlling **Alex**'s Mac" | F9 keycap, **Give back** |
 
 While anyone is in control, the row drops the faces and More so the line, the hotkey and the
-button fit. Names in the row are first names.
+button fit. Names in the row are first names. Buttons keep their size and the line gives way,
+but a name is never cut below about six characters: before that, the row drops the faces, then
+the keycaps (`fit.ts`; Take back's tooltip still names ⌃⌥⌘R).
 
 Sections under the row:
 
-- **Knock** (`role="alertdialog"`): avatar, "**Sam Rivera** wants to join", @handle; **Turn
+- **Knock** (`role="alertdialog"`): avatar, "**Sam Rivera** wants to join", @handle (nothing for someone without one; the name then
+  sits centred beside the avatar); **Turn
   away**, **Let in with control**, **Let in**. Until the Rust side arms the knock, the two let-in
   buttons are off and a thin line runs across the card's top. More knocks queue below.
 - **Control request**: "**Sam Rivera** wants to control your Mac", "They'll use your mouse and
   keyboard until you take control back", **Deny** and **Allow** (off for `ALLOW_AFTER_MS`, with
   the same line).
 - **Needs Accessibility**: "TwinCursor needs Accessibility to give control." **Open Settings**.
-- **Notices**: errors first, then notices; at most two, each closable.
+- **Notices**: errors first, then notices; at most two, each closable. A notice goes away by
+  itself after 6 s, paused while the pointer is over it; an error stays until closed
+  (`notices.ts`).
 - **Menu** (More; closes on a second click or Escape): the call link and **Copy link**, the
   numbers in mono in three columns with **Copy numbers**, a row per guest with **Give control**
   ("Can take control" or "Controlling" once given), and "Your mic: …" with ⌃ ⌥ ⌘ M.
@@ -135,10 +140,11 @@ Sections under the row:
 `npm run dev` in `apps/desktop`, then open `http://localhost:5173/` with:
 
 - `?view=panel&state=<name>`: `off`, `out`, `signing`, `home`, `empty`, `many`, `ring`, `rings`,
-  `needs`, `starting`, `hosting`, `knocking`, `joined`, `error`, `offline`
-- `?view=bar&state=<name>`: `alone`, `knock`, `knock2`, `with`, `trusted`, `controlling`,
-  `asked`, `needs`, `menu`, `notice`, `g-knocking`, `g-watching`, `g-asked`, `g-controlling`,
-  `reconnecting`, `muted`
+  `needs`, `starting`, `hosting`, `knocking`, `joined`, `error`, `settings`, `offline`
+- `?view=bar&state=<name>`: `alone`, `knock`, `knock2`, `knock-nohandle`, `with`, `trusted`,
+  `controlling`, `asked`, `needs`, `menu`, `notice`, `g-knocking`, `g-watching`, `g-asked`,
+  `g-controlling`, `reconnecting`, `muted`, `long-trusted`, `long-controlling`,
+  `long-g-controlling`
 - `?view=gallery&of=panel` or `&of=bar`: every state of a surface in a grid
 - `?view=panel` or `?view=bar` without a state: the live mock with its dev panel;
   `?view=both`: the panel and the bar side by side on the live mock

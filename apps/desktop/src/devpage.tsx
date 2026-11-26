@@ -36,7 +36,7 @@ function href(params: URLSearchParams, change: Record<string, string | null>): s
 
 function SurfaceOf({ surface, bridge, scenario }: { surface: Surface; bridge: Bridge; scenario?: Scenario }) {
   return surface === "panel" ? (
-    <PanelSurface bridge={bridge} />
+    <PanelSurface bridge={bridge} settings={scenario?.settings === true} />
   ) : (
     <CallBarSurface bridge={bridge} menuOpen={scenario?.menu === true} />
   );
