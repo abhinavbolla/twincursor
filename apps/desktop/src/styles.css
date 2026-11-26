@@ -23,6 +23,9 @@
   --bad-wash: rgb(220 38 38 / 0.06);
   --shadow: 0 1px 2px rgb(0 0 0 / 0.05);
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --float: #ffffff;
+  --float-line: rgb(23 23 23 / 0.12);
+  --float-shadow: 0 8px 24px rgb(0 0 0 / 0.08), 0 1px 2px rgb(0 0 0 / 0.06);
   color-scheme: light dark;
   font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
   font-size: 14px;
@@ -30,7 +33,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #141415;
     --panel: #19191b;
     --raised: #232325;
@@ -49,7 +52,44 @@
     --bad: #e5484d;
     --bad-wash: rgb(229 72 77 / 0.1);
     --shadow: none;
+    /* Floating surfaces sit one step above the card, with a top highlight and a deep shadow,
+       so they hold their edge over a dark desktop. */
+    --float: #1c1c1e;
+    --float-line: rgb(237 237 237 / 0.14);
+    --float-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06), 0 8px 24px rgb(0 0 0 / 0.45), 0 0 0 1px rgb(0 0 0 / 0.5);
   }
+}
+
+/* The dev page can pin a theme (`&theme=dark`); the app follows the system. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #141415;
+  --panel: #19191b;
+  --raised: #232325;
+  --fg: #ededed;
+  --fg-2: #a1a1a6;
+  --muted: #85858b;
+  --line: rgb(237 237 237 / 0.1);
+  --line-strong: rgb(237 237 237 / 0.18);
+  --accent: #8f98ff;
+  --accent-ink: #a5adff;
+  --accent-wash: rgb(143 152 255 / 0.08);
+  /* On dark the main button is off-white; the accent stays in small places. */
+  --primary-bg: #ededed;
+  --primary-fg: #141415;
+  --good: #4cc38a;
+  --bad: #e5484d;
+  --bad-wash: rgb(229 72 77 / 0.1);
+  --shadow: none;
+  /* Floating surfaces sit one step above the card, with a top highlight and a deep shadow,
+     so they hold their edge over a dark desktop. */
+  --float: #1c1c1e;
+  --float-line: rgb(237 237 237 / 0.14);
+  --float-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06), 0 8px 24px rgb(0 0 0 / 0.45), 0 0 0 1px rgb(0 0 0 / 0.5);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
 }
 
 * {
@@ -623,4 +663,965 @@ kbd {
   height: 24px;
   padding: 0 8px;
   font-size: 12px;
+}
+
+/* ================================================================ surfaces
+ * The panel and the call bar: small floating windows. One opaque surface each (never
+ * transparent: the bar sits over other apps), a hairline and the floating shadow. Text is
+ * 13 px, meta 12 px, numbers in mono; names in 500. Spacing on the 4 px scale.
+ */
+
+.surface {
+  background: var(--float);
+  color: var(--fg);
+  border: 1px solid var(--float-line);
+  border-radius: 14px;
+  box-shadow: var(--float-shadow);
+  font-size: 13px;
+  line-height: 20px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.surface p {
+  margin: 0;
+}
+
+/* A quiet button: no fill until hovered, a hairline so it still reads as a button. */
+button.quiet {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--fg);
+}
+
+button.quiet:hover:not(:disabled) {
+  background: var(--raised);
+}
+
+.surface button.quiet-danger {
+  background: transparent;
+  border-color: transparent;
+}
+
+.surface button.quiet-danger:hover:not(:disabled) {
+  background: var(--bad-wash);
+  border-color: transparent;
+}
+
+.surface button.small {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+button.wide {
+  width: 100%;
+  height: 36px;
+}
+
+button[aria-busy="true"] {
+  cursor: progress;
+  opacity: 0.72;
+}
+
+button.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  flex-shrink: 0;
+  background: transparent;
+  border-color: transparent;
+  color: var(--fg-2);
+}
+
+button.icon-button:hover:not(:disabled) {
+  background: var(--raised);
+  border-color: transparent;
+  color: var(--fg);
+}
+
+button.icon-button.tiny {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  color: var(--muted);
+}
+
+/* The muted mic: the one icon in the bad colour. */
+button.icon-button.muted,
+button.icon-button.muted:hover:not(:disabled) {
+  color: var(--bad);
+  background: var(--bad-wash);
+}
+
+.surface .dot {
+  flex-shrink: 0;
+}
+
+.surface .dot.good {
+  background: var(--good);
+}
+
+.surface .dot.pending {
+  background: var(--muted);
+  animation: pending 1.2s var(--ease) infinite alternate;
+}
+
+.surface .dot.off {
+  background: var(--line-strong);
+}
+
+@keyframes pending {
+  to {
+    opacity: 0.3;
+  }
+}
+
+/* ---------------------------------------------------------------- avatars and names */
+
+.avatar.s24,
+.avatar.s28,
+.avatar.s36 {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--raised);
+  color: var(--fg-2);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  overflow: hidden;
+  object-fit: cover;
+  user-select: none;
+}
+
+.avatar.s24 {
+  width: 24px;
+  height: 24px;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.avatar.s28 {
+  width: 28px;
+  height: 28px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.avatar.s36 {
+  width: 36px;
+  height: 36px;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.faces {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+/* Overlapped by 6 px, each ringed in the surface colour so the edge reads. */
+.faces .avatar {
+  box-shadow: 0 0 0 2px var(--float);
+}
+
+.faces .avatar + .avatar {
+  margin-left: -6px;
+}
+
+.faces-extra {
+  margin-left: 4px;
+  font: 500 12px/16px ui-monospace, "SF Mono", Menlo, monospace;
+  color: var(--fg-2);
+}
+
+.phrase {
+  display: flex;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.phrase-text {
+  flex-shrink: 0;
+  white-space: pre;
+}
+
+.phrase-name {
+  min-width: 24px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+  unicode-bidi: isolate;
+}
+
+.notice-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--fg-2);
+}
+
+.notice-row.bad {
+  color: var(--bad);
+}
+
+.notice-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.link-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--fg-2);
+}
+
+/* ---------------------------------------------------------------- panel */
+
+.panel {
+  width: 340px;
+  max-height: 520px;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 40px;
+  padding: 0 4px 0 12px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.panel-head:has(.back) {
+  padding-left: 4px;
+}
+
+.panel-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.panel-brand .mark {
+  width: 16px;
+  height: 16px;
+  color: var(--accent);
+}
+
+.panel-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.avatar-button {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+}
+
+.avatar-button:hover:not(:disabled) .avatar {
+  border-color: var(--line-strong);
+}
+
+.panel-loading {
+  height: 160px;
+}
+
+/* Not set up, signed out, signing in: one calm block. */
+.panel-block {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  padding: 32px 24px 24px;
+  text-align: center;
+}
+
+.panel-block .muted {
+  margin-top: -8px;
+}
+
+.panel-error {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--bad);
+}
+
+.panel-top {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  flex-shrink: 0;
+}
+
+.panel-top > .notice-row {
+  padding: 4px 4px 4px 12px;
+  border-radius: 8px;
+  background: var(--raised);
+}
+
+.panel-top > .notice-row.bad {
+  background: var(--bad-wash);
+}
+
+.ring-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--raised);
+}
+
+.ring-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.panel-note {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+
+.panel-main {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hint.center {
+  text-align: center;
+  margin-top: -4px;
+}
+
+.panel-call {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--raised);
+}
+
+.panel-call-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 8px 0 12px;
+}
+
+.panel-call-row.link {
+  min-height: 40px;
+  border-top: 1px solid var(--line);
+}
+
+.panel-call-line {
+  flex: 1;
+}
+
+.panel-call .copy {
+  min-width: 76px;
+}
+
+.people {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  border-top: 1px solid var(--line);
+}
+
+.people-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 12px 12px 4px;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  color: var(--fg-2);
+}
+
+.people-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 4px 8px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.contact {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 8px;
+}
+
+.contact-names {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.contact-name {
+  flex: 0 1 auto;
+  min-width: 24px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+  unicode-bidi: isolate;
+}
+
+.contact-handle {
+  flex: 0 100 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.surface button.call {
+  height: 24px;
+  padding: 0 12px;
+  border-radius: 6px;
+}
+
+.contact-status {
+  font-size: 12px;
+  color: var(--muted);
+  padding-right: 4px;
+}
+
+.people-empty {
+  padding: 4px 12px 20px;
+  color: var(--muted);
+}
+
+.panel-foot {
+  flex-shrink: 0;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+
+.panel-scroll {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+/* The window's settings card, laid flat inside the panel. */
+.panel-settings .card {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+  padding: 16px;
+  gap: 12px;
+}
+
+/* ---------------------------------------------------------------- menus */
+
+.menu-anchor {
+  position: relative;
+}
+
+.menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  width: 208px;
+  padding: 4px;
+  background: var(--float);
+  border: 1px solid var(--float-line);
+  border-radius: 10px;
+  box-shadow: var(--float-shadow);
+  animation: rise 180ms var(--ease);
+}
+
+.menu-head {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 8px 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  line-height: 16px;
+  min-width: 0;
+}
+
+.menu-name {
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.menu-item {
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 400;
+  text-align: left;
+}
+
+button.menu-item:hover,
+button.menu-item:focus-visible {
+  background: var(--raised);
+  outline: none;
+}
+
+button.menu-item:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+button.menu-item.separated {
+  position: relative;
+  margin-top: 9px;
+}
+
+button.menu-item.separated::before {
+  content: "";
+  position: absolute;
+  left: -4px;
+  right: -4px;
+  top: -5px;
+  border-top: 1px solid var(--line);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+/* ---------------------------------------------------------------- call bar */
+
+.bar {
+  width: 440px;
+}
+
+.bar.live {
+  border-color: var(--bad);
+}
+
+.bar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 8px 0 16px;
+  flex-shrink: 0;
+}
+
+/* Someone is controlling this Mac: the one loud state. */
+.bar.live .bar-row {
+  background: var(--bad-wash);
+}
+
+.bar-line {
+  flex: 0 1 auto;
+  overflow: hidden;
+}
+
+.bar-row .keys {
+  flex-shrink: 0;
+}
+
+/* Keycaps a size down in the row, so the live state fits. */
+.bar-row kbd {
+  min-width: 18px;
+  height: 18px;
+  font-size: 11px;
+  border-radius: 4px;
+}
+
+.bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.bar-icons {
+  display: flex;
+}
+
+.bar-fill {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.bar-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--line);
+  flex-shrink: 0;
+}
+
+.bar-section {
+  border-top: 1px solid var(--line);
+  padding: 12px 16px;
+  animation: rise 180ms var(--ease);
+}
+
+.bar-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bar-card-who {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.bar-card-names {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.bar-card-title {
+  display: flex;
+  min-width: 0;
+}
+
+.bar-card-meta {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bar-card-meta.wraps {
+  white-space: normal;
+}
+
+.bar-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* While Let in or Allow is still off: a line runs across the card's top for that second. */
+.arming {
+  position: absolute;
+  top: -1px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  transform-origin: left;
+  animation: arming linear forwards;
+}
+
+@keyframes arming {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+.bar-slim {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 8px 8px 16px;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.bar-slim-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.bar-notices {
+  padding: 4px 8px 4px 16px;
+}
+
+.bar-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 8px 12px 16px;
+}
+
+.bar-menu-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bar-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+
+.bar-menu-label {
+  flex: 1;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  color: var(--fg-2);
+}
+
+.bar-menu-empty {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.bar-readout {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 16px;
+  margin: 0 8px 4px 0;
+}
+
+.bar-readout div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.bar-readout dt {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+
+.bar-readout dd {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.bar-readout dd small {
+  margin-left: 4px;
+  font: 400 12px/16px -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  color: var(--muted);
+}
+
+.bar-guests {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.bar-guest-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  unicode-bidi: isolate;
+}
+
+.bar-guest-state {
+  font-size: 12px;
+  color: var(--muted);
+  padding-right: 8px;
+}
+
+.bar-voice {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+  padding-right: 8px;
+}
+
+.bar-voice-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--fg-2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .menu,
+  .bar-section,
+  .surface .dot.pending {
+    animation: none;
+  }
+
+  /* The second still passes; the line just doesn't move. */
+  .arming {
+    animation: none;
+    opacity: 0.4;
+  }
+}
+
+/* ---------------------------------------------------------------- dev page (development) */
+
+.devstage {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 24px;
+  min-height: 100vh;
+  padding: 24px;
+  background: var(--bg);
+}
+
+/* A busy pretend desktop: a dark editor, a light document, colour and lines of text, so the
+   bar is judged over all of them at once. */
+.devstage.desktop {
+  background-color: #2f3b52;
+  background-image:
+    repeating-linear-gradient(180deg, transparent 0 10px, rgb(128 128 128 / 0.4) 10px 14px, transparent 14px 20px),
+    linear-gradient(90deg, #0d0f13 0 236px, #f4f1ea 236px 404px, #3d6fd8 404px 452px, #e8b13f 452px 520px, #101418 520px);
+}
+
+.dev-both {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.dev-message {
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dev-states {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dev-gallery-page {
+  min-height: 100vh;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.dev-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  margin-bottom: 24px;
+  font-size: 13px;
+}
+
+.dev-toolbar span {
+  display: flex;
+  gap: 12px;
+}
+
+.dev-toolbar a,
+.dev-cell a,
+.dev-states a {
+  color: var(--accent-ink);
+}
+
+.dev-toolbar a[aria-current="page"] {
+  color: var(--fg);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.dev-gallery {
+  display: grid;
+  gap: 24px;
+  align-items: start;
+}
+
+.dev-gallery.of-panel {
+  grid-template-columns: repeat(auto-fill, minmax(390px, 1fr));
+}
+
+.dev-gallery.of-bar {
+  grid-template-columns: repeat(auto-fill, minmax(490px, 1fr));
+}
+
+.dev-cell {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dev-cell figcaption {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+}
+
+.dev-cell .devstage {
+  min-height: 0;
+  border-radius: 12px;
+  border: 1px solid var(--line);
 }

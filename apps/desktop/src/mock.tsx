@@ -782,6 +782,10 @@ export function createMock(params: URLSearchParams): LoadedBridge {
     answerRing: (callId, accept) => calls.answerRing(callId, accept),
     end: () => calls.end(),
     onHome: (f) => calls.on(f),
+    quit: () => {
+      console.info("(mock) would quit TwinCursor");
+      return Promise.resolve();
+    },
   };
   const role = params.get("mock");
   if (role === "share" || role === "join") {
