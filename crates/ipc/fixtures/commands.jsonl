@@ -4,6 +4,7 @@
 {"cmd":"allow_control","request":1}
 {"cmd":"deny_control","request":2}
 {"cmd":"revoke_control"}
+{"cmd":"trust_control","identity":"guest-1f2e3d4c"}
 {"cmd":"request_control"}
 {"cmd":"release_control"}
 {"cmd":"set_mic","device":"MacBook Pro Microphone"}

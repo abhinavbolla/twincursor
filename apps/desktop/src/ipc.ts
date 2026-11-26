@@ -20,7 +20,7 @@ export interface Participant {
 
 export interface Peer {
   identity: string;
-  /** Not proof of who they are. */
+  /** The name in their token: with a call pass, their account's name. */
   name: string;
 }
 
@@ -53,7 +53,13 @@ export type EngineEvent =
   | { event: "connection"; state: ConnectionState }
   | { event: "participants"; participants: Participant[] }
   | ({ event: "control_asked" } & ControlAsked)
-  | { event: "control"; state: ControlState; by: Peer | null }
+  | {
+      event: "control";
+      state: ControlState;
+      by: Peer | null;
+      /** Sharer: guests who may take control without asking, for this call. Always empty on a guest. */
+      trusted: Peer[];
+    }
   | ({ event: "voice" } & Voice)
   | ({ event: "stats" } & Stats)
   | { event: "error"; message: string }
@@ -66,6 +72,7 @@ export type EngineCommand =
   | { cmd: "allow_control"; request: number }
   | { cmd: "deny_control"; request: number }
   | { cmd: "revoke_control" }
+  | { cmd: "trust_control"; identity: string }
   | { cmd: "request_control" }
   | { cmd: "release_control" }
   | { cmd: "set_mic"; device: string | null }
@@ -157,10 +164,16 @@ export function parseEvent(value: unknown): EngineEvent | null {
             platform: v.platform,
           }
         : null;
-    case "control":
-      return oneOf("none", "asked", "controlling")(v.state) && orNull(isPeer)(v.by)
-        ? { event: "control", state: v.state, by: v.by }
+    case "control": {
+      // An engine from before trusted control leaves `trusted` out: nobody is trusted.
+      const trusted: unknown = v.trusted === undefined ? [] : v.trusted;
+      return oneOf("none", "asked", "controlling")(v.state) &&
+        orNull(isPeer)(v.by) &&
+        Array.isArray(trusted) &&
+        trusted.every(isPeer)
+        ? { event: "control", state: v.state, by: v.by, trusted }
         : null;
+    }
     case "voice":
       return isBool(v.sending) && isBool(v.muted) && orNull(isStr)(v.mic) && orNull(isStr)(v.speaker)
         ? { event: "voice", sending: v.sending, muted: v.muted, mic: v.mic, speaker: v.speaker }

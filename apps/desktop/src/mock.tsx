@@ -46,6 +46,8 @@ class MockEngine {
   private muted = false;
   private people: Participant[] = [];
   private controlling = false;
+  /** Sharer: guests trusted with control for this call (`trust_control`), until a revoke. */
+  private trusted: Participant[] = [];
   private grant: number | null = null;
   /** A call to start once the window listens (`?mock=`). */
   pending: Plan | null = null;
@@ -199,6 +201,7 @@ class MockEngine {
       event: "control",
       state,
       by: who === null ? null : { identity: who.identity, name: who.name },
+      trusted: this.trusted.map((p) => ({ identity: p.identity, name: p.name })),
     });
   }
 
@@ -232,8 +235,26 @@ class MockEngine {
         this.control("none", null);
         return;
       case "revoke_control":
+        this.trusted = [];
         this.control("none", null);
         return;
+      case "trust_control": {
+        const guest = this.people.find((p) => p.identity === command.identity && p.role === "guest");
+        if (!sharer || guest === undefined) {
+          this.event({
+            event: "error",
+            message: sharer ? "That person isn't in the call." : "Only the sharer can answer requests for control.",
+          });
+          return;
+        }
+        if (this.controlling && !this.trusted.some((p) => p.identity === guest.identity)) {
+          this.event({ event: "error", message: "Someone else is in control. Take control back first." });
+          return;
+        }
+        this.trusted = [...this.trusted.filter((p) => p.identity !== guest.identity), guest];
+        this.control(this.controlling ? "controlling" : "none", this.controlling ? guest : null);
+        return;
+      }
       case "request_control":
         if (sharer) {
           this.event({ event: "error", message: "Only a guest can ask for control." });
@@ -259,6 +280,11 @@ class MockEngine {
 
   guestAsks(): void {
     if (this.plan?.role !== "share" || this.controlling) {
+      return;
+    }
+    if (this.trusted.some((p) => p.identity === SAM.identity)) {
+      // Trusted: granted with no prompt, as the engine does.
+      this.control("controlling", SAM);
       return;
     }
     this.request += 1;
@@ -304,6 +330,7 @@ class MockEngine {
 
   guestLeaves(): void {
     this.people = this.people.filter((p) => p.role !== "guest");
+    this.trusted = [];
     if (this.controlling) {
       this.control("none", null);
     }

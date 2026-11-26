@@ -435,6 +435,10 @@ struct ViewArgs {
     /// guest that can't decode the others would. For tests.
     #[arg(long, hide = true, value_delimiter = ',')]
     decoders: Option<Vec<String>>,
+    /// Claim this name in the control hello instead of the one the call joins with, as a
+    /// guest's own app could. The sharer must show the token's name anyway. For tests.
+    #[arg(long, hide = true)]
+    hello_name: Option<String>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -705,6 +709,7 @@ fn share(args: ShareArgs) -> anyhow::Result<()> {
                 Command::DenyControl { request } => handle.answer(Answer::Deny { request }),
                 // The same switch the hotkey trips, so both take the same path.
                 Command::RevokeControl => revoke.trip(),
+                Command::TrustControl { identity } => handle.trust(identity),
                 Command::RequestControl | Command::ReleaseControl => events(Event::Error {
                     message: "Only a guest can ask for control.".into(),
                 }),
@@ -911,6 +916,7 @@ fn watch(args: ViewArgs) -> anyhow::Result<()> {
         Ok((config, joining.name))
     })();
     let (config, name) = setup.map_err(|e| failed_early(&events, e))?;
+    let name = args.hello_name.clone().unwrap_or(name);
     let (tx, rx) = mpsc::channel();
     if args.call.ipc {
         // The sender lives in the stdin thread; the viewer reads until it is gone.

@@ -36,14 +36,22 @@ weaken them won't be merged.
 
 - **Control starts off.** The sharer's app doesn't inject anything until the sharer accepts a
   request from a named person. Sharing a screen doesn't imply control. In the desktop app, only
-  an explicit allow for that very request grants it ([IPC](ipc.md#consent)).
-- **A name is not an identity.** Without accounts, the name in "Sam wants control" and "Sam is
-  controlling" is what that person typed. The server signs it into their token but nothing checks
-  it, so anyone in the call could type any name. With a call pass the token carries the account's
-  name, but the name in a control request still comes from the guest's own app. Grant control
-  because you recognise the person on the call, not because of the name. Each participant also
-  has an identity the server vouches for, unique in the call, which starts with their role
-  (`sharer-…` or `guest-…`); input is only accepted from the identity that was granted.
+  an explicit allow for that very request grants it ([IPC](ipc.md#consent)), or a trust the
+  sharer gave that guest earlier in the call.
+- **Trust is the sharer's, for one call.** "Let in with control" and "Give control" let one guest
+  take control without a prompt until the sharer revokes it or the guest leaves
+  ([ADR 0010](adr/0010-trusted-control.md)). Only the sharer's own app can give it (over the
+  engine's stdin); no message from a guest or the server can, and it is never stored. The guest
+  still has to ask each time, one controller at a time, and the label shows every grant. Any
+  revoke, even with nobody in control, takes every trust back.
+- **Names come from the token.** The name in "Sam wants control", in "Sam is controlling" and in
+  the list of trusted guests is the one in that person's token, not the one their own app sends.
+  With a call pass, that is the account's name, signed by the account server. Without one, it is
+  what the person typed: the server signs it into their token but nothing checks it, so anyone in
+  the call could type any name, and you should grant control because you recognise the person on
+  the call, not because of the name. Each participant also has an identity the server vouches
+  for, unique in the call, which starts with their role (`sharer-…` or `guest-…`); input is only
+  accepted from the identity that was granted, and trust is given to an identity, not a name.
 - **The sharer can always see it.** A label stays on screen for as long as control lasts, naming
   the guest and showing the revoke hotkey.
 - **Revoking is instant and doesn't depend on the network.** A global hotkey flips a flag that the

@@ -43,8 +43,15 @@ pub enum Command {
     AllowControl { request: u64 },
     /// Sharer: turn the request down.
     DenyControl { request: u64 },
-    /// Sharer: take control back at once. The same as the revoke hotkey.
+    /// Sharer: take control back at once. The same as the revoke hotkey. Also takes back every
+    /// [`Command::TrustControl`].
     RevokeControl,
+    /// Sharer: let this guest take control during this call without being asked again ("Let in
+    /// with control", "Give control"). If they are asking now, they get control now; otherwise
+    /// their next request is granted at once. Lasts until a revoke or until they leave the call,
+    /// and is never remembered. Refused with an [`Event::Error`] without `--allow-control`, for
+    /// anyone who isn't a guest in the call, and while someone else has control.
+    TrustControl { identity: String },
     /// Guest: ask the sharer for control.
     RequestControl,
     /// Guest: give control back, or withdraw a request.
@@ -78,16 +85,21 @@ pub enum Event {
         /// Counts up from 1 for every request this engine sees.
         request: u64,
         identity: String,
-        /// The name the guest typed. Not proof of who they are.
+        /// The name in the guest's token: with a call pass, their account's name. Without one,
+        /// what they typed, which is not proof of who they are.
         name: String,
         platform: String,
     },
-    /// Who is in control, or asking, or nobody.
+    /// Who is in control, or asking, or nobody, and who may take control without asking.
     Control {
         state: ControlState,
         /// Sharer: the guest asking or in control. Guest: this guest. `null` when the state is
         /// `none`.
         by: Option<Peer>,
+        /// Sharer: the guests given [`Command::TrustControl`] and not revoked since. Always
+        /// empty on a guest.
+        #[serde(default)]
+        trusted: Vec<Peer>,
     },
     /// This side's voice.
     Voice {
@@ -164,7 +176,7 @@ pub struct Participant {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Peer {
     pub identity: String,
-    /// Not proof of who they are.
+    /// The name in their token, as in [`Participant::name`].
     pub name: String,
 }
 
@@ -196,6 +208,9 @@ mod tests {
             Command::AllowControl { request: 1 },
             Command::DenyControl { request: 1 },
             Command::RevokeControl,
+            Command::TrustControl {
+                identity: "guest-1f2e3d4c".into(),
+            },
             Command::RequestControl,
             Command::ReleaseControl,
             Command::SetMic {
@@ -211,6 +226,7 @@ mod tests {
                 | Command::AllowControl { .. }
                 | Command::DenyControl { .. }
                 | Command::RevokeControl
+                | Command::TrustControl { .. }
                 | Command::RequestControl
                 | Command::ReleaseControl
                 | Command::SetMic { .. }
@@ -326,6 +342,26 @@ mod tests {
         assert!(decode_command(r#"{"cmd":"allow_control"}"#)
             .unwrap()
             .is_err());
+        // And a trust, whom it trusts.
+        assert!(decode_command(r#"{"cmd":"trust_control"}"#)
+            .unwrap()
+            .is_err());
+    }
+
+    #[test]
+    fn a_control_event_from_an_older_engine_trusts_nobody() {
+        let event: Event =
+            serde_json::from_str(r#"{"event":"control","state":"none","by":null}"#).unwrap();
+        assert_eq!(
+            event,
+            Event::Control {
+                state: ControlState::None,
+                by: None,
+                trusted: vec![],
+            }
+        );
+        // This engine always writes the field.
+        assert!(encode(&event).ends_with(r#""trusted":[]}"#));
     }
 
     #[test]
