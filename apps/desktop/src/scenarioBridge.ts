@@ -9,6 +9,8 @@ import type { EngineCommand, EngineOutput } from "./ipc";
 import { ALEX, asGuest, asSharer, boot, guestIdentity, LINK, out, peer, type Scenario } from "./scenarios";
 import { replay } from "./useSurface";
 
+const NOT_INVITED = "This server is invite-only. Ask whoever runs it to add your GitHub handle.";
+
 /**
  * A bridge over `base` (the mock, for everything else) whose home view and call
  * come from the scenario and change as the person clicks.
@@ -118,7 +120,7 @@ export function scenarioBridge(scenario: Scenario, base: Bridge): Bridge {
       setHome({ account: { ...home.account, signing_in: true } });
       return new Promise((resolve) =>
         later(2000, () => {
-          const account = { configured: true, signed_in: true, me: ALEX, signing_in: false };
+          const account = { ...home.account, configured: true, signed_in: true, me: ALEX, signing_in: false };
           setHome({ account });
           resolve(account);
         }),
@@ -129,11 +131,14 @@ export function scenarioBridge(scenario: Scenario, base: Bridge): Bridge {
       return Promise.resolve();
     },
     signOut: () => {
-      const account = { configured: true, signed_in: false, me: null, signing_in: false };
+      const account = { ...home.account, signed_in: false, me: null, signing_in: false };
       setHome({ account, contacts: [] });
       return Promise.resolve(account);
     },
     share: () => {
+      if (!home.account.can_host) {
+        return refuse(NOT_INVITED);
+      }
       if (home.stage.kind !== "idle") {
         return refuse("You're already in a call. Leave it first.");
       }
@@ -199,6 +204,9 @@ export function scenarioBridge(scenario: Scenario, base: Bridge): Bridge {
       return ok();
     },
     ring: (userId) => {
+      if (!home.account.can_host) {
+        return refuse(NOT_INVITED);
+      }
       const contact = home.contacts.find((c) => c.id === userId);
       if (contact === undefined) {
         return refuse("You can only ring someone who has you as a contact too.");
@@ -239,6 +247,7 @@ export function scenarioBridge(scenario: Scenario, base: Bridge): Bridge {
       startJoined(ring.host);
       return ok();
     },
+    askToHost: () => Promise.resolve(setHome({ account: { ...home.account, asked_to_host: true } })),
     end: () => {
       setHome({ stage: { kind: "ending" } });
       return new Promise((resolve) => later(400, () => resolve(endCall())));

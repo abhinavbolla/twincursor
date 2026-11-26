@@ -119,7 +119,24 @@ export const boot = (role: CallRole, codec: Codec = role === "share" ? "h265" : 
 
 // ---------------------------------------------------------------- home views
 
-const signedIn = (me: Person): AccountState => ({ configured: true, signed_in: true, me, signing_in: false });
+const signedIn = (me: Person, can_host = true, asked_to_host = false): AccountState => ({
+  configured: true,
+  signed_in: true,
+  me,
+  signing_in: false,
+  can_host,
+  asked_to_host,
+});
+
+const signedOut = (change: Partial<AccountState> = {}): AccountState => ({
+  configured: true,
+  signed_in: false,
+  me: null,
+  signing_in: false,
+  can_host: true,
+  asked_to_host: false,
+  ...change,
+});
 
 export const LINK = "twincursor://call/0123456789abcdef0123456789abcdef";
 
@@ -198,13 +215,13 @@ const bar = (name: string, title: string, home: HomeView, outputs: EngineOutput[
 });
 
 export const SCENARIOS: readonly Scenario[] = [
-  panel("off", "This build names no server", homeView({ account: { configured: false, signed_in: false, me: null, signing_in: false } })),
-  panel("out", "Signed out", homeView({ account: { configured: true, signed_in: false, me: null, signing_in: false }, contacts: [] })),
+  panel("off", "This build names no server", homeView({ account: signedOut({ configured: false }) })),
+  panel("out", "Signed out", homeView({ account: signedOut(), contacts: [] })),
   {
-    ...panel("out-menu", "Signed out, with the menu open", homeView({ account: { configured: true, signed_in: false, me: null, signing_in: false }, contacts: [] })),
+    ...panel("out-menu", "Signed out, with the menu open", homeView({ account: signedOut(), contacts: [] })),
     menu: true,
   },
-  panel("signing", "Signing in, waiting for the browser", homeView({ account: { configured: true, signed_in: false, me: null, signing_in: true }, contacts: [] })),
+  panel("signing", "Signing in, waiting for the browser", homeView({ account: signedOut({ signing_in: true }), contacts: [] })),
   panel("home", "Signed in, three people", homeView()),
   panel("empty", "Signed in, nobody yet", homeView({ contacts: [] })),
   panel("many", "Twelve people, long and non-Latin names", homeView({ contacts: TWELVE })),
@@ -237,6 +254,8 @@ export const SCENARIOS: readonly Scenario[] = [
   panel("joined", "In Alex's call", guestHome({ kind: "joined", host: ALEX }), watching()),
   panel("error", "A paste that wasn't a link", homeView({ error: "That isn't a TwinCursor call link." })),
   panel("offline", "The server can't be reached", homeView({ server_problem: "Can't reach the server." })),
+  panel("uninvited", "An invite-only server that doesn't let you share yet", homeView({ account: signedIn(ALEX, false) })),
+  panel("uninvited-asked", "Invite-only, and you asked to be invited", homeView({ account: signedIn(ALEX, false, true) })),
 
   bar("alone", "Sharing, nobody yet", hosting(), boot("share")),
   bar("knock", "Sam knocks, Let in not armed yet", hosting({ knocks: [knock(SAM, false)] }), boot("share")),

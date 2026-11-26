@@ -57,6 +57,8 @@ export interface Bridge {
   giveControl(identity: string): Promise<HomeView>;
   ring(userId: string): Promise<HomeView>;
   answerRing(callId: string, accept: boolean): Promise<HomeView>;
+  /** Ask to be invited, where this person may not start calls (`account.can_host` is false). */
+  askToHost(): Promise<HomeView>;
   /** Stop sharing, or leave. */
   end(): Promise<HomeView>;
   /** The home view on every change. Returns a function that stops listening. */
@@ -137,6 +139,7 @@ function tauriBridge(): Bridge {
     ring: (userId) => invoke<unknown>("ring", { user_id: userId }).then(homeAnswer),
     answerRing: (callId, accept) =>
       invoke<unknown>("answer_ring", { call_id: callId, accept }).then(homeAnswer),
+    askToHost: () => invoke<unknown>("ask_to_host").then(homeAnswer),
     end: () => invoke<unknown>("end").then(homeAnswer),
     onHome: (f) => {
       const stop = listen<unknown>("home", (e) => {

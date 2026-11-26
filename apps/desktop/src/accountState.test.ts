@@ -12,28 +12,37 @@ const signedIn: AccountState = {
     avatar_url: "https://avatars.githubusercontent.com/u/1?v=4",
   },
   signing_in: false,
+  can_host: true,
+  asked_to_host: false,
 };
+const OFF = { configured: false, signed_in: false, me: null, signing_in: false, can_host: true, asked_to_host: false };
 
 describe("account", () => {
   it("reads account_state", () => {
     expect(parseAccountState(signedIn)).toEqual(signedIn);
-    expect(
-      parseAccountState({ configured: false, signed_in: false, me: null, signing_in: false }),
-    ).toEqual({ configured: false, signed_in: false, me: null, signing_in: false });
+    expect(parseAccountState(OFF)).toEqual(OFF);
+    expect(parseAccountState({ ...signedIn, can_host: false, asked_to_host: true })).toEqual({
+      ...signedIn,
+      can_host: false,
+      asked_to_host: true,
+    });
     expect(parseAccountState(null)).toBeNull();
-    expect(parseAccountState({ configured: "yes", signed_in: false, me: null, signing_in: false })).toBeNull();
+    expect(parseAccountState({ ...OFF, configured: "yes" })).toBeNull();
+    // The Rust side always says whether they may host.
+    expect(parseAccountState({ ...signedIn, can_host: undefined })).toBeNull();
+    expect(parseAccountState({ ...signedIn, asked_to_host: "yes" })).toBeNull();
     expect(parseAccountState({ ...signedIn, me: { id: 1, name: "Alex" } })).toBeNull();
   });
 
   it("shows nothing when no backend is set up", () => {
     expect(accountView(null, false)).toEqual({ kind: "hidden" });
     expect(
-      accountView({ configured: false, signed_in: false, me: null, signing_in: false }, true),
+      accountView(OFF, true),
     ).toEqual({ kind: "hidden" });
   });
 
   it("offers sign-in, then waits for the browser", () => {
-    const out: AccountState = { configured: true, signed_in: false, me: null, signing_in: false };
+    const out: AccountState = { ...OFF, configured: true };
     expect(accountView(out, false)).toEqual({ kind: "signed_out" });
     expect(accountView(out, true)).toEqual({ kind: "waiting" });
     expect(accountView({ ...out, signing_in: true }, false)).toEqual({ kind: "waiting" });

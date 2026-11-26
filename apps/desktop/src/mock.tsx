@@ -5,7 +5,8 @@
 //   http://localhost:5173/?mock=share   starts a call as the sharer
 //   http://localhost:5173/?mock=join    starts a call as a guest
 //   add &quality=4k to share with HEVC, &voice=off for a call without voice
-//   add &account=off for a build without an account backend, &account=in to start signed in
+//   add &account=off for a build without an account backend, &account=in to start signed in,
+//   &account=uninvited to start signed in on a server that doesn't let you start calls
 //
 // The panel in the corner makes things happen: a control request, a guest without HEVC, an
 // error, a dropped connection, the engine crashing, and permissions changing; and for calls
@@ -385,6 +386,7 @@ const ARMING_MS = 1000;
 const MOCK_CODE = "0123456789abcdef0123456789abcdef";
 const LINK = /^\s*(?:twincursor:\/\/call\/)?[0-9a-f]{32}\s*$/;
 const SAM_PERSON: Person = { id: "u2", name: "Sam Example", handle: "sam", avatar_url: null };
+const NOT_INVITED = "This server is invite-only. Ask whoever runs it to add your GitHub handle.";
 
 /** Pretend account flows, as the Rust side runs them (src-tauri/src/calls.rs). */
 class MockCalls {
@@ -454,6 +456,9 @@ class MockCalls {
     const problem = this.check();
     if (problem !== null) {
       return Promise.reject(problem);
+    }
+    if (!this.account().can_host) {
+      return Promise.reject(NOT_INVITED);
     }
     if (this.missingPermission === "screen_recording") {
       this.set({ needs: "screen_recording" });
@@ -530,6 +535,9 @@ class MockCalls {
   }
 
   async ring(userId: string): Promise<HomeView> {
+    if (!this.account().can_host) {
+      return Promise.reject(NOT_INVITED);
+    }
     if (this.home.stage.kind !== "hosting") {
       await this.share();
     }
@@ -557,6 +565,11 @@ class MockCalls {
     }
     this.startEngine("join");
     return this.set({ rings, stage: { kind: "joined", host: ring.host } });
+  }
+
+  /** The account changed outside a flow (asked to host, invited): send the view again. */
+  refresh(): HomeView {
+    return this.set({});
   }
 
   end(): Promise<HomeView> {
@@ -613,7 +626,7 @@ class MockCalls {
   }
 }
 
-function MockPanel({ engine, calls }: { engine: MockEngine; calls: MockCalls }) {
+function MockPanel({ engine, calls, account }: { engine: MockEngine; calls: MockCalls; account: MockAccount }) {
   const buttons: [string, () => void][] = [
     ["A guest asks for control", () => engine.guestAsks()],
     ["The guest withdraws", () => engine.guestWithdraws()],
@@ -632,6 +645,13 @@ function MockPanel({ engine, calls }: { engine: MockEngine; calls: MockCalls }) 
     ["The server can't be reached", () => calls.offline()],
     ["Screen Recording is missing", () => calls.missing("screen_recording")],
     ["Accessibility is missing", () => calls.missing("accessibility")],
+    [
+      "You're invited, or not (invite-only server)",
+      () => {
+        account.toggleInvited();
+        calls.refresh();
+      },
+    ],
   ];
   const set = (access: Access) => {
     engine.permissions = { screen_recording: access, accessibility: access, microphone: access };
@@ -661,11 +681,14 @@ class MockAccount {
   private pending: { timer: number; reject: (e: string) => void } | null = null;
 
   constructor(mode: string | null) {
+    const signedIn = mode === "in" || mode === "uninvited";
     this.state = {
       configured: mode !== "off",
-      signed_in: mode === "in",
-      me: mode === "in" ? MockAccount.ME : null,
+      signed_in: signedIn,
+      me: signedIn ? MockAccount.ME : null,
       signing_in: false,
+      can_host: mode !== "uninvited",
+      asked_to_host: false,
     };
   }
 
@@ -690,7 +713,7 @@ class MockAccount {
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => {
         this.pending = null;
-        this.state = { configured: true, signed_in: true, me: MockAccount.ME, signing_in: false };
+        this.state = { ...this.state, configured: true, signed_in: true, me: MockAccount.ME, signing_in: false };
         resolve({ ...this.state });
       }, 2000);
       this.pending = { timer, reject };
@@ -710,6 +733,15 @@ class MockAccount {
   signOut(): Promise<AccountState> {
     this.state = { ...this.state, signed_in: false, me: null };
     return this.get();
+  }
+
+  askToHost(): void {
+    this.state = { ...this.state, asked_to_host: true };
+  }
+
+  /** The owner adds or removes this person from the invite list. */
+  toggleInvited(): void {
+    this.state = { ...this.state, can_host: !this.state.can_host };
   }
 }
 
@@ -764,6 +796,13 @@ export function createMock(params: URLSearchParams): LoadedBridge {
     giveControl: (identity) => calls.giveControl(identity),
     ring: (userId) => calls.ring(userId),
     answerRing: (callId, accept) => calls.answerRing(callId, accept),
+    askToHost: () => {
+      if (!account.snapshot().signed_in) {
+        return Promise.reject("Sign in first.");
+      }
+      account.askToHost();
+      return Promise.resolve(calls.refresh());
+    },
     end: () => calls.end(),
     onHome: (f) => calls.on(f),
     quit: () => {
@@ -785,5 +824,5 @@ export function createMock(params: URLSearchParams): LoadedBridge {
       voice: params.get("voice") !== "off",
     };
   }
-  return { bridge, DevPanel: () => <MockPanel engine={engine} calls={calls} /> };
+  return { bridge, DevPanel: () => <MockPanel engine={engine} calls={calls} account={account} /> };
 }

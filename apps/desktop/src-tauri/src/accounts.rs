@@ -45,13 +45,50 @@ pub struct AccountView {
     pub me: Option<Me>,
     /// A sign-in is waiting for the browser.
     pub signing_in: bool,
+    /// They may start calls (share, ring) on this server: it is open, or their GitHub handle is
+    /// on its invite list. `true` until the server has said otherwise; the server decides.
+    pub can_host: bool,
+    /// They asked whoever runs the server to let them start calls.
+    pub asked_to_host: bool,
+}
+
+/// What the server last said about the signed-in person.
+#[derive(Debug, Clone)]
+struct Known {
+    me: Me,
+    can_host: bool,
+    asked_to_host: bool,
+}
+
+impl From<&account::Me> for Known {
+    fn from(m: &account::Me) -> Known {
+        Known {
+            me: Me::from(m.profile.clone()),
+            can_host: m.can_host,
+            asked_to_host: m.asked_to_host,
+        }
+    }
+}
+
+impl AccountView {
+    /// No backend set up.
+    pub fn none() -> AccountView {
+        AccountView {
+            configured: false,
+            signed_in: false,
+            me: None,
+            signing_in: false,
+            can_host: true,
+            asked_to_host: false,
+        }
+    }
 }
 
 /// The app's account state, managed by Tauri.
 pub struct AccountShell {
     account: Option<Arc<Account>>,
     signing_in: Mutex<Option<Cancel>>,
-    me: Mutex<Option<Me>>,
+    known: Mutex<Option<Known>>,
 }
 
 impl AccountShell {
@@ -60,7 +97,7 @@ impl AccountShell {
         AccountShell {
             account: None,
             signing_in: Mutex::new(None),
-            me: Mutex::new(None),
+            known: Mutex::new(None),
         }
     }
 
@@ -80,29 +117,42 @@ impl AccountShell {
             .ok_or_else(|| "This build isn't set up for accounts.".to_owned())
     }
 
-    /// The profile, as the call flows' poll last read it.
-    pub fn set_me(&self, me: Option<Me>) {
-        *self.me.lock().unwrap() = me;
+    /// Who is signed in, as the call flows' poll last read it.
+    pub fn set_me(&self, me: Option<&account::Me>) {
+        *self.known.lock().unwrap() = me.map(Known::from);
+    }
+
+    /// Whether the signed-in person may start calls, as the server last said. `true` while it
+    /// hasn't said: the server refuses anyway if not.
+    pub fn can_host(&self) -> bool {
+        self.known
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_none_or(|k| k.can_host)
+    }
+
+    /// The server just refused this person a call (`not_invited`), or recorded their asking.
+    pub fn learned(&self, can_host: Option<bool>, asked_to_host: Option<bool>) {
+        if let Some(k) = self.known.lock().unwrap().as_mut() {
+            k.can_host = can_host.unwrap_or(k.can_host);
+            k.asked_to_host = asked_to_host.unwrap_or(k.asked_to_host);
+        }
     }
 
     pub async fn view(&self) -> AccountView {
         let Some(account) = self.account.clone() else {
-            return AccountView {
-                configured: false,
-                signed_in: false,
-                me: None,
-                signing_in: false,
-            };
+            return AccountView::none();
         };
         let signing_in = self.signing_in.lock().unwrap().is_some();
         let mut signed_in = account.is_signed_in().await;
-        let mut me = self.me.lock().unwrap().clone();
-        if signed_in && me.is_none() {
+        let mut known = self.known.lock().unwrap().clone();
+        if signed_in && known.is_none() {
             match account.inbox(None).await {
                 Ok(inbox) => {
-                    let fetched = Me::from(inbox.me);
-                    *self.me.lock().unwrap() = Some(fetched.clone());
-                    me = Some(fetched);
+                    let fetched = Known::from(&inbox.me);
+                    *self.known.lock().unwrap() = Some(fetched.clone());
+                    known = Some(fetched);
                 }
                 Err(Error::NotSignedIn) => signed_in = false,
                 // Can't reach the server: still signed in, the profile comes later.
@@ -110,13 +160,15 @@ impl AccountShell {
             }
         }
         if !signed_in {
-            me = None;
-            *self.me.lock().unwrap() = None;
+            known = None;
+            *self.known.lock().unwrap() = None;
         }
         AccountView {
             configured: true,
             signed_in,
-            me,
+            can_host: known.as_ref().is_none_or(|k| k.can_host),
+            asked_to_host: known.as_ref().is_some_and(|k| k.asked_to_host),
+            me: known.map(|k| k.me),
             signing_in,
         }
     }
@@ -140,7 +192,7 @@ impl AccountShell {
             .sign_in(SignInOptions::default(), open, &cancel)
             .await;
         *self.signing_in.lock().unwrap() = None;
-        *self.me.lock().unwrap() = None;
+        *self.known.lock().unwrap() = None;
         result.map_err(|e| e.to_string())?;
         Ok(self.view().await)
     }
@@ -154,7 +206,7 @@ impl AccountShell {
 
     pub async fn sign_out(&self) -> Result<AccountView, String> {
         let account = self.account()?;
-        *self.me.lock().unwrap() = None;
+        *self.known.lock().unwrap() = None;
         account.sign_out().await.map_err(|e| e.to_string())?;
         Ok(self.view().await)
     }
@@ -215,9 +267,25 @@ mod tests {
                 avatar_url: None,
             }),
             signing_in: false,
+            can_host: false,
+            asked_to_host: true,
         };
         let v = serde_json::to_value(&view).unwrap();
-        assert_eq!(keys(&v), ["configured", "me", "signed_in", "signing_in"]);
+        assert_eq!(
+            keys(&v),
+            [
+                "asked_to_host",
+                "can_host",
+                "configured",
+                "me",
+                "signed_in",
+                "signing_in"
+            ]
+        );
+        assert_eq!(
+            (&v["can_host"], &v["asked_to_host"]),
+            (&json!(false), &json!(true))
+        );
         assert_eq!(keys(&v["me"]), ["avatar_url", "handle", "id", "name"]);
         assert_eq!(
             v["me"],
@@ -230,7 +298,8 @@ mod tests {
         let shell = AccountShell::none();
         assert_eq!(
             serde_json::to_value(shell.view().await).unwrap(),
-            json!({ "configured": false, "signed_in": false, "me": null, "signing_in": false })
+            json!({ "configured": false, "signed_in": false, "me": null, "signing_in": false,
+                    "can_host": true, "asked_to_host": false })
         );
         assert!(shell.sign_in(|_| Ok(())).await.is_err());
         assert!(shell.sign_out().await.is_err());
@@ -261,6 +330,44 @@ mod tests {
         assert!(!view.signed_in);
         assert!(!path.exists());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// What the server says about hosting reaches the view; an older server that says nothing
+    /// lets everyone host.
+    #[tokio::test]
+    async fn the_view_says_whether_they_may_host() {
+        for (me, can_host, asked) in [
+            (
+                json!({ "id": "u1", "name": "Alex", "can_host": false, "asked_to_host": true }),
+                false,
+                true,
+            ),
+            (json!({ "id": "u1", "name": "Alex" }), true, false),
+        ] {
+            let fake = account::fake::Fake::start(move |_| {
+                account::fake::Reply::json(200, json!({ "me": me.clone() }))
+            })
+            .await;
+            let path = temp(&format!("host-{can_host}"));
+            FileStore::new(&path)
+                .save(&Session {
+                    access_token: Secret::new(ACCESS),
+                    refresh_token: Secret::new(REFRESH),
+                    expires_at: u64::MAX / 2,
+                    user_id: "u1".into(),
+                })
+                .unwrap();
+            let shell =
+                AccountShell::new(Backend::new(&fake.url, "public-key").unwrap(), path.clone())
+                    .unwrap();
+            let view = shell.view().await;
+            assert_eq!((view.can_host, view.asked_to_host), (can_host, asked));
+            assert_eq!(shell.can_host(), can_host);
+            shell.learned(Some(false), Some(true));
+            let view = shell.view().await;
+            assert!(!view.can_host && view.asked_to_host && !shell.can_host());
+            let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        }
     }
 
     #[tokio::test]
