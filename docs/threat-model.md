@@ -37,12 +37,13 @@ weaken them won't be merged.
 - **Control starts off.** The sharer's app doesn't inject anything until the sharer accepts a
   request from a named person. Sharing a screen doesn't imply control. In the desktop app, only
   an explicit allow for that very request grants it ([IPC](ipc.md#consent)).
-- **A name is not an identity.** The name in "Sam wants control" and "Sam is controlling" is
-  what that person typed. The server signs it into their token but nothing checks it, so anyone
-  in the call could type any name. Grant control because you recognise the person on the call,
-  not because of the name. Each participant also has an identity the server vouches for, unique
-  in the call, which starts with their role (`sharer-…` or `guest-…`); input is only accepted
-  from the identity that was granted.
+- **A name is not an identity.** Without accounts, the name in "Sam wants control" and "Sam is
+  controlling" is what that person typed. The server signs it into their token but nothing checks
+  it, so anyone in the call could type any name. With a call pass the token carries the account's
+  name, but the name in a control request still comes from the guest's own app. Grant control
+  because you recognise the person on the call, not because of the name. Each participant also
+  has an identity the server vouches for, unique in the call, which starts with their role
+  (`sharer-…` or `guest-…`); input is only accepted from the identity that was granted.
 - **The sharer can always see it.** A label stays on screen for as long as control lasts, naming
   the guest and showing the revoke hotkey.
 - **Revoking is instant and doesn't depend on the network.** A global hotkey flips a flag that the
@@ -95,7 +96,14 @@ hotkey, the on-screen label, and real input on macOS.*
   that server. Give such builds only to people you'd give the key to, and rotate the key when a
   test round ends. `tc-engine config` never prints the secret. A Windows viewer zip with a
   `server.txt` (`packaging/windows/assemble.sh`) carries the secret in plain text, with the same
-  rules.
+  rules. In pass mode no secret ships in the app at all: the account server signs a call pass
+  for each person and call, and the engine only reads who the pass is for (it can't verify the
+  signature, and doesn't need to: LiveKit does on connect). `tc-engine dev-pass`, which signs
+  passes for testing, refuses to run in a build that carries a key.
+- **A call pass is a bearer credential.** Whoever holds it can join that one room, as that
+  person, until it expires. The engine takes it only from its environment (never a flag, which
+  other users can read), holds it there for the life of the call, and never logs it or puts it
+  in an event or error. Keep passes short-lived.
 - **Server settings in the desktop app.** Overrides typed into Settings are saved in the app's
   config folder, readable only by your user, and passed to the engine in its environment rather
   than its flags (other users can read a process's flags). The window never gets the saved
