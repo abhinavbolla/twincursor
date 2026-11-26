@@ -73,10 +73,16 @@ impl AccountShell {
         })
     }
 
-    fn account(&self) -> Result<Arc<Account>, String> {
+    /// The account, for the call flows (`calls.rs`), which call the backend as this person.
+    pub fn account(&self) -> Result<Arc<Account>, String> {
         self.account
             .clone()
             .ok_or_else(|| "This build isn't set up for accounts.".to_owned())
+    }
+
+    /// The profile, as the call flows' poll last read it.
+    pub fn set_me(&self, me: Option<Me>) {
+        *self.me.lock().unwrap() = me;
     }
 
     pub async fn view(&self) -> AccountView {
