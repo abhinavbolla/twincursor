@@ -55,10 +55,12 @@ create table public.call_members (
   created_at timestamptz not null default now(),
   changed_at timestamptz not null default now(),
   answered_at timestamptz,
+  seen_at timestamptz not null default now(),
   primary key (call_id, user_id)
 );
 comment on table public.call_members is 'Everyone other than the host who knocked on or was rung into a call, and where they stand.';
 comment on column public.call_members.changed_at is 'When state last changed. A ring is pending for 60 s from here.';
+comment on column public.call_members.seen_at is 'When a knocking person last knocked. A waiting app knocks every few seconds; a knock not seen for 45 s is dropped from the host''s list and can''t be answered.';
 comment on column public.call_members.answered_at is 'When the knock or ring was answered (admitted, turned_away or declined).';
 
 create index call_members_user on public.call_members (user_id, state);
@@ -407,8 +409,11 @@ begin
   insert into public.call_members as m (call_id, user_id, state)
   values (c.id, uid, 'knocking')
   on conflict on constraint call_members_pkey do update
-    set state = 'knocking', changed_at = now(), answered_at = null
-    where m.state = 'left'
+    set state = 'knocking',
+        changed_at = case when m.state = 'left' then now() else m.changed_at end,
+        answered_at = case when m.state = 'left' then null else m.answered_at end,
+        seen_at = now()
+    where m.state in ('left', 'knocking')
   returning m.state into v_state;
 
   if v_state is null then
@@ -420,7 +425,7 @@ begin
     from public.profiles p where p.id = c.host;
 end;
 $$;
-comment on function public.knock(text) is 'Knocks on the live call with this code and returns where the caller stands. Repeating it returns the same state; only someone who left knocks again. Unknown and dead codes both raise call_not_found.';
+comment on function public.knock(text) is 'Knocks on the live call with this code and returns where the caller stands. A waiting app repeats it every few seconds: that keeps the knock fresh (seen_at) and returns the same state. Only someone who left knocks again; other states are returned unchanged. Unknown and dead codes both raise call_not_found.';
 
 create function public.answer_knock(call_id uuid, user_id uuid, let_in boolean)
 returns text
@@ -446,6 +451,7 @@ begin
         changed_at = now(),
         answered_at = now()
     where m.call_id = c.id and m.user_id = answer_knock.user_id and m.state = 'knocking'
+      and m.seen_at > now() - interval '45 seconds'
     returning m.state into v_state;
   if v_state is null then
     raise exception 'not_knocking: nobody is waiting with that id' using errcode = 'P0001';
@@ -459,7 +465,7 @@ begin
   return v_state;
 end;
 $$;
-comment on function public.answer_knock(uuid, uuid, boolean) is 'Host only: lets a knocking person in (admitted, and both become contacts) or turns them away. Works once per knock.';
+comment on function public.answer_knock(uuid, uuid, boolean) is 'Host only: lets a knocking person in (admitted, and both become contacts) or turns them away. Works once per knock, and only while the knock is fresh (seen in the last 45 s).';
 
 create function public.ring(contact uuid)
 returns table (call_id uuid, code text)
@@ -654,7 +660,8 @@ begin
           order by m.created_at, p.id)
         from public.call_members m
         join public.profiles p on p.id = m.user_id
-        where m.call_id = hosted.id), '[]'::jsonb));
+        where m.call_id = hosted.id
+          and (m.state <> 'knocking' or m.seen_at > now() - interval '45 seconds')), '[]'::jsonb));
   end if;
 
   return jsonb_build_object(
