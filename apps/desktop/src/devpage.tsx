@@ -8,13 +8,17 @@
 //   ?view=gallery&of=bar           every scenario of a surface in a grid
 //   &frame=desktop                 over a busy pretend desktop, to judge legibility
 //   &theme=light | &theme=dark     instead of following the system
+//   &menu=1                        the panel's account menu or the bar's menu starts open
+//   &window=1                      as the native window shows it: edge to edge, in a frame of
+//                                  the height the window would be given (menus included)
 //
 // Development only: App.tsx imports this behind `import.meta.env.DEV`.
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import type { Bridge } from "./bridge";
 import { CallBarSurface } from "./CallBar";
+import { observeHeight } from "./inWindow";
 import { createMock } from "./mock";
 import { PanelSurface } from "./Panel";
 import { scenarioBridge } from "./scenarioBridge";
@@ -34,12 +38,37 @@ function href(params: URLSearchParams, change: Record<string, string | null>): s
   return `?${next.toString()}`;
 }
 
-function SurfaceOf({ surface, bridge, scenario }: { surface: Surface; bridge: Bridge; scenario?: Scenario }) {
-  return surface === "panel" ? (
-    <PanelSurface bridge={bridge} />
-  ) : (
-    <CallBarSurface bridge={bridge} menuOpen={scenario?.menu === true} />
+/** `&window=1`: show surfaces as their native windows do. */
+const asWindow = (): boolean => new URLSearchParams(window.location.search).get("window") === "1";
+/** `&menu=1`: the panel's account menu, or the bar's menu, starts open in any state. */
+const menuParam = (): boolean => new URLSearchParams(window.location.search).get("menu") === "1";
+
+/**
+ * A pretend native window: the `in-window` treatment, and the height `useWindowFit` would ask
+ * the Rust side for, from the same `observeHeight`.
+ */
+function DevWindow({ surface, children }: { surface: Surface; children: ReactNode }) {
+  const inner = useRef<HTMLDivElement>(null);
+  const [height, setHeight] = useState<number | null>(null);
+  useEffect(() => (inner.current === null ? undefined : observeHeight(inner.current, setHeight)), []);
+  return (
+    <div className={`dev-window in-window ${surface}-window`} style={height === null ? undefined : { height }}>
+      <div ref={inner} className="window-root">
+        {children}
+      </div>
+    </div>
   );
+}
+
+function SurfaceOf({ surface, bridge, scenario }: { surface: Surface; bridge: Bridge; scenario?: Scenario }) {
+  const menuOpen = scenario?.menu === true || menuParam();
+  const view =
+    surface === "panel" ? (
+      <PanelSurface bridge={bridge} settings={scenario?.settings === true} menuOpen={menuOpen} />
+    ) : (
+      <CallBarSurface bridge={bridge} menuOpen={menuOpen} />
+    );
+  return asWindow() ? <DevWindow surface={surface}>{view}</DevWindow> : view;
 }
 
 function Stage({ desktop, children }: { desktop: boolean; children: ReactNode }) {
@@ -81,6 +110,10 @@ function Toolbar({ params }: { params: URLSearchParams }) {
       <span>
         {link("Plain", { frame: null }, !desktop)}
         {link("Desktop", { frame: "desktop" }, desktop)}
+      </span>
+      <span>
+        {link("Floating", { window: null }, !asWindow())}
+        {link("In a window", { window: "1" }, asWindow())}
       </span>
     </nav>
   );

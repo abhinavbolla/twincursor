@@ -4,6 +4,10 @@ A hands-on pass over everything the test app does, for two people on two compute
 about an hour. Testers who only want to try a call can follow the shorter
 [testing guide](testing-guide.md).
 
+> The desktop app now lives in the menu bar: a panel under its icon and a call bar during calls
+> ([the UI](ui.md)), with calls started by signing in and sharing a link. Sections that mention
+> the start screen, room codes or **Join** describe the previous build and are being rewritten.
+
 Mark each line pass or fail. For a fail, note what happened, and copy the numbers and the log
 (see [What to send back](#what-to-send-back)).
 

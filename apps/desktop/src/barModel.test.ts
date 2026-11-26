@@ -89,7 +89,7 @@ describe("the bar's row", () => {
     ["muted", ["With Sam", "(Unmute)", "(More)", "[Stop]"]],
     ["g-knocking", ["Waiting for Alex to let you in…", "[Cancel]"]],
     ["g-watching", ["Alex's screen", "[Control]", "(Mute)", "(More)", "[Leave]"]],
-    ["g-asked", ["Asked Alex for control…", "[Never mind]", "(Mute)", "(More)", "[Leave]"]],
+    ["g-asked", ["Asked for control…", "[Never mind]", "(Mute)", "(More)", "[Leave]"]],
     ["g-controlling", ["Controlling Alex's Mac", "F9", "[Give back]", "(Mute)", "[Leave]"]],
   ])("%s", (state, expected) => {
     expect(row(bar(state))).toEqual(expected);
@@ -97,7 +97,7 @@ describe("the bar's row", () => {
 
   it("is loud only while someone controls the sharer's Mac", () => {
     for (const s of scenariosOf("bar")) {
-      expect(bar(s.name).live, s.name).toBe(s.name === "controlling");
+      expect(bar(s.name).live, s.name).toBe(s.name === "controlling" || s.name === "long-controlling");
     }
   });
 

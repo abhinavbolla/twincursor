@@ -221,7 +221,9 @@ export function barModel(home: HomeView | null, call: CallState, local: BarLocal
       keys = VIEWER_CONTROL_KEYS;
       button = { op: "give_back", label: "Give back", tone: "quiet" };
     } else if (control.state === "asked") {
-      line = ["Asked ", { name: who }, " for control…"];
+      // No name: the face beside it already says whose call this is, and the line must fit
+      // next to Never mind.
+      line = ["Asked for control…"];
       button = { op: "never_mind", label: "Never mind", tone: "quiet" };
     } else {
       line = [{ name: who }, "'s screen"];

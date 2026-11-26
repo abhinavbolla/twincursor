@@ -24,6 +24,10 @@ pub struct Settings {
     pub api_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_secret: Option<String>,
+    /// Where the call bar was last left: its top-left corner, in whole points. Not a server
+    /// setting, and never shown to the webview; it lives here so the app has one settings file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bar_position: Option<(i32, i32)>,
 }
 
 impl std::fmt::Debug for Settings {
@@ -32,6 +36,7 @@ impl std::fmt::Debug for Settings {
             .field("url", &self.url)
             .field("api_key", &self.api_key)
             .field("api_secret", &self.api_secret.as_ref().map(|_| "(set)"))
+            .field("bar_position", &self.bar_position)
             .finish()
     }
 }
@@ -138,7 +143,10 @@ impl Settings {
         }
     }
 
-    /// The engine's environment for these overrides.
+    /// The engine's environment for these overrides. Only a room-code call takes them, and
+    /// those start only from scripts now, which leave saved settings out; account calls get
+    /// their server from the call pass.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn env(&self) -> Vec<(String, String)> {
         [
             (URL_ENV, &self.url),
@@ -233,6 +241,33 @@ mod tests {
         assert!(env.contains(&(SECRET_ENV.into(), SECRET.into())));
         assert!(env.contains(&(URL_ENV.into(), "wss://example.test".into())));
         assert!(env.contains(&(KEY_ENV.into(), "key-1".into())));
+    }
+
+    #[test]
+    fn the_bar_position_is_kept_alongside_and_survives_a_change() {
+        let path = temp_path("bar");
+        let mut settings = Settings {
+            bar_position: Some((-300, 712)),
+            ..Settings::default()
+        };
+        settings.save(&path).unwrap();
+        let mut again = Settings::load(&path).unwrap();
+        assert_eq!(again.bar_position, Some((-300, 712)));
+        // Saving server overrides from the window leaves it alone.
+        again.apply(change(SecretChange::Keep));
+        assert_eq!(again.bar_position, Some((-300, 712)));
+        settings.bar_position = None;
+        settings.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("bar_position"), "{text}");
+        // A file from before has none.
+        assert_eq!(
+            serde_json::from_str::<Settings>(r#"{"url":"wss://a.test"}"#)
+                .unwrap()
+                .bar_position,
+            None
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]

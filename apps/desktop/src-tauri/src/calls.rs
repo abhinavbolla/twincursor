@@ -8,8 +8,9 @@
 //! enforced here, on top of the engine's own (`docs/calls.md`):
 //!
 //! - **Arming.** A knock can't be let in, and a control request can't be allowed, until
-//!   [`ARMING`] after the window was first shown it, so a click meant for something else can't
-//!   answer it. Turning away and denying are never delayed.
+//!   [`ARMING`] after it could first be seen: the later of when it was first delivered to the
+//!   window and when the call bar came on screen ([`Sight`]), so a click meant for something
+//!   else can't answer it. Turning away and denying are never delayed.
 //! - **Control on arrival** ("Let in with control"): once the backend has let them in, the
 //!   engine running the call is sent `trust_on_arrival` for that identity, once. The engine keeps
 //!   the promise, so every revoke cancels it, the hotkey included (ADR 0010).
@@ -36,8 +37,33 @@ use crate::seams::{
 };
 use crate::snapshot::Snapshot;
 
-/// How long after the window was first shown a knock or a control request it can be accepted.
+/// How long after a knock or a control request could first be seen it can be accepted.
 pub const ARMING: Duration = Duration::from_millis(1000);
+
+/// Whether the call bar, where knocks and control requests show, can be seen. Without a window
+/// to track (tests, scripts that show none) it is `Always`, and arming counts from delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sight {
+    Always,
+    Hidden,
+    /// On screen since then.
+    Since(Instant),
+}
+
+/// When the arming delay starts for something first delivered at `delivered`: once it can be
+/// seen. `None` while it can't.
+pub fn arming_from(delivered: Instant, sight: Sight) -> Option<Instant> {
+    match sight {
+        Sight::Always => Some(delivered),
+        Sight::Hidden => None,
+        Sight::Since(shown) => Some(delivered.max(shown)),
+    }
+}
+
+/// Whether something first delivered at `delivered` may be accepted at `now`.
+fn armed(now: Instant, delivered: Instant, sight: Sight) -> bool {
+    arming_from(delivered, sight).is_some_and(|from| now.saturating_duration_since(from) >= ARMING)
+}
 /// How often the backend is asked, normally and after repeated network failures.
 pub const POLL_EVERY: Duration = Duration::from_secs(2);
 pub const POLL_BACKOFF: Duration = Duration::from_secs(10);
@@ -244,6 +270,8 @@ struct State {
     proc: u64,
     /// Which control requests the window was shown, when first, and by which engine process.
     asked_seen: HashMap<u64, (Instant, u64)>,
+    /// Whether the call bar can be seen, for arming.
+    sight: Sight,
     participants: Vec<ipc::Participant>,
     engine_error: Option<String>,
     engine_failed: bool,
@@ -364,6 +392,7 @@ impl Calls {
             gen: 0,
             proc: 0,
             asked_seen: HashMap::new(),
+            sight: Sight::Always,
             participants: Vec::new(),
             engine_error: None,
             engine_failed: false,
@@ -424,7 +453,7 @@ impl Calls {
                         name: m.name.clone(),
                         handle: m.handle.clone(),
                         avatar_url: m.avatar_url.clone(),
-                        armed: now.saturating_duration_since(seen) >= ARMING,
+                        armed: armed(now, seen, s.sight),
                     });
                 } else {
                     members.push(MemberView {
@@ -484,6 +513,21 @@ impl Calls {
                 me.emit();
             });
         }
+    }
+
+    /// The call bar came on screen, or went. Arming counts from when it came: a knock or a
+    /// control request delivered while it was hidden can't be accepted until it has been on
+    /// screen for [`ARMING`].
+    pub fn set_bar_visible(&self, visible: bool) {
+        {
+            let mut s = self.lock();
+            s.sight = match (visible, s.sight) {
+                (false, _) => Sight::Hidden,
+                (true, Sight::Hidden) => Sight::Since(self.now()),
+                (true, sight) => sight,
+            };
+        }
+        self.emit();
     }
 
     /// The current call's engine output, for a window opened mid-call (`call_snapshot`).
@@ -982,7 +1026,7 @@ impl Calls {
         match command {
             ipc::Command::AllowControl { request } => {
                 let (seen, proc) = *s.asked_seen.get(request).ok_or(REQUEST_NOT_OPEN)?;
-                if now.saturating_duration_since(seen) < ARMING {
+                if !armed(now, seen, s.sight) {
                     return Err(TOO_SOON.into());
                 }
                 running.handle.send_for(command, proc)
@@ -1291,7 +1335,7 @@ impl Calls {
                 .ok_or(NOT_WAITING)?;
             if let_in {
                 let seen = s.knock_seen.get(user_id).ok_or(TOO_SOON)?;
-                if self.now().saturating_duration_since(*seen) < ARMING {
+                if !armed(self.now(), *seen, s.sight) {
                     return Err(TOO_SOON.into());
                 }
             }

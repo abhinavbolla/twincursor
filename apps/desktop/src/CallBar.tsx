@@ -2,18 +2,21 @@
 // a knock, a control request, a notice or the menu. What it shows comes from `barModel`; this
 // file only draws it and runs the commands.
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 
-import { Avatar, Faces, Keys, NoticeRow, PhraseLine } from "./bits";
+import { Avatar, Faces, Keys, NoticeRow, PhraseLine, useNoticeClock } from "./bits";
 import type { Bridge } from "./bridge";
 import { barModel, type AskCard, type KnockCard, type MenuView, type RowOp } from "./barModel";
 import { numbersReport, type CallState } from "./call";
-import { ALLOW_AFTER_MS } from "./CallScreen";
+import { ALLOW_AFTER_MS } from "./arming";
 import { copyText } from "./clipboard";
+import { compact, type Compaction } from "./fit";
 import { allowControl, denyControl, mute, releaseControl, requestControl, revokeControl, unmute } from "./commands";
 import type { HomeView } from "./home";
 import { MicIcon, MicOffIcon, MoreIcon } from "./icons";
+import { forget } from "./notices";
 import type { EngineCommand } from "./ipc";
+import { phraseText } from "./people";
 import { COPIED_MS } from "./Panel";
 import { useCall, useHome } from "./useSurface";
 
@@ -69,6 +72,7 @@ export function CallBar({ bridge, home, call, menuOpen }: Props) {
   const moreButton = useRef<HTMLButtonElement>(null);
 
   const model = barModel(home, call, { dismissed, error });
+  const notices = model.kind === "call" ? model.notices : [];
 
   useEffect(() => {
     if (!menu) {
@@ -97,11 +101,42 @@ export function CallBar({ bridge, home, call, menuOpen }: Props) {
       setError(null);
     }
   };
+  const hoverNotice = useNoticeClock(notices, dismiss);
+  // A closed line that is no longer sent is forgotten, so the same words can show again.
+  const present = [error, call.error, call.notice, home?.error ?? null, home?.notice ?? null];
+  const presentKey = present.join("\n");
+  useEffect(() => {
+    setDismissed((d) => forget(d, present));
+    // `presentKey` stands for `present`.
+  }, [presentKey]);
+
+  // The row keeps its buttons; when the name in its line would be cut too short, the faces go,
+  // then the keycaps (fit.ts). Measured before paint, so nothing flickers.
+  const row = useRef<HTMLDivElement>(null);
+  const rowKey =
+    model.kind === "call"
+      ? [phraseText(model.line), model.faces.length, model.extra, model.keys?.join("") ?? "", model.button?.label ?? "", model.hasMenu, model.mute?.state ?? "", model.leave.label].join("|")
+      : "";
+  const [fit, setFit] = useState<{ key: string; level: Compaction }>({ key: rowKey, level: 0 });
+  const level: Compaction = fit.key === rowKey ? fit.level : 0;
+  useLayoutEffect(() => {
+    const name = row.current?.querySelector<HTMLElement>(".bar-line .phrase-name");
+    if (model.kind !== "call" || name == null) {
+      return;
+    }
+    const next = compact(level, name.clientWidth, name.scrollWidth, {
+      faces: model.faces.length > 0,
+      keys: model.keys !== null,
+    });
+    if (next !== level || fit.key !== rowKey) {
+      setFit({ key: rowKey, level: next });
+    }
+  });
 
   if (model.kind === "none") {
     return (
       <div className="surface bar">
-        <div className="bar-row">
+        <div className="bar-row" data-tauri-drag-region="deep">
           <span className="dot off" aria-hidden="true" />
           <span className="bar-line muted">Not in a call</span>
         </div>
@@ -136,11 +171,11 @@ export function CallBar({ bridge, home, call, menuOpen }: Props) {
 
   return (
     <div className={`surface bar${model.live ? " live" : ""}`}>
-      <div className="bar-row">
+      <div className="bar-row" data-tauri-drag-region="deep" ref={row}>
         <span className={`dot ${model.dot}`} role="img" aria-label={model.dotLabel} title={model.dotLabel} />
-        <Faces faces={model.faces} extra={model.extra} />
+        {level < 1 && <Faces faces={model.faces} extra={model.extra} />}
         <PhraseLine phrase={model.line} className="bar-line" />
-        {model.keys !== null && (
+        {model.keys !== null && level < 2 && (
           <Keys keys={model.keys} label={model.role === "sharer" ? "Control Option Command R takes control back from any app" : "F9 in the viewer gives control back"} />
         )}
         <span className="bar-actions">
@@ -148,6 +183,7 @@ export function CallBar({ bridge, home, call, menuOpen }: Props) {
             <button
               type="button"
               className={`small ${button.tone === "danger" ? "danger" : "quiet"}`}
+              title={button.op === "take_back" && model.role === "sharer" ? "Take back control (⌃⌥⌘R from any app)" : undefined}
               onClick={() => rowOp(button.op)}
             >
               {button.op === "copy_link" && copied === "link" ? "Copied" : button.label}
@@ -223,7 +259,13 @@ export function CallBar({ bridge, home, call, menuOpen }: Props) {
       {model.notices.length > 0 && (
         <div className="bar-section bar-notices">
           {model.notices.map((n) => (
-            <NoticeRow key={n.text} text={n.text} tone={n.tone} close={() => dismiss(n.text)} />
+            <NoticeRow
+              key={n.text}
+              text={n.text}
+              tone={n.tone}
+              close={() => dismiss(n.text)}
+              hover={(over) => hoverNotice(n.text, over)}
+            />
           ))}
         </div>
       )}
@@ -250,7 +292,12 @@ function Arming({ ms }: { ms: number }) {
 function Knock({ knock, answer }: { knock: KnockCard; answer: (letIn: boolean, control: boolean) => void }) {
   const id = useId();
   return (
-    <div className="bar-section bar-card" role="alertdialog" aria-labelledby={`${id}-t`} aria-describedby={`${id}-d`}>
+    <div
+      className="bar-section bar-card"
+      role="alertdialog"
+      aria-labelledby={`${id}-t`}
+      aria-describedby={knock.handle === null ? undefined : `${id}-d`}
+    >
       {!knock.armed && <Arming ms={KNOCK_ARMING_MS} />}
       <div className="bar-card-who">
         <Avatar face={knock} size={36} />
@@ -258,9 +305,11 @@ function Knock({ knock, answer }: { knock: KnockCard; answer: (letIn: boolean, c
           <p id={`${id}-t`} className="bar-card-title">
             <PhraseLine phrase={[{ name: knock.name }, " wants to join"]} />
           </p>
-          <p id={`${id}-d`} className="bar-card-meta">
-            {knock.handle !== null ? `@${knock.handle}` : "No GitHub handle"}
-          </p>
+          {knock.handle !== null && (
+            <p id={`${id}-d`} className="bar-card-meta">
+              @{knock.handle}
+            </p>
+          )}
         </div>
       </div>
       <div className="bar-card-actions">

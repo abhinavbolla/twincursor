@@ -72,10 +72,12 @@ must reach the backend within 45 seconds.
 
 A knock appears, or a control request does, while you're typing or about to click something
 else. A click or a key press already on its way could land on Let in or Allow. So the app
-refuses to let someone in until a second after it first showed you their knock, and refuses an
-Allow until a second after it showed you that request: "Too soon. Try again." The window keeps
-the buttons off for that second too, but the rule is enforced in the app's Rust side, so it holds
-whatever the window does. Turning someone away and denying a request are never delayed.
+refuses to let someone in until a second after their knock could first be seen, and refuses an
+Allow until a second after that request could: "Too soon. Try again." Could be seen means
+delivered to the call bar with the call bar on screen; one delivered while the bar was hidden
+counts from when the bar came back. The bar never takes the keyboard when it appears, so typing
+goes on into the app you were in. The window keeps the buttons off for that second too, but the
+rule is enforced in the app's Rust side, so it holds whatever the window does. Turning someone away and denying a request are never delayed.
 
 An Allow also names the request it answers, and goes only to the engine that asked. Request
 numbers start again when the engine restarts, so an Allow for a request from before a restart is

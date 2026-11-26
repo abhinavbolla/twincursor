@@ -27,8 +27,9 @@ xattr -dr com.apple.quarantine /Applications/TwinCursor.app
 
 ### Permissions
 
-The start screen lists what TwinCursor can use, with a button to ask for each and one to open its
-page in System Settings. macOS asks once for each.
+TwinCursor asks macOS for each permission the first time it needs it, and macOS asks you once
+for each. While one is missing, TwinCursor offers **Open Settings** to go to its page in System
+Settings.
 
 | Permission | Needed for | Why |
 | --- | --- | --- |
@@ -36,18 +37,19 @@ page in System Settings. macOS asks once for each.
 | Accessibility | Sharing, if you let a guest take control | To type and click for the guest while you allow it. |
 | Microphone | Voice (sharing or joining) | To send your voice. Turn Voice off to skip it. |
 
-macOS applies some of these only after the app restarts; the start screen shows when a
-permission is in place.
+macOS applies some of these only after the app restarts.
 
 ### Start a call
 
-1. Type your name.
-2. **Sharer:** click **Make one** next to Room code, then **Copy**, and send the code to your
-   guest (chat or email). Anyone with the app and the code can join, so send it only to them.
-   **Guest:** paste the code you were sent.
-3. **Sharer:** pick a quality. 4K looks sharpest; 1080p needs the least bandwidth.
-4. **Sharer:** click **Share my screen**. **Guest:** click **Join**. The shared screen opens in
-   its own window on the guest's side.
+TwinCursor lives in the menu bar: click its icon (two chevrons) to open it. During a call, a
+small bar at the top of the screen shows who is there and lets you stop or leave.
+
+1. Click **Sign in with GitHub** and finish signing in in your browser.
+2. **Sharer:** click **Share my screen**. The call link goes on your clipboard: send it to your
+   guest (chat or email).
+   **Guest:** copy the link you were sent, then click **Paste link**.
+3. **Sharer:** the bar shows the guest knocking: click **Let in**. The shared screen opens in its
+   own window on the guest's side.
 
 ## On Windows (guest only)
 

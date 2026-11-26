@@ -748,6 +748,67 @@ async fn an_allow_needs_a_second_after_the_request_was_shown() {
     assert_eq!(w.sent(0).last().unwrap(), &(allow, Some(2)));
 }
 
+#[test]
+fn arming_counts_from_when_it_could_be_seen() {
+    let t0 = std::time::Instant::now();
+    let later = t0 + Duration::from_millis(400);
+    assert_eq!(arming_from(t0, Sight::Always), Some(t0));
+    assert_eq!(arming_from(t0, Sight::Hidden), None);
+    // Delivered before the bar came on screen: from when it came.
+    assert_eq!(arming_from(t0, Sight::Since(later)), Some(later));
+    // Delivered while the bar was on screen: from delivery.
+    assert_eq!(arming_from(later, Sight::Since(t0)), Some(later));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_knock_arms_a_second_after_the_bar_came_on_screen() {
+    let w = world(true).await;
+    w.calls.set_bar_visible(false);
+    w.knocked().await;
+    w.clock.advance(ARMING * 3);
+    assert!(!w.calls.home().knocks[0].armed, "never seen, never armed");
+    assert_eq!(
+        w.calls.answer_knock(SAM, true, false).await.unwrap_err(),
+        TOO_SOON
+    );
+    w.calls.set_bar_visible(true);
+    w.clock.advance(Duration::from_millis(999));
+    assert!(!w.calls.home().knocks[0].armed);
+    assert_eq!(
+        w.calls.answer_knock(SAM, true, false).await.unwrap_err(),
+        TOO_SOON
+    );
+    // Shown again while on screen: still counts from when it came.
+    w.calls.set_bar_visible(true);
+    w.clock.advance(Duration::from_millis(1));
+    assert!(w.calls.home().knocks[0].armed);
+    w.calls.answer_knock(SAM, true, false).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_allow_waits_for_the_bar_to_have_been_on_screen_a_second() {
+    let w = world(true).await;
+    w.host().await;
+    w.calls.set_bar_visible(false);
+    let asked = json!({ "event": "control_asked", "request": 1, "identity": format!("guest-{SAM}"), "name": "Sam", "platform": "macos" });
+    w.event(0, asked);
+    w.clock.advance(ARMING * 2);
+    let allow = ipc::Command::AllowControl { request: 1 };
+    assert_eq!(w.calls.send_command(&allow).unwrap_err(), TOO_SOON);
+    w.calls.set_bar_visible(true);
+    w.clock.advance(Duration::from_millis(999));
+    assert_eq!(w.calls.send_command(&allow).unwrap_err(), TOO_SOON);
+    w.clock.advance(Duration::from_millis(1));
+    w.calls.send_command(&allow).unwrap();
+    // Hidden again: refused until it has been back on screen for a second.
+    w.calls.set_bar_visible(false);
+    assert_eq!(w.calls.send_command(&allow).unwrap_err(), TOO_SOON);
+    // Denying is never delayed, seen or not.
+    w.calls
+        .send_command(&ipc::Command::DenyControl { request: 1 })
+        .unwrap();
+}
+
 // Control on arrival.
 
 #[tokio::test(flavor = "multi_thread")]

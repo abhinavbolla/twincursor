@@ -737,13 +737,6 @@ export function createMock(params: URLSearchParams): LoadedBridge {
   const bridge: Bridge = {
     engineInfo: () =>
       Promise.resolve({ path: "(mock engine)", error: null, in_bundle: false, app_pid: 1 }),
-    startCall: (plan) => {
-      if (engine.inCall) {
-        return Promise.reject(new Error("A call is already running."));
-      }
-      window.setTimeout(() => engine.start(plan), 0);
-      return Promise.resolve();
-    },
     send: (command) => {
       if (!engine.inCall) {
         return Promise.reject(new Error("No call is running."));

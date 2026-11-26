@@ -1,12 +1,15 @@
-//! The TwinCursor desktop app: one window to start or join a call. The call itself runs in the
-//! engine, `tc-engine` (inside the bundle), which does everything that touches the screen, the
-//! mic and input, and shows the shared screen in its own native window. The webview only shows
-//! text and controls (docs/adr/0007-shell-and-engine.md).
+//! The TwinCursor desktop app: a menu bar app with two small windows, the panel (from the menu
+//! bar icon) and the call bar (during a call). The call itself runs in the engine, `tc-engine`
+//! (inside the bundle), which does everything that touches the screen, the mic and input, and
+//! shows the shared screen in its own native window. The webview only shows text and controls
+//! (docs/adr/0007-shell-and-engine.md).
 //!
 //! `calls.rs` runs calls with accounts (sharing, joining by link, letting in, ringing) and owns
 //! the engine of every call; `engine.rs` starts and stops the engine and reads its events;
-//! `settings.rs` keeps the server overrides; `accounts.rs` signs in and out (`backend.rs` says
-//! where); `script.rs` is the test-only `--script` mode. This file connects them to the window.
+//! `windows.rs` makes the windows and the menu bar icon and decides when they show (with
+//! `surfaces.rs`, `native.rs` and `mark.rs`); `settings.rs` keeps the server overrides;
+//! `accounts.rs` signs in and out (`backend.rs` says where); `script.rs` is the test-only
+//! `--script` mode. This file connects them.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -15,25 +18,31 @@ mod backend;
 mod calls;
 mod engine;
 mod link;
+mod mark;
+mod native;
 mod script;
 mod seams;
 mod settings;
 mod snapshot;
+mod surfaces;
+mod windows;
 
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, Manager, RunEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewWindow};
 
 use accounts::{AccountShell, AccountView};
 use calls::{Calls, HomeView, Options, Setup};
-use engine::{Output, Plan, Quality, Sink, TestHooks};
+use engine::{Output, Quality, Sink, TestHooks};
 use seams::{
     EnginePermits, MemoryClipboard, RealEngines, ScriptPermits, SystemClipboard, SystemClock,
 };
 use settings::{Settings, SettingsChange, SettingsView};
+use surfaces::Hold;
+use windows::{HeldPermits, Windows};
 
 /// The webview hears about the call on this event.
 const ENGINE_EVENT: &str = "engine";
@@ -80,26 +89,22 @@ fn engine_info() -> EngineInfo {
     }
 }
 
-/// A control request must be seen: the window comes to the front, out of the Dock if minimised,
-/// and the Dock icon asks for attention. The window is left out of the shared picture, so only
-/// the sharer sees it. With no window open, nothing happens.
-fn bring_forward(app: &AppHandle) {
-    let window = app
-        .get_webview_window("main")
-        .or_else(|| app.webview_windows().into_values().next());
-    if let Some(window) = window {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-        let _ = window.request_user_attention(Some(tauri::UserAttentionType::Critical));
-    }
+/// The page in the calling window is `height` points tall: the window follows (`windows.rs`).
+#[tauri::command]
+fn fit_window(window: WebviewWindow, windows: tauri::State<'_, Windows>, height: f64) {
+    windows.fit(&window, height);
 }
 
-/// A room-code call from the start screen.
+/// Escape in the panel.
 #[tauri::command]
-fn start_call(app: AppHandle, calls: tauri::State<'_, Calls>, plan: Plan) -> Result<(), String> {
-    let env = load_settings(&app)?.env();
-    calls.start_plan(plan, env)
+fn hide_panel(windows: tauri::State<'_, Windows>) {
+    windows.hide_panel();
+}
+
+/// Quit TwinCursor (the panel's menu): any call is ended or left properly first.
+#[tauri::command]
+fn quit(windows: tauri::State<'_, Windows>) {
+    windows.quit();
 }
 
 /// One command for the engine, as the person clicked it. Typed, so only commands the protocol
@@ -273,12 +278,16 @@ async fn account_state(
 }
 
 /// Signs in with GitHub in the default browser. Resolves once signed in, or with a sentence.
+/// The panel stays open meanwhile (the browser takes focus) and comes back when it's over.
 #[tauri::command]
 async fn sign_in(
     account: tauri::State<'_, Arc<AccountShell>>,
     calls: tauri::State<'_, Calls>,
+    windows: tauri::State<'_, Windows>,
 ) -> Result<AccountView, String> {
+    windows.hold(Hold::SignIn);
     let view = account.sign_in(accounts::open_browser).await;
+    windows.release(Hold::SignIn);
     calls.refresh().await;
     view
 }
@@ -355,9 +364,15 @@ fn load_script(
     })
 }
 
-/// The call flows, wired to the window (and, in script mode, to the report).
-fn make_calls(app: &AppHandle, account: Arc<AccountShell>, run: Option<&ScriptRun>) -> Calls {
+/// The call flows, wired to the windows (and, in script mode, to the report).
+fn make_calls(
+    app: &AppHandle,
+    windows: &Windows,
+    account: Arc<AccountShell>,
+    run: Option<&ScriptRun>,
+) -> Calls {
     let window = app.clone();
+    let surfaces = windows.clone();
     let report = run.map(|r| r.report.clone());
     let tee = run.map(|r| r.tee.clone());
     let on_engine: Sink = {
@@ -374,18 +389,20 @@ fn make_calls(app: &AppHandle, account: Arc<AccountShell>, run: Option<&ScriptRu
                 matches!(&output, Output::Event { event } if event["event"] == "control_asked");
             let _ = window.emit(ENGINE_EVENT, output);
             if asked {
-                bring_forward(&window);
+                surfaces.control_asked();
             }
         })
     };
     let window = app.clone();
     let on_home = {
         let report = report.clone();
+        let surfaces = windows.clone();
         Arc::new(move |home: &HomeView| {
             if let Some(report) = &report {
                 report.write(serde_json::json!({ "kind": "home", "home": home }));
             }
             let _ = window.emit(HOME_EVENT, home);
+            surfaces.on_home(home);
         })
     };
     let trace: Arc<dyn Fn(Value) + Send + Sync> = match report {
@@ -421,7 +438,10 @@ fn make_calls(app: &AppHandle, account: Arc<AccountShell>, run: Option<&ScriptRu
                 hooks: TestHooks::default(),
             }),
             clipboard: Arc::new(SystemClipboard),
-            permits: Arc::new(EnginePermits),
+            permits: Arc::new(HeldPermits {
+                inner: EnginePermits,
+                windows: windows.clone(),
+            }),
             clock: Arc::new(SystemClock),
             options: Options {
                 quality: Quality::K4,
@@ -523,7 +543,9 @@ fn main() {
     let app = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             engine_info,
-            start_call,
+            fit_window,
+            hide_panel,
+            quit,
             send_command,
             leave_call,
             permissions,
@@ -547,13 +569,27 @@ fn main() {
             answer_ring,
             end
         ])
+        .on_menu_event(|app, event| {
+            if let Some(windows) = app.try_state::<Windows>() {
+                windows.on_app_menu(&event);
+            }
+        })
         .setup(move |app| {
             let account = Arc::new(account_shell(app.handle()));
             let run = run.lock().unwrap().take();
-            let calls = make_calls(app.handle(), account.clone(), run.as_ref());
+            // In script mode the windows exist but stay out of sight, unless the script asks.
+            let live = run.as_ref().is_none_or(|r| r.script.windows);
+            let windows = Windows::create(app.handle(), live)?;
+            let calls = make_calls(app.handle(), &windows, account.clone(), run.as_ref());
+            windows.attach(calls.clone());
             app.manage(account);
             app.manage(calls.clone());
+            app.manage(windows.clone());
             calls.start_polling();
+            if run.is_none() {
+                // Launching the app opens the panel, as a click on the icon does.
+                windows.show_panel(true);
+            }
             if let Some(run) = run {
                 let handle = app.handle().clone();
                 // Give the window a moment to appear: capture leaves out apps with a window.
@@ -566,12 +602,27 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("starting TwinCursor");
-    app.run(|app, event| {
-        if let RunEvent::Exit = event {
+    app.run(|app, event| match event {
+        // Windows closing never quits a menu bar app; Quit and a finished script do.
+        RunEvent::ExitRequested { code, api, .. } => {
+            let quitting = app.try_state::<Windows>().is_some_and(|w| w.quitting());
+            if !surfaces::allow_exit(code, quitting) {
+                api.prevent_exit();
+            }
+        }
+        // The Dock icon (or opening the app again): the panel.
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { .. } => {
+            if let Some(windows) = app.try_state::<Windows>() {
+                windows.show_panel(true);
+            }
+        }
+        RunEvent::Exit => {
             // Closing the engine's stdin ends it; the kernel does the same if we die instead.
             if let Some(calls) = app.try_state::<Calls>() {
                 calls.shutdown();
             }
         }
+        _ => {}
     });
 }
