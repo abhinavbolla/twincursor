@@ -123,7 +123,8 @@ hotkey, the on-screen label, and real input on macOS.*
 ## macOS permissions
 
 TwinCursor needs Screen Recording to capture, Accessibility to inject input, and Microphone to
-talk. The desktop app holds these itself: its engine runs inside the app bundle, so macOS asks
+talk. Accessibility is first needed when control is given, not when sharing starts: without it,
+nobody is given control (or trusted with it), and the sharer is told what to allow. The desktop app holds these itself: its engine runs inside the app bundle, so macOS asks
 for TwinCursor and grants nothing to anything else (ADR 0007). Run from a terminal, `tc-spike`
 and `tc-engine` get the terminal's permissions instead, and so does everything else running from
 it.

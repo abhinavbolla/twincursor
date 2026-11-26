@@ -123,6 +123,12 @@ never grant another. No answer means no control. The one other way to get contro
 the sharer gave that guest beforehand, in this call ([below](#trusted-control)). Without
 `--allow-control`, requests are turned down without reaching the app.
 
+Real input needs Accessibility, which the engine first checks when control is given, not when
+sharing starts. If it is missing, an `allow_control` (or a `trust_control` for the guest who is
+asking) turns the guest down, a `trust_control` trusts nobody, and the app gets an `error`:
+"TwinCursor needs Accessibility to let someone control this Mac." Asking again after the
+permission is given works without restarting. `--inject log` and `record:` never need it.
+
 The rest of hard rule 4 stays in the engine, where it doesn't depend on the app: the "is
 controlling" label on the sharer's screen, and the revoke hotkey (⌃⌥⌘R), which works with the
 app hung or gone and the network down. `revoke_control` trips the same switch as the hotkey.

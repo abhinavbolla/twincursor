@@ -119,8 +119,9 @@ screen says who it is, and a name tag follows their pointer. The sharer takes co
 any time with ⌃⌥⌘R, and the guest gives it back with F9. Input pauses while the sharer's screen
 is locked.
 
-macOS will ask you to allow Accessibility for the sharer's terminal, which lets it move the
-pointer and type. The [threat model](docs/threat-model.md) explains what a guest in control can
+The sharer's terminal needs Accessibility (System Settings → Privacy & Security →
+Accessibility), which lets it move the pointer and type. It is checked when you allow control:
+without it, the guest is turned down and the terminal says so. The [threat model](docs/threat-model.md) explains what a guest in control can
 and can't do.
 
 ### Between two machines

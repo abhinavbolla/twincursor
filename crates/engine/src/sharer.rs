@@ -126,11 +126,22 @@ impl Sharer {
         overlay: Option<OverlayHandle>,
         consent: Consent,
     ) -> Result<(Self, ControlLink), Error> {
-        let injector: Box<dyn Injector + Send> = match inject {
-            Inject::Log => Box::new(LogInjector),
-            Inject::Record(path) => Box::new(RecordInjector::new(std::fs::File::create(path)?)),
+        // Logging and recording need no permission, so they start now. Real input waits for the
+        // first grant: sharing with --allow-control needs no Accessibility until then.
+        let injector = match inject {
+            Inject::Log => Lazy::now(Box::new(LogInjector)),
+            Inject::Record(path) => {
+                Lazy::now(Box::new(RecordInjector::new(std::fs::File::create(path)?)))
+            }
             #[cfg(target_os = "macos")]
-            Inject::Real => Box::new(control::macos::MacInjector::new()?),
+            Inject::Real => Lazy::later(Box::new(|| {
+                use control::macos::{MacError, MacInjector};
+                match MacInjector::new() {
+                    Ok(injector) => Ok(Box::new(injector) as Box<dyn Injector + Send>),
+                    Err(MacError::NoPermission) => Err(NEEDS_ACCESSIBILITY.to_owned()),
+                    Err(e) => Err(format!("Remote control couldn't start: {e}.")),
+                }
+            })),
             #[cfg(not(target_os = "macos"))]
             Inject::Real => return Err(Error::NoRealInjection),
         };
@@ -194,6 +205,78 @@ impl Sharer {
         self.handle.stop();
         let _ = self.thread.join();
     }
+}
+
+/// Why a grant didn't happen, when real input can't be injected yet.
+pub const NEEDS_ACCESSIBILITY: &str =
+    "TwinCursor needs Accessibility to let someone control this Mac.";
+
+/// Makes the injector, or says in a sentence why it can't.
+type MakeInjector = Box<dyn FnMut() -> Result<Box<dyn Injector + Send>, String> + Send>;
+
+/// The injector, made the first time control is given (or a guest is trusted with it) rather
+/// than at start, so that sharing with `--allow-control` asks for no permission until then.
+/// Every grant first calls [`Lazy::ensure`] and doesn't happen if it fails; once made, the
+/// injector stays for the rest of the share. Revoking never depends on it: the revoke switch and
+/// hotkey are set up at start, as before.
+struct Lazy {
+    injector: Option<Box<dyn Injector + Send>>,
+    make: Option<MakeInjector>,
+}
+
+impl Lazy {
+    fn now(injector: Box<dyn Injector + Send>) -> Self {
+        Self {
+            injector: Some(injector),
+            make: None,
+        }
+    }
+
+    fn later(make: MakeInjector) -> Self {
+        Self {
+            injector: None,
+            make: Some(make),
+        }
+    }
+
+    /// Makes the injector if it isn't made yet. Tried again on the next grant if it fails, so a
+    /// permission given mid-call works without starting again.
+    fn ensure(&mut self) -> Result<(), String> {
+        if self.injector.is_some() {
+            return Ok(());
+        }
+        let make = self
+            .make
+            .as_mut()
+            .ok_or_else(|| "Remote control couldn't start.".to_owned())?;
+        let injector = make()?;
+        tracing::info!("input injection ready");
+        self.injector = Some(injector);
+        Ok(())
+    }
+
+    fn ready(&self) -> bool {
+        self.injector.is_some()
+    }
+}
+
+impl Injector for Lazy {
+    fn inject(&mut self, action: &control::Action) {
+        match &mut self.injector {
+            Some(injector) => injector.inject(action),
+            // Can't happen: nothing is granted before the injector exists.
+            None => tracing::error!(?action, "no injector yet; dropped"),
+        }
+    }
+
+    fn pointer(&self) -> Option<control::Point> {
+        self.injector.as_ref().and_then(|i| i.pointer())
+    }
+}
+
+/// Makes sure input can be injected before a grant.
+fn can_inject(controller: &mut Controller<Gated<Lazy>>) -> Result<(), String> {
+    controller.injector_mut().inner_mut().ensure()
 }
 
 /// How the control thread asks and tells the sharer.
@@ -260,8 +343,8 @@ impl AppSeam {
     }
 }
 
-fn run<I: Injector>(
-    mut controller: Controller<Gated<I>>,
+fn run(
+    mut controller: Controller<Gated<Lazy>>,
     rx: &mpsc::Receiver<In>,
     outgoing: &LinkSender,
     revoke: &RevokeSwitch,
@@ -339,6 +422,15 @@ fn run<I: Injector>(
             Seam::Terminal => effects,
             Seam::App(app) => ask_app(&mut controller, app, effects),
         };
+        // Every grant comes after `can_inject` (a trusted guest's too: trusting needs it). Should
+        // one ever not, it is taken back before the guest or the app hears of it.
+        let effects = if controller.controller().is_some() && !controller.injector().inner().ready()
+        {
+            tracing::error!("control granted with no injector; taken back");
+            controller.revoke()
+        } else {
+            effects
+        };
         apply_with(effects, outgoing, seam);
         controller.tick(Instant::now());
         if let Seam::App(app) = seam {
@@ -367,13 +459,21 @@ fn run<I: Injector>(
     tracing::info!(?counters, bad_messages, blocked, "control stopped");
 }
 
-fn answer<I: Injector>(
-    controller: &mut Controller<Gated<I>>,
+fn answer(
+    controller: &mut Controller<Gated<Lazy>>,
     line: &str,
     revoke: &RevokeSwitch,
 ) -> Vec<Effect> {
     if let Some(guest) = controller.requester().cloned() {
         if matches!(line, "y" | "Y" | "yes") {
+            if let Err(message) = can_inject(controller) {
+                println!(
+                    "{message} Allow it in System Settings → Privacy & Security → \
+                     Accessibility (for tc-spike, the terminal you run it from). Turned down {}.",
+                    guest.name
+                );
+                return controller.deny();
+            }
             println!(
                 "{} now controls this computer. Press {} (or type r and Enter) to take it back.",
                 guest.name,
@@ -412,8 +512,8 @@ fn link_event(app: &mut AppSeam, event: LinkEvent) {
 
 /// Turns the controller's [`Effect::Ask`] into a `control_asked` event, numbered so that only an
 /// answer to this very request can grant it. Without `allow`, the request is turned down here.
-fn ask_app<I: Injector>(
-    controller: &mut Controller<Gated<I>>,
+fn ask_app(
+    controller: &mut Controller<Gated<Lazy>>,
     app: &mut AppSeam,
     effects: Vec<Effect>,
 ) -> Vec<Effect> {
@@ -444,8 +544,8 @@ fn ask_app<I: Injector>(
 
 /// The app answered a request. Only an allow for the request that is still open, from the guest
 /// still asking, grants control.
-fn app_answer<I: Injector>(
-    controller: &mut Controller<Gated<I>>,
+fn app_answer(
+    controller: &mut Controller<Gated<Lazy>>,
     app: &mut AppSeam,
     answer: Answer,
 ) -> Vec<Effect> {
@@ -464,6 +564,11 @@ fn app_answer<I: Injector>(
     match answer {
         Answer::Allow { .. } => {
             tracing::info!(request, "the app allowed control");
+            if let Err(message) = can_inject(controller) {
+                tracing::warn!(request, "can't inject: {message}");
+                app.send(Event::Error { message });
+                return controller.deny();
+            }
             controller.grant(Instant::now())
         }
         Answer::Deny { .. } => {
@@ -476,8 +581,8 @@ fn app_answer<I: Injector>(
 /// The app trusts `identity` with control for this call. Refused without `--allow-control`, for
 /// anyone but a guest, and if control was taken back after the app sent it (`stale`): a revoke
 /// always wins over a trust given just before it. [`Controller::trust`] checks the rest.
-fn app_trust<I: Injector>(
-    controller: &mut Controller<Gated<I>>,
+fn app_trust(
+    controller: &mut Controller<Gated<Lazy>>,
     app: &mut AppSeam,
     identity: &str,
     stale: bool,
@@ -496,6 +601,20 @@ fn app_trust<I: Injector>(
         app.send(Event::Error {
             message: message.into(),
         });
+        return vec![];
+    }
+    // Trust is a grant made in advance: it needs injection to be possible as much as a grant
+    // does. Without it, nobody is trusted, and a request this would have granted is turned down.
+    if let Err(message) = can_inject(controller) {
+        tracing::warn!(guest = %identity, "can't inject: {message}");
+        app.send(Event::Error { message });
+        if controller
+            .requester()
+            .is_some_and(|g| g.identity == identity)
+        {
+            app.open = None;
+            return controller.deny();
+        }
         return vec![];
     }
     let effects = controller.trust(identity, Instant::now());
@@ -549,18 +668,41 @@ mod tests {
 
     use std::sync::{Arc, Mutex};
 
-    type Test = Controller<Gated<RecordInjector<Vec<u8>>>>;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    type Test = Controller<Gated<Lazy>>;
 
     const SAM: &str = "guest-3f2c8a8e-5b7d-4e8f-9a51-0d6c1e2b7f40";
 
+    fn recorder() -> Lazy {
+        Lazy::now(Box::new(RecordInjector::new(Vec::new())))
+    }
+
+    /// An injector made on the first grant, as real input is, which can only be made while
+    /// `allowed` (Accessibility, in a real one). `made` counts how often it was made.
+    fn later(allowed: &Arc<AtomicBool>, made: &Arc<AtomicUsize>) -> Lazy {
+        let (allowed, made) = (allowed.clone(), made.clone());
+        Lazy::later(Box::new(move || {
+            if !allowed.load(Ordering::SeqCst) {
+                return Err(NEEDS_ACCESSIBILITY.to_owned());
+            }
+            made.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(RecordInjector::new(Vec::new())) as Box<dyn Injector + Send>)
+        }))
+    }
+
     /// A controller with Sam in the call, and an app seam whose events land in the list.
     fn setup(allow: bool) -> (Test, AppSeam, Arc<Mutex<Vec<Event>>>) {
+        setup_with(allow, recorder())
+    }
+
+    fn setup_with(allow: bool, injector: Lazy) -> (Test, AppSeam, Arc<Mutex<Vec<Event>>>) {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let events: Events = {
             let seen = seen.clone();
             Arc::new(move |e| seen.lock().unwrap().push(e))
         };
-        let injector = Gated::new(RecordInjector::new(Vec::new()), RevokeSwitch::default());
+        let injector = Gated::new(injector, RevokeSwitch::default());
         let mut controller = Controller::new(injector, Config::default());
         controller.joined(SAM, "Sam Account");
         controller.joined("sharer-00ff", "Alex");
@@ -594,7 +736,7 @@ mod tests {
         let revoke = RevokeSwitch::default();
         let (tx, rx) = mpsc::channel();
         let (_link, outgoing) = ControlLink::new(protocol::TOPIC, |_| {});
-        let injector = Gated::new(RecordInjector::new(Vec::new()), revoke.clone());
+        let injector = Gated::new(recorder(), revoke.clone());
         let handle = SharerHandle {
             tx: tx.clone(),
             revoke: revoke.clone(),
@@ -814,6 +956,153 @@ mod tests {
             *seen.lock().unwrap(),
             [none(vec![]), none(vec![sam]), none(vec![])]
         );
+    }
+
+    fn deny_to_sam() -> Vec<Effect> {
+        vec![Effect::Send {
+            to: SAM.into(),
+            message: Message::Deny,
+        }]
+    }
+
+    fn grant_to_sam() -> Vec<Effect> {
+        vec![Effect::Send {
+            to: SAM.into(),
+            message: Message::Grant,
+        }]
+    }
+
+    fn ask(c: &mut Test, app: &mut AppSeam) -> u64 {
+        let effects = request(c, SAM);
+        assert!(ask_app(c, app, effects).is_empty());
+        app.requests
+    }
+
+    #[test]
+    fn real_input_is_set_up_at_the_first_grant_not_at_start() {
+        let (allowed, made) = (
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let (mut c, mut app, _seen) = setup_with(true, later(&allowed, &made));
+        // Sharing, asking and turning down need no injector.
+        let n = ask(&mut c, &mut app);
+        app_answer(&mut c, &mut app, Answer::Deny { request: n });
+        assert_eq!(made.load(Ordering::SeqCst), 0);
+        // The first allow makes it, and later grants use the same one.
+        let n = ask(&mut c, &mut app);
+        assert_eq!(
+            app_answer(&mut c, &mut app, Answer::Allow { request: n }),
+            grant_to_sam()
+        );
+        assert_eq!(made.load(Ordering::SeqCst), 1);
+        c.revoke();
+        let n = ask(&mut c, &mut app);
+        app_answer(&mut c, &mut app, Answer::Allow { request: n });
+        assert_eq!(made.load(Ordering::SeqCst), 1);
+
+        // Trusting makes it too, before anyone asks.
+        let (allowed, made) = (
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let (mut c, mut app, _seen) = setup_with(true, later(&allowed, &made));
+        app_trust(&mut c, &mut app, SAM, false);
+        assert_eq!(made.load(Ordering::SeqCst), 1);
+        assert_eq!(request(&mut c, SAM), grant_to_sam());
+    }
+
+    #[test]
+    fn without_accessibility_nothing_is_granted_or_trusted() {
+        let (allowed, made) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let (mut c, mut app, seen) = setup_with(true, later(&allowed, &made));
+
+        // An allow: the guest is turned down and the app told why.
+        let n = ask(&mut c, &mut app);
+        errors(&seen);
+        assert_eq!(
+            app_answer(&mut c, &mut app, Answer::Allow { request: n }),
+            deny_to_sam()
+        );
+        assert_eq!(errors(&seen), [NEEDS_ACCESSIBILITY]);
+        assert!(c.controller().is_none() && c.requester().is_none());
+        // That request is over: allowing it again does nothing.
+        assert!(app_answer(&mut c, &mut app, Answer::Allow { request: n }).is_empty());
+        assert_eq!(
+            errors(&seen),
+            ["That request for control is no longer open."]
+        );
+
+        // A trust with nobody asking: nobody is trusted.
+        assert!(app_trust(&mut c, &mut app, SAM, false).is_empty());
+        assert_eq!(errors(&seen), [NEEDS_ACCESSIBILITY]);
+        assert!(c.trusted().is_empty());
+        let asked = request(&mut c, SAM);
+        assert!(!ask_app(&mut c, &mut app, asked).iter().any(|e| matches!(
+            e,
+            Effect::Send {
+                message: Message::Grant,
+                ..
+            }
+        )));
+        assert!(c.requester().is_some(), "a normal prompt, not a grant");
+
+        // A trust for the guest who is asking: they are turned down, and the prompt is over.
+        let n = app.requests;
+        assert_eq!(app_trust(&mut c, &mut app, SAM, false), deny_to_sam());
+        assert_eq!(errors(&seen), [NEEDS_ACCESSIBILITY]);
+        assert!(c.trusted().is_empty() && c.requester().is_none());
+        assert!(app.open.is_none());
+        assert!(app_answer(&mut c, &mut app, Answer::Allow { request: n }).is_empty());
+        assert_eq!(made.load(Ordering::SeqCst), 0);
+
+        // The sharer gives the permission mid-call: the next allow works.
+        allowed.store(true, Ordering::SeqCst);
+        let n = ask(&mut c, &mut app);
+        assert_eq!(
+            app_answer(&mut c, &mut app, Answer::Allow { request: n }),
+            grant_to_sam()
+        );
+        assert_eq!(made.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_grant_with_no_injector_is_taken_back_before_anyone_hears_of_it() {
+        // Not reachable through the app (every grant checks first); the control thread checks
+        // anyway. Granting straight through the controller skips the check.
+        let (allowed, made) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let events: Events = {
+            let seen = seen.clone();
+            Arc::new(move |e| seen.lock().unwrap().push(e))
+        };
+        let revoke = RevokeSwitch::default();
+        let (tx, rx) = mpsc::channel();
+        let (_link, outgoing) = ControlLink::new(protocol::TOPIC, |_| {});
+        let mut controller = Controller::new(
+            Gated::new(later(&allowed, &made), revoke.clone()),
+            Config::default(),
+        );
+        controller.joined(SAM, "Sam Account");
+        request(&mut controller, SAM);
+        controller.grant(Instant::now());
+        tx.send(In::Stop).unwrap();
+        run(
+            controller,
+            &rx,
+            &outgoing,
+            &revoke,
+            None,
+            &mut Seam::App(AppSeam::new(events, true)),
+        );
+        let seen = seen.lock().unwrap();
+        assert!(!ever_controlling(&seen), "{seen:?}");
     }
 
     #[test]

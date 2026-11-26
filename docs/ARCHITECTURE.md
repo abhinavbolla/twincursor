@@ -217,8 +217,10 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
   input. Positions map onto the main display in global points; fractional scroll is carried
   over, so slow trackpad scrolls aren't lost. Keys go as Mac virtual key codes from a table of
   `KeyboardEvent.code` names. Nothing but releases is injected while the screen is locked (see
-  the threat model). Without the Accessibility permission it stops with a message that says
-  where to grant it.
+  the threat model). It is made at the first grant (or the first trust), not when sharing
+  starts, so sharing with `--allow-control` needs no Accessibility until someone is given
+  control; without it, that grant is turned down and the sharer told what to allow. The revoke
+  hotkey is registered at start either way and never depends on the injector.
 - `tc-spike probe` is a full-screen window that records the input it receives, using the
   viewer's own event mapping. `bench/control-inject.sh` sends a script through the whole path
   (guest, network, sharer, CGEvent, macOS, probe) and checks the text, shortcuts, clicks and
