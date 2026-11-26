@@ -12,6 +12,8 @@ export const denyControl = (request: number): EngineCommand => ({ cmd: "deny_con
 export const revokeControl = (): EngineCommand => ({ cmd: "revoke_control" });
 /** Lets this guest take control during this call without being asked again, until a revoke. */
 export const trustControl = (identity: string): EngineCommand => ({ cmd: "trust_control", identity });
+/** "Let in with control": as trustControl, also for a guest who joins within a minute. */
+export const trustOnArrival = (identity: string): EngineCommand => ({ cmd: "trust_on_arrival", identity });
 export const requestControl = (): EngineCommand => ({ cmd: "request_control" });
 export const releaseControl = (): EngineCommand => ({ cmd: "release_control" });
 /** A device by name as `tc-engine devices` lists it, or null for the system default. */

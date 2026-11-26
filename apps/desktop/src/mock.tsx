@@ -48,6 +48,8 @@ class MockEngine {
   private controlling = false;
   /** Sharer: guests trusted with control for this call (`trust_control`), until a revoke. */
   private trusted: Participant[] = [];
+  /** Sharer: guests to trust when they join (`trust_on_arrival`), until a revoke. */
+  private expected: string[] = [];
   private grant: number | null = null;
   /** A call to start once the window listens (`?mock=`). */
   pending: Plan | null = null;
@@ -108,6 +110,13 @@ class MockEngine {
   }
 
   private participants(): void {
+    const arrived = this.people.filter((p) => p.role === "guest" && this.expected.includes(p.identity));
+    if (arrived.length > 0) {
+      this.expected = this.expected.filter((id) => !arrived.some((p) => p.identity === id));
+      if (!this.controlling) {
+        this.trusted = [...this.trusted.filter((t) => !arrived.some((p) => p.identity === t.identity)), ...arrived];
+      }
+    }
     this.event({ event: "participants", participants: this.people });
   }
 
@@ -236,6 +245,7 @@ class MockEngine {
         return;
       case "revoke_control":
         this.trusted = [];
+        this.expected = [];
         this.control("none", null);
         return;
       case "trust_control": {
@@ -255,6 +265,17 @@ class MockEngine {
         this.control(this.controlling ? "controlling" : "none", this.controlling ? guest : null);
         return;
       }
+      case "trust_on_arrival":
+        if (!sharer || !command.identity.startsWith("guest-")) {
+          this.event({ event: "error", message: sharer ? "Only a guest can be given control." : "Only the sharer can answer requests for control." });
+          return;
+        }
+        if (this.people.some((p) => p.identity === command.identity)) {
+          this.command({ cmd: "trust_control", identity: command.identity });
+        } else {
+          this.expected = [...this.expected.filter((id) => id !== command.identity), command.identity];
+        }
+        return;
       case "request_control":
         if (sharer) {
           this.event({ event: "error", message: "Only a guest can ask for control." });

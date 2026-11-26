@@ -52,6 +52,11 @@ pub enum Command {
     /// and is never remembered. Refused with an [`Event::Error`] without `--allow-control`, for
     /// anyone who isn't a guest in the call, and while someone else has control.
     TrustControl { identity: String },
+    /// Sharer: "Let in with control" for someone who may not have joined yet. The same as
+    /// [`Command::TrustControl`] if they are in the call; otherwise the engine trusts them if
+    /// they join within a minute. Every revoke cancels it, the hotkey included, even before they
+    /// join. Never remembered. Refused as `trust_control` is.
+    TrustOnArrival { identity: String },
     /// Guest: ask the sharer for control.
     RequestControl,
     /// Guest: give control back, or withdraw a request.
@@ -211,6 +216,9 @@ mod tests {
             Command::TrustControl {
                 identity: "guest-1f2e3d4c".into(),
             },
+            Command::TrustOnArrival {
+                identity: "guest-5a3f09c1".into(),
+            },
             Command::RequestControl,
             Command::ReleaseControl,
             Command::SetMic {
@@ -227,6 +235,7 @@ mod tests {
                 | Command::DenyControl { .. }
                 | Command::RevokeControl
                 | Command::TrustControl { .. }
+                | Command::TrustOnArrival { .. }
                 | Command::RequestControl
                 | Command::ReleaseControl
                 | Command::SetMic { .. }
