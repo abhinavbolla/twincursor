@@ -52,7 +52,7 @@ On a Mac that hasn't granted TwinCursor anything yet.
 | 3.4 | Guest, with nothing granted: **Paste link** and join | Joining works: watching needs no permission |
 | 3.5 | Sharer, with Accessibility not granted: **Let in with control** | macOS asks for Accessibility. The guest is let in without control, and the bar says why, with **Open Settings** |
 | 3.6 | Grant Accessibility, then **Give control** to that guest from the bar's menu (**⋯**) | It works without restarting the app |
-| 3.7 | Sharer, with Accessibility not granted: **Allow** a plain request | Note what happens. The app asks for Accessibility only on Let in with control and Give control |
+| 3.7 | Sharer, with Accessibility not granted: **Allow** a plain request | macOS asks for Accessibility (if it hasn't this run). The guest isn't given control and their request closes; the bar says "… wasn't given control: TwinCursor needs Accessibility." with **Open Settings**. After granting it, the guest asks again and **Allow** works |
 
 ## 4. Share and join by link
 

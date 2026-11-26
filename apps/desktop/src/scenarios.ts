@@ -247,7 +247,16 @@ export const SCENARIOS: readonly Scenario[] = [
     hosting({ members: admitted(SAM) }),
     withSam(out.asked(1, SAM_IN), out.control("asked", peer(SAM_IN))),
   ),
-  bar("needs", "Accessibility is missing", hosting({ members: admitted(SAM), needs: "accessibility" }), withSam()),
+  bar(
+    "needs",
+    "Allow without Accessibility: the request was turned down",
+    hosting({
+      members: admitted(SAM),
+      needs: "accessibility",
+      notice: `${SAM.name} wasn't given control: TwinCursor needs Accessibility.`,
+    }),
+    withSam(),
+  ),
   bar(
     "menu",
     "The menu, with numbers",

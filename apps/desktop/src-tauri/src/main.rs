@@ -111,8 +111,8 @@ fn quit(windows: tauri::State<'_, Windows>) {
 /// knows get through; an allow names the request the person answered, and is refused if it
 /// comes within a second of that request being shown.
 #[tauri::command]
-fn send_command(calls: tauri::State<'_, Calls>, command: ipc::Command) -> Result<(), String> {
-    calls.send_command(&command)
+async fn send_command(calls: tauri::State<'_, Calls>, command: ipc::Command) -> Result<(), String> {
+    calls.send_command(&command).await
 }
 
 #[tauri::command]
@@ -479,7 +479,7 @@ fn run_script(app: AppHandle, run: ScriptRun) {
     }
     std::thread::spawn(move || {
         let runtime = tauri::async_runtime::handle();
-        let send = |command: &ipc::Command| calls.send_command(command);
+        let send = |command: &ipc::Command| runtime.block_on(calls.send_command(command));
         let home = || serde_json::to_value(calls.home()).unwrap_or(Value::Null);
         let act = |act: script::Act| -> Result<Value, String> {
             let view = runtime.block_on(async {

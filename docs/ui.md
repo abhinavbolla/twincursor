@@ -111,6 +111,8 @@ Sections under the row:
   keyboard until you take control back", **Deny** and **Allow** (off for `ALLOW_AFTER_MS`, with
   the same line).
 - **Needs Accessibility**: "TwinCursor needs Accessibility to give control." **Open Settings**.
+  Shown after Let in with control, Give control or Allow found it missing; after an Allow, the
+  request is turned down and a notice names who wasn't given control.
 - **Notices**: errors first, then notices; at most two, each closable. A notice goes away by
   itself after 6 s, paused while the pointer is over it; an error stays until closed
   (`notices.ts`).

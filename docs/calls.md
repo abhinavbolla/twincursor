@@ -96,8 +96,11 @@ for the old engine never reaches the new one.
 Sharing needs Screen Recording. The first time you share without it, the app asks macOS
 (`tc-engine permissions --request screen_recording`), which shows its prompt; if it still isn't
 granted, the share doesn't start and the app says Screen Recording is needed, so the window can
-offer to open System Settings. Giving control needs Accessibility, asked the same way. Letting
-someone in "with control" without it still lets them in, without control, and says why. The
+offer to open System Settings. Giving control needs Accessibility, asked the same way, on Let in
+with control, Give control and Allow alike. Letting someone in "with control" without it still
+lets them in, without control, and says why. Allow on a control request without it turns that
+request down, so the guest isn't left waiting, and says why ("Sam wasn't given control:
+TwinCursor needs Accessibility."); they can ask again once it is granted. The
 microphone is asked for by the engine when a call starts.
 
 ## What the window gets

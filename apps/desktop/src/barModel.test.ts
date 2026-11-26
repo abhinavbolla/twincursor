@@ -174,6 +174,11 @@ describe("the bar's sections", () => {
   it("asks for Accessibility", () => {
     expect(bar("needs").needsAccessibility).toBe(true);
     expect(bar("with").needsAccessibility).toBe(false);
+    // After an Allow without it: the request was turned down, and the bar says why.
+    expect(bar("needs").ask).toBeNull();
+    expect(bar("needs").notices).toEqual([
+      { text: "Sam Rivera wasn't given control: TwinCursor needs Accessibility.", tone: "plain" },
+    ]);
   });
 
   it("shows at most two notices, errors first, and not the closed ones", () => {
