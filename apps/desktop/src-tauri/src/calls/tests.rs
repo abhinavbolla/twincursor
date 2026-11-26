@@ -391,6 +391,17 @@ impl World {
             .collect()
     }
 
+    /// The `trust_on_arrival` commands engine `n` was sent.
+    fn arrivals(&self, n: usize) -> Vec<(String, Option<u64>)> {
+        self.sent(n)
+            .into_iter()
+            .filter_map(|(c, e)| match c {
+                ipc::Command::TrustOnArrival { identity } => Some((identity, e)),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn hosting(&self, members: Value) {
         self.knobs().hosting = Some(json!({ "call_id": CALL, "code": CODE, "members": members }));
     }
@@ -740,50 +751,74 @@ async fn an_allow_needs_a_second_after_the_request_was_shown() {
 // Control on arrival.
 
 #[tokio::test(flavor = "multi_thread")]
-async fn let_in_with_control_trusts_that_guest_once_when_they_arrive() {
+async fn let_in_with_control_asks_the_engine_once_after_the_backend_lets_them_in() {
     let w = world(true).await;
     w.knocked().await;
     w.clock.advance(ARMING);
     w.calls.answer_knock(SAM, true, true).await.unwrap();
     let sam = format!("guest-{SAM}");
-    assert!(w.trusts(0).is_empty(), "nothing before they arrive");
-    w.participants(0, &[(&format!("guest-{KIM}"), "guest")]);
-    w.participants(0, &[(&format!("sharer-{SAM}"), "sharer")]);
-    assert!(w.trusts(0).is_empty(), "never for anyone else");
+    // Once, to the engine process running the call; it keeps the promise from here.
+    assert_eq!(w.arrivals(0), [(sam.clone(), Some(1))]);
+    assert!(w.trusts(0).is_empty(), "no trust_control from the shell");
+    // Their arrival changes nothing here: the engine does it, and nothing is sent twice.
     w.participants(0, &[(&sam, "guest")]);
-    assert_eq!(w.trusts(0), [(sam.clone(), Some(1))]);
     w.participants(0, &[(&sam, "guest"), (&format!("guest-{KIM}"), "guest")]);
-    w.participants(0, &[(&sam, "guest")]);
-    assert_eq!(w.trusts(0).len(), 1, "never twice");
+    assert_eq!(w.arrivals(0).len(), 1);
+    assert!(w.trusts(0).is_empty());
     let traces = w.traces.lock().unwrap().clone();
     assert_eq!(
-        traces.iter().filter(|t| t["kind"] == "trust_sent").count(),
+        traces
+            .iter()
+            .filter(|t| t["kind"] == "trust_sent" && t["why"] == "on_arrival")
+            .count(),
         1
+    );
+    // A revoke goes to the engine as it is: there is nothing left in the shell to clear.
+    w.calls.send_command(&ipc::Command::RevokeControl).unwrap();
+    assert_eq!(
+        w.sent(0).last().unwrap(),
+        &(ipc::Command::RevokeControl, None)
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn control_on_arrival_is_forgotten_after_a_minute_a_revoke_a_restart_or_the_end() {
-    let sam = format!("guest-{SAM}");
-    // Too late.
+async fn no_trust_on_arrival_without_control_or_when_not_let_in() {
+    // Let in without control.
     let w = world(true).await;
     w.knocked().await;
     w.clock.advance(ARMING);
-    w.calls.answer_knock(SAM, true, true).await.unwrap();
-    w.clock.advance(GIVE_ON_ARRIVAL);
-    w.participants(0, &[(&sam, "guest")]);
-    assert!(w.trusts(0).is_empty(), "after 60 s");
+    w.calls.answer_knock(SAM, true, false).await.unwrap();
+    assert!(
+        w.arrivals(0).is_empty() && w.trusts(0).is_empty(),
+        "without control"
+    );
 
-    // Taken back before they arrive.
+    // The backend didn't let them in after all.
     let w = world(true).await;
     w.knocked().await;
     w.clock.advance(ARMING);
+    w.knobs().answer_knock = "turned_away";
     w.calls.answer_knock(SAM, true, true).await.unwrap();
-    w.calls.send_command(&ipc::Command::RevokeControl).unwrap();
-    w.participants(0, &[(&sam, "guest")]);
-    assert!(w.trusts(0).is_empty(), "after a revoke");
+    assert!(w.arrivals(0).is_empty(), "not admitted");
 
-    // The engine restarted before they arrived.
+    // Turned away.
+    let w = world(true).await;
+    w.knocked().await;
+    w.calls.answer_knock(SAM, false, true).await.unwrap();
+    assert!(w.arrivals(0).is_empty(), "turned away");
+
+    // Too soon: refused before anything is sent.
+    let w = world(true).await;
+    w.knocked().await;
+    assert_eq!(
+        w.calls.answer_knock(SAM, true, true).await.unwrap_err(),
+        TOO_SOON
+    );
+    assert!(w.arrivals(0).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn after_a_restart_control_has_to_be_given_again() {
     let w = world(true).await;
     w.knocked().await;
     w.clock.advance(ARMING);
@@ -798,38 +833,39 @@ async fn control_on_arrival_is_forgotten_after_a_minute_a_revoke_a_restart_or_th
         pid: 2,
         args: vec![],
     });
-    w.participants(0, &[(&sam, "guest")]);
-    assert!(w.trusts(0).is_empty(), "after a restart");
+    w.participants(0, &[(&format!("guest-{SAM}"), "guest")]);
+    // Only the first process was told: engine.rs drops it for the replacement.
+    assert_eq!(w.arrivals(0), [(format!("guest-{SAM}"), Some(1))]);
+    assert!(w.trusts(0).is_empty());
     assert_eq!(
         w.calls.home().notice.as_deref(),
         Some("Sharing with HEVC failed; switched to H.264. Control was reset: anyone you gave it to has to be given it again.")
     );
+}
 
-    // The call ended.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_window_cant_trust_anyone_directly() {
     let w = world(true).await;
-    w.knocked().await;
-    w.clock.advance(ARMING);
-    w.calls.answer_knock(SAM, true, true).await.unwrap();
-    w.calls.end().await.unwrap();
+    w.host().await;
+    let sam = format!("guest-{SAM}");
     w.participants(0, &[(&sam, "guest")]);
-    assert!(w.trusts(0).is_empty(), "after the end");
-
-    // Let in without control.
-    let w = world(true).await;
-    w.knocked().await;
-    w.clock.advance(ARMING);
-    w.calls.answer_knock(SAM, true, false).await.unwrap();
-    w.participants(0, &[(&sam, "guest")]);
-    assert!(w.trusts(0).is_empty(), "without control");
-
-    // The backend didn't let them in after all.
-    let w = world(true).await;
-    w.knocked().await;
-    w.clock.advance(ARMING);
-    w.knobs().answer_knock = "turned_away";
-    w.calls.answer_knock(SAM, true, true).await.unwrap();
-    w.participants(0, &[(&sam, "guest")]);
-    assert!(w.trusts(0).is_empty(), "not admitted");
+    for command in [
+        ipc::Command::TrustControl {
+            identity: sam.clone(),
+        },
+        ipc::Command::TrustOnArrival {
+            identity: sam.clone(),
+        },
+    ] {
+        assert_eq!(
+            w.calls.send_command(&command).unwrap_err(),
+            TRUST_FROM_WINDOW
+        );
+    }
+    assert!(w.sent(0).is_empty(), "nothing reached the engine");
+    // Give control still does, after its checks.
+    w.calls.give_control(&sam).await.unwrap();
+    assert_eq!(w.trusts(0), [(sam, Some(1))]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -850,7 +886,7 @@ async fn without_accessibility_they_are_let_in_without_control() {
     assert_eq!(view.needs, Some(Permission::Accessibility));
     assert_eq!(w.rpc("answer_knock")[0].json()["let_in"], true);
     w.participants(0, &[(&format!("guest-{SAM}"), "guest")]);
-    assert!(w.trusts(0).is_empty());
+    assert!(w.trusts(0).is_empty() && w.arrivals(0).is_empty());
     assert_eq!(
         w.calls
             .give_control(&format!("guest-{SAM}"))

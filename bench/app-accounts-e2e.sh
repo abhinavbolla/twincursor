@@ -9,9 +9,10 @@
 #
 #   a. host app: Share starts a call with a pass (no --room, nothing secret in the flags); Sam
 #      knocks with the link's code; letting him in at once is refused; after a second he is let
-#      in with control; he joins, the app trusts him once when he appears, his request is
+#      in with control (the app asks its engine to trust him on arrival); he joins, his request is
 #      granted with no prompt, his typing is recorded; after a revoke his next request is a
 #      prompt; ending the call stops his passes;
+#   a2. let in with control, then a revoke before he joins: his request is a prompt;
 #   b. let in without control: his request is a prompt, an allow at once is refused, later taken;
 #   c. turned away: no pass, no trust, nothing injected;
 #   d. guest app: Sam hosts; the app joins by link, knocks, is let in, gets video; Sam ends the
@@ -239,8 +240,8 @@ check "$OUT/a.jsonl" '.kind == "script" and .early_refused == "Too soon. Try aga
 check "$OUT/a.jsonl" "$(trace '.trace.kind == "let_in" and .trace.control == true')" "a: after a second, Sam is let in with control"
 guest_start a-guest sam "$call" --control-script "$OUT/guest-types.json" --sent-log "$OUT/a-sent.jsonl"
 check "$OUT/a-guest.jsonl" '.event == "connection" and .state == "connected"' "a: Sam joins with his own pass"
-check "$OUT/a.jsonl" "$(trace '.trace.kind == "trust_sent" and .trace.why == "arrived" and .trace.identity == "guest-'"$sam_id"'"')" "a: the app gives Sam control when he appears"
-check "$OUT/a.jsonl" "$(ev '.event.event == "control" and (.event.trusted | any(.identity == "guest-'"$sam_id"'"))')" "a: the engine trusts Sam"
+check "$OUT/a.jsonl" "$(trace '.trace.kind == "trust_sent" and .trace.why == "on_arrival" and .trace.identity == "guest-'"$sam_id"'"')" "a: the app asks its engine to trust Sam when he arrives"
+check "$OUT/a.jsonl" "$(ev '.event.event == "control" and (.event.trusted | any(.identity == "guest-'"$sam_id"'"))')" "a: the engine trusts Sam once he is in"
 echo '{"cmd":"request_control"}' >&4
 check "$OUT/a-guest.jsonl" '.event == "control" and .state == "controlling"' "a: Sam's request is granted"
 check "$OUT/a.jsonl" "$(ev '.event.event == "control" and .event.state == "controlling" and .event.by.name == "Sam Account"')" "a: the app shows Sam Account controlling"
@@ -268,6 +269,41 @@ app_done a
 acct alex inbox | jq -e '.hosting == null' >/dev/null && pass "a: the call is over on the backend" || fail "a: the call is still open"
 not_allowed "a: Sam can't get a pass after the end" sam "$call"
 guest_stop a-guest
+
+echo "=== a2. let in with control, then a revoke before Sam arrives: he has to ask"
+cat >"$OUT/a2.json" <<EOF
+{
+  "accounts": {"quality": "1080p", "inject_record": "$OUT/a2-actions.jsonl"},
+  "steps": [
+    {"do": "share"},
+    {"do": "wait_knock", "name": "Sam Account"},
+    {"do": "answer_knock", "name": "Sam Account", "let_in": true, "control": true},
+    {"do": "wait_ms", "ms": 500},
+    {"do": "send", "cmd": "revoke_control"},
+    {"do": "answer", "with": "deny"},
+    {"do": "wait_ms", "ms": 500},
+    {"do": "end"}
+  ],
+  "quit": true
+}
+EOF
+app_run a2
+check "$OUT/a2.jsonl" "$(home '.home.stage.kind == "hosting"')" "a2: hosting"
+code=$(hosting_code a2)
+call=$(hosting_call a2)
+acct sam knock "$code" >/dev/null || fail "a2: Sam's knock"
+check "$OUT/a2.jsonl" "$(trace '.trace.kind == "trust_sent" and .trace.why == "on_arrival"')" "a2: Sam is let in with control"
+check "$OUT/a2.jsonl" '.kind == "script" and .step == 4 and .ok' "a2: the app takes control back before Sam arrives"
+guest_start a2-guest sam "$call"
+check "$OUT/a2.jsonl" "$(ev '.event.event == "participants" and (.event.participants | any(.identity == "guest-'"$sam_id"'"))')" "a2: Sam joins"
+sleep 1
+echo '{"cmd":"request_control"}' >&4
+check "$OUT/a2.jsonl" "$(ev '.event.event == "control_asked" and .event.identity == "guest-'"$sam_id"'"')" "a2: his request is a prompt: the revoke cancelled the promise"
+[[ $(count "$OUT/a2.jsonl" "$(ev '.event.event == "control" and (.event.state == "controlling" or (.event.trusted | length > 0))')") -eq 0 ]] \
+  && pass "a2: Sam was never trusted or in control" || fail "a2: Sam got control after the revoke"
+app_done a2
+[[ ! -s $OUT/a2-actions.jsonl ]] && pass "a2: nothing injected" || fail "a2: input was recorded"
+guest_stop a2-guest
 
 echo "=== b. let in without control: the request is a prompt, and an allow at once is refused"
 cat >"$OUT/b.json" <<EOF

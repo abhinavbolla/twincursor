@@ -30,13 +30,18 @@ it says "… didn't let you in."; a call that has ended, or a wrong link, says s
 waiting.
 
 **Someone knocks on your call.** You see them, and can let them in (with or without control) or
-turn them away. Letting them in "with control" means: when they arrive in the call, within a
-minute, the app gives them control for this call ([trusted control](adr/0010-trusted-control.md)).
-They still have to ask each time, and the "is controlling" label shows every grant.
+turn them away. Letting them in "with control" means: once the backend has let them in, the app
+asks its engine to trust them when they arrive (`trust_on_arrival`): if they join within a
+minute, they may take control for this call without a prompt
+([trusted control](adr/0010-trusted-control.md)). The engine keeps that promise, not the app, so
+any revoke cancels it, the hotkey included, even before they join. They still have to ask each
+time, and the "is controlling" label shows every grant.
 
 **Give control** to someone already in the call does the same at once. **Take back** (or the
-revoke hotkey, ⌃⌥⌘R) takes control and every trust back, and also cancels a pending "give
-control when they arrive".
+revoke hotkey, ⌃⌥⌘R) takes control and every trust back, including one promised to someone
+who hasn't arrived yet. These two are the only ways to trust anyone: the window can't send
+`trust_control` or `trust_on_arrival` to the engine itself ("Control is given with Let in with
+control or Give control."), so the Accessibility check always comes first.
 
 **Ring a contact.** Shares first if you aren't sharing, then rings them. You see whether it's
 ringing, missed, declined or answered.
@@ -81,8 +86,7 @@ refused.
 When a guest's computer can't decode HEVC, or sharing with HEVC fails before any video goes out,
 the app replaces its engine with one on H.264. A pass is only good for joining for ten minutes,
 so the new engine gets a fresh one. Control is not carried over: nobody is in control and nobody
-is trusted in the new engine, a pending "give control when they arrive" is dropped, and the
-app says "Control was reset: anyone you gave it to has to be given it again." A command meant
+is trusted or expected in the new engine, and the app says "Control was reset: anyone you gave it to has to be given it again." A command meant
 for the old engine never reaches the new one.
 
 ## Permissions, asked when first needed

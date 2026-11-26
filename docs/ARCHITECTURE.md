@@ -104,10 +104,11 @@ only text and controls; the shared screen is the engine's own native window (ADR
   engine with a call pass in its environment (no `--room` or `--name`), and keeps one view of it
   all that it sends to the window on every change (the `home` event). It enforces arming: a
   knock can't be let in, and a control request can't be allowed, within a second of the window
-  first showing it, so a click or key press already on its way can't do it. It gives control on
-  arrival only to the person let in with it, once, in that call and engine process. It polls the
-  backend every two seconds while signed in (the host's heartbeat and the guest's knock), backing
-  off to ten after repeated network failures.
+  first showing it, so a click or key press already on its way can't do it. For "Let in with
+  control" it sends the engine `trust_on_arrival` once, and the engine keeps that promise, so
+  every revoke cancels it; the window itself can't send a trust. It polls the backend every two
+  seconds while signed in (the host's heartbeat and the guest's knock), backing off to ten after
+  repeated network failures.
 - **Quality.** 1080p and 1440p share with H.264; 4K with HEVC, which calls with accounts always
   use. When a guest announces decoders without HEVC, the app restarts its engine with H.264 (same
   room, name and resolution; a fresh call pass for a call with accounts) and stays on H.264 for

@@ -10,9 +10,12 @@
 //! - **Arming.** A knock can't be let in, and a control request can't be allowed, until
 //!   [`ARMING`] after the window was first shown it, so a click meant for something else can't
 //!   answer it. Turning away and denying are never delayed.
-//! - **Control on arrival** ("Let in with control") is given only to the identity let in, once,
-//!   if they arrive within [`GIVE_ON_ARRIVAL`], in that call, to that engine process. A revoke,
-//!   the end of the call or a restart of the engine forgets it.
+//! - **Control on arrival** ("Let in with control"): once the backend has let them in, the
+//!   engine running the call is sent `trust_on_arrival` for that identity, once. The engine keeps
+//!   the promise, so every revoke cancels it, the hotkey included (ADR 0010).
+//! - **The window can't trust anyone directly**: `trust_control` and `trust_on_arrival` from
+//!   the window are refused; only Let in with control and Give control send them, after the
+//!   Accessibility check.
 //!
 //! Nothing here needs Tauri: `main.rs` connects it to the window and the tests drive it with a
 //! fake backend and a fake engine.
@@ -35,8 +38,6 @@ use crate::snapshot::Snapshot;
 
 /// How long after the window was first shown a knock or a control request it can be accepted.
 pub const ARMING: Duration = Duration::from_millis(1000);
-/// How long "Let in with control" waits for that person to arrive.
-pub const GIVE_ON_ARRIVAL: Duration = Duration::from_secs(60);
 /// How often the backend is asked, normally and after repeated network failures.
 pub const POLL_EVERY: Duration = Duration::from_secs(2);
 pub const POLL_BACKOFF: Duration = Duration::from_secs(10);
@@ -70,6 +71,7 @@ pub const NO_CALL: &str = "No call is running.";
 pub const STOPPED: &str = "Stopped.";
 pub const ENGINE_STOPPED: &str = "The call stopped unexpectedly.";
 pub const NO_LONGER_WAITING: &str = "You're no longer waiting to join that call.";
+pub const TRUST_FROM_WINDOW: &str = "Control is given with Let in with control or Give control.";
 
 fn turned_away(host: &str) -> String {
     format!("{host} didn't let you in.")
@@ -216,16 +218,6 @@ struct Running {
     call: Option<CallRef>,
 }
 
-/// "Give control to this identity when they arrive."
-#[derive(Debug, Clone)]
-struct Pending {
-    identity: String,
-    call_id: String,
-    gen: u64,
-    proc: u64,
-    until: Instant,
-}
-
 struct State {
     account: AccountView,
     stage: Stage,
@@ -238,7 +230,6 @@ struct State {
     members: Vec<Member>,
     /// When each knock was first shown to the window.
     knock_seen: HashMap<String, Instant>,
-    pending: Vec<Pending>,
     notice: Option<String>,
     error: Option<String>,
     needs: Option<Permission>,
@@ -289,7 +280,6 @@ impl State {
         self.flow += 1;
         self.members.clear();
         self.knock_seen.clear();
-        self.pending.clear();
         self.knock_trouble_since = None;
         self.awake = None;
         if notice.is_some() {
@@ -364,7 +354,6 @@ impl Calls {
             rings: Vec::new(),
             members: Vec::new(),
             knock_seen: HashMap::new(),
-            pending: Vec::new(),
             notice: None,
             error: None,
             needs: None,
@@ -884,10 +873,8 @@ impl Calls {
                     s.proc += 1;
                     s.asked_seen.clear();
                     s.participants.clear();
-                    s.pending.clear();
                 }
                 Output::Restarting { message, .. } => {
-                    s.pending.clear();
                     s.asked_seen.clear();
                     s.notice = Some(restarted(message));
                 }
@@ -936,7 +923,6 @@ impl Calls {
                     .cloned()
                     .and_then(|p| serde_json::from_value(p).ok())
                     .unwrap_or_default();
-                self.give_on_arrival(s, now);
             }
             "error" => {
                 s.engine_error = event
@@ -951,42 +937,6 @@ impl Calls {
         }
     }
 
-    /// Sends `trust_control` for each person let in with control who has just arrived: their
-    /// identity, in this call, to this engine process, within [`GIVE_ON_ARRIVAL`], once.
-    fn give_on_arrival(&self, s: &mut State, now: Instant) {
-        s.pending.retain(|p| now < p.until);
-        let Some(call_id) = s.hosting_id() else {
-            s.pending.clear();
-            return;
-        };
-        let (gen, proc) = (s.gen, s.proc);
-        let arrived: Vec<Pending> = s
-            .pending
-            .iter()
-            .filter(|p| {
-                p.call_id == call_id
-                    && p.gen == gen
-                    && p.proc == proc
-                    && s.participants
-                        .iter()
-                        .any(|q| q.identity == p.identity && q.role == ipc::Role::Guest)
-            })
-            .cloned()
-            .collect();
-        s.pending
-            .retain(|p| !arrived.iter().any(|a| a.identity == p.identity));
-        for p in arrived {
-            let Some(running) = s.engine.as_ref().filter(|r| r.gen == gen) else {
-                continue;
-            };
-            let command = ipc::Command::TrustControl {
-                identity: p.identity.clone(),
-            };
-            let sent = running.handle.send_for(&command, proc).is_ok();
-            self.trace(json!({ "kind": "trust_sent", "identity": p.identity, "why": "arrived", "ok": sent }));
-        }
-    }
-
     /// The engine is gone. Returns the backend call to make, if the engine ended on its own.
     fn on_exit(&self, s: &mut State, gen: u64) -> Option<(String, bool)> {
         let running = match s.engine.take() {
@@ -997,7 +947,6 @@ impl Calls {
                 None
             }
         };
-        s.pending.clear();
         s.asked_seen.clear();
         s.participants.clear();
         let call = running.and_then(|r| r.call)?;
@@ -1020,10 +969,10 @@ impl Calls {
     }
 
     /// A command from the window for the engine. An allow must name a request the window was
-    /// shown at least [`ARMING`] ago, by the engine that asked; a revoke also forgets any
-    /// control promised on arrival.
+    /// shown at least [`ARMING`] ago, and goes only to the engine that asked. Trusting someone
+    /// isn't a window command: `trust_control` and `trust_on_arrival` are refused here.
     pub fn send_command(&self, command: &ipc::Command) -> Result<(), String> {
-        let mut s = self.lock();
+        let s = self.lock();
         let now = self.now();
         let running = s
             .engine
@@ -1038,11 +987,9 @@ impl Calls {
                 }
                 running.handle.send_for(command, proc)
             }
-            ipc::Command::TrustControl { .. } => running.handle.send_for(command, s.proc),
-            ipc::Command::RevokeControl => {
-                let result = running.handle.send(command);
-                s.pending.clear();
-                result
+            // Only Let in with control and Give control trust anyone, after their checks.
+            ipc::Command::TrustControl { .. } | ipc::Command::TrustOnArrival { .. } => {
+                Err(TRUST_FROM_WINDOW.into())
             }
             _ => running.handle.send(command),
         }
@@ -1360,32 +1307,38 @@ impl Calls {
             return Ok(self.home());
         }
         let give = control && self.ensure(Permission::Accessibility).await?;
-        let identity = format!("guest-{user_id}");
-        if give {
-            let mut s = self.lock();
-            let (gen, proc) = (s.gen, s.proc);
-            let until = self.now() + GIVE_ON_ARRIVAL;
-            s.pending.retain(|p| p.identity != identity);
-            s.pending.push(Pending {
-                identity: identity.clone(),
-                call_id: call_id.clone(),
-                gen,
-                proc,
-                until,
-            });
-        }
-        let answer = account.answer_knock(&call_id, user_id, true).await;
-        if !matches!(answer, Ok(MemberState::Admitted)) {
-            self.lock().pending.retain(|p| p.identity != identity);
-        }
-        let state = answer.map_err(|e| e.to_string())?;
+        let state = account
+            .answer_knock(&call_id, user_id, true)
+            .await
+            .map_err(|e| e.to_string())?;
         self.set_member_state(user_id, state);
+        if give && state == MemberState::Admitted {
+            self.trust_on_arrival(&call_id, &format!("guest-{user_id}"));
+        }
         if control && !give {
             self.lock().notice = Some(let_in_without_control(&name));
         }
         self.trace(json!({ "kind": "let_in", "user_id": user_id, "control": give }));
         self.emit();
         Ok(self.home())
+    }
+
+    /// Asks the engine running `call_id` to trust `identity` when they join (now, if they are
+    /// in the call already). Once, to that engine process only; the engine keeps the promise
+    /// and every revoke cancels it.
+    fn trust_on_arrival(&self, call_id: &str, identity: &str) {
+        let s = self.lock();
+        let ours = s.hosting_id().as_deref() == Some(call_id);
+        let Some(running) = s.engine.as_ref().filter(|r| ours && !r.handle.is_done()) else {
+            return;
+        };
+        let command = ipc::Command::TrustOnArrival {
+            identity: identity.to_owned(),
+        };
+        let sent = running.handle.send_for(&command, s.proc).is_ok();
+        self.trace(
+            json!({ "kind": "trust_sent", "identity": identity, "why": "on_arrival", "ok": sent }),
+        );
     }
 
     fn set_member_state(&self, user_id: &str, state: MemberState) {
@@ -1530,7 +1483,6 @@ impl Calls {
             let mut s = self.lock();
             s.stage = Stage::Ending;
             s.flow += 1;
-            s.pending.clear();
             if let Some(running) = s.engine.as_mut() {
                 running.call = None;
                 running.handle.leave();
