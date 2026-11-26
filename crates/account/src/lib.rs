@@ -20,8 +20,9 @@ mod secret;
 mod session;
 mod types;
 
-#[cfg(test)]
-mod fake;
+/// A tiny HTTP server answering like a backend, for tests here and in the app (feature `fake`).
+#[cfg(any(test, feature = "fake"))]
+pub mod fake;
 
 pub use callback::{Arrival, Callback, Cancel, CALLBACK_PATH, CALLBACK_PORT, SIGN_IN_TIMEOUT};
 pub use client::{Account, SignInOptions, REFRESH_MARGIN_SECS};

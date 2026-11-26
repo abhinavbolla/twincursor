@@ -453,6 +453,20 @@ impl Account {
             .map(drop)
     }
 
+    /// Whether you may (still) join this call: you host it or were let in, and it is live. A
+    /// guest's app asks this while in the call, to notice the call ending on the server. Mints
+    /// nothing (`pass_claims`, which the call-pass function also asks).
+    pub async fn can_join(&self, call_id: &str) -> Result<bool, Error> {
+        match self
+            .rpc::<Vec<IgnoredAny>>("pass_claims", json!({ "call_id": call_id }))
+            .await
+        {
+            Ok(rows) => Ok(!rows.is_empty()),
+            Err(Error::NotAllowed) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     /// A LiveKit token for this call, if you may join it.
     pub async fn call_pass(&self, call_id: &str) -> Result<CallPass, Error> {
         let answer = self
