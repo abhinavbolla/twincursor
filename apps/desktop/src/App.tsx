@@ -1,12 +1,15 @@
-import { useCallback, useEffect, useReducer, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useReducer, useState } from "react";
 
 import { AccountCard } from "./Account";
 import type { EngineInfo, LoadedBridge } from "./bridge";
-import { loadBridge } from "./bridge";
+import { inTauri, loadBridge } from "./bridge";
+import { CallBarSurface } from "./CallBar";
 import { callReducer, initialCall } from "./call";
 import { CallScreen } from "./CallScreen";
 import { Details } from "./Details";
+import { Mark } from "./icons";
 import type { EngineCommand, Plan } from "./ipc";
+import { PanelSurface } from "./Panel";
 import { parsePermissions, type PermissionStatus } from "./permissions";
 import { SettingsPanel } from "./Settings";
 import { StartScreen } from "./StartScreen";
@@ -93,10 +96,7 @@ function Window({ bridge, DevPanel }: LoadedBridge) {
     <main>
       <header className="top">
         <h1 className="brand">
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <polyline points="4,5 9,10 4,15" opacity="0.45" />
-            <polyline points="10.5,5 15.5,10 10.5,15" />
-          </svg>
+          <Mark />
           TwinCursor
         </h1>
         <button
@@ -146,7 +146,40 @@ function Window({ bridge, DevPanel }: LoadedBridge) {
   );
 }
 
+/** The dev page for the panel and the bar: in a browser under `vite` only. */
+const DevPage = import.meta.env.DEV ? lazy(() => import("./devpage").then((m) => ({ default: m.DevPage }))) : null;
+
+/** `?view=panel` or `?view=bar`: one surface alone, as its own native window shows it. */
+function Surface({ view }: { view: "panel" | "bar" }) {
+  const [loaded, setLoaded] = useState<LoadedBridge | null | undefined>(undefined);
+  useEffect(() => {
+    loadBridge().then(setLoaded, () => setLoaded(null));
+  }, []);
+  if (loaded === undefined || loaded === null) {
+    return null;
+  }
+  return view === "panel" ? <PanelSurface bridge={loaded.bridge} /> : <CallBarSurface bridge={loaded.bridge} />;
+}
+
 export function App() {
+  const params = new URLSearchParams(window.location.search);
+  const view = params.get("view");
+  if (view !== null) {
+    if (inTauri()) {
+      return view === "bar" ? <Surface view="bar" /> : <Surface view="panel" />;
+    }
+    if (DevPage !== null) {
+      return (
+        <Suspense fallback={null}>
+          <DevPage params={params} />
+        </Suspense>
+      );
+    }
+  }
+  return <WindowApp />;
+}
+
+function WindowApp() {
   const [loaded, setLoaded] = useState<LoadedBridge | null | undefined>(undefined);
   useEffect(() => {
     loadBridge().then(setLoaded, () => setLoaded(null));

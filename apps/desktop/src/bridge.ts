@@ -90,6 +90,8 @@ export interface Bridge {
   end(): Promise<HomeView>;
   /** The home view on every change. Returns a function that stops listening. */
   onHome(f: (home: HomeView) => void): () => void;
+  /** Quits the app (the panel's Quit TwinCursor). */
+  quit(): Promise<void>;
 }
 
 export interface LoadedBridge {
@@ -176,10 +178,11 @@ function tauriBridge(): Bridge {
       });
       return () => void stop.then((unlisten) => unlisten());
     },
+    quit: () => invoke<void>("quit"),
   };
 }
 
-const inTauri = (): boolean => "__TAURI_INTERNALS__" in window;
+export const inTauri = (): boolean => "__TAURI_INTERNALS__" in window;
 
 /** The bridge for where this page runs, or null in a production build outside the app. */
 export async function loadBridge(): Promise<LoadedBridge | null> {
