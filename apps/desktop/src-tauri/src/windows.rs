@@ -33,7 +33,7 @@ use crate::seams::{Permission, Permits};
 use crate::settings::Settings;
 use crate::surfaces::{
     bar_origin, bar_wanted, clamp_height, icon_in_points, Hold, Holds, Kind, PanelToggle, Rect,
-    TrayClick, BAR_MIN_HEIGHT,
+    ShowWhy, TrayClick, BAR_MIN_HEIGHT,
 };
 
 pub const PANEL: &str = "panel";
@@ -81,6 +81,8 @@ struct State {
     /// Whether the bar should be on screen now (the stage isn't idle).
     bar_wanted: bool,
     bar_shown: bool,
+    /// Why the panel was last asked to show, for the log.
+    panel_why: ShowWhy,
     /// Where the bar goes the first time it shows in this run (from the settings file).
     bar_saved: Option<(f64, f64)>,
     bar_placed: bool,
@@ -272,6 +274,7 @@ impl Windows {
             WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
+                crate::applog::line(format!("window {}: hidden (closed)", window.label()));
                 if kind == Kind::Bar {
                     self.set_bar_seen(false);
                 }
@@ -280,17 +283,26 @@ impl Windows {
                 if !window.is_visible().unwrap_or(false) {
                     return;
                 }
-                let hide = {
+                let (hide, held) = {
                     let mut s = self.lock();
                     let held = s.holds.held();
-                    s.toggle.blurred(Instant::now(), held)
+                    (s.toggle.blurred(Instant::now(), held), s.holds.describe())
                 };
                 if hide {
                     let _ = window.hide();
+                    crate::applog::line("window panel: hidden (lost focus)");
+                } else {
+                    crate::applog::line(format!("window panel: lost focus, kept open ({held})"));
                 }
             }
             WindowEvent::ThemeChanged(theme) => {
                 let _ = window.set_background_color(Some(surface_colour(*theme == Theme::Dark)));
+                if let Some(facts) = native::facts(window) {
+                    crate::applog::line(format!(
+                        "window {}: theme now {theme:?}: {facts}",
+                        window.label()
+                    ));
+                }
             }
             WindowEvent::Moved(_) if kind == Kind::Bar => self.bar_moved(window),
             _ => {}
@@ -298,6 +310,17 @@ impl Windows {
     }
 
     fn on_tray(&self, tray: &TrayIcon, event: TrayIconEvent) {
+        match &event {
+            TrayIconEvent::Click {
+                button,
+                button_state,
+                ..
+            } => crate::applog::line(format!("tray: {button:?} click, {button_state:?}")),
+            TrayIconEvent::DoubleClick { button, .. } => {
+                crate::applog::line(format!("tray: {button:?} double click"))
+            }
+            _ => {}
+        }
         let TrayIconEvent::Click {
             button: MouseButton::Left,
             button_state: MouseButtonState::Down,
@@ -317,17 +340,21 @@ impl Windows {
         let visible = panel.is_visible().unwrap_or(false);
         let click = self.lock().toggle.clicked(Instant::now(), visible);
         match click {
-            TrayClick::Show => self.show_panel(true),
+            TrayClick::Show => self.show_panel(ShowWhy::TrayClick),
             TrayClick::Hide => {
                 let _ = panel.hide();
+                crate::applog::line("window panel: hidden (tray click)");
             }
-            TrayClick::Nothing => {}
+            TrayClick::Nothing => crate::applog::line(
+                "window panel: stays hidden (the same click just took its focus)",
+            ),
         }
     }
 
     fn on_menu(&self, event: &MenuEvent) {
+        crate::applog::line(format!("menu: {} chosen", event.id().as_ref()));
         match event.id().as_ref() {
-            MENU_OPEN => self.show_panel(true),
+            MENU_OPEN => self.show_panel(ShowWhy::MenuOpen),
             MENU_QUIT => self.quit(),
             _ => {}
         }
@@ -343,10 +370,12 @@ impl Windows {
     /// Shows the panel under the menu bar icon; with `focus`, it takes the keyboard (a click
     /// on the icon, the Dock icon, the end of a sign-in); without, it only comes on screen (a
     /// ring). Waits for its page to be ready, briefly.
-    pub fn show_panel(&self, focus: bool) {
+    pub fn show_panel(&self, why: ShowWhy) {
         if !self.inner.live {
             return;
         }
+        let focus = why.takes_focus();
+        self.lock().panel_why = why;
         let ready = {
             let mut s = self.lock();
             if !s.panel_ready {
@@ -391,8 +420,7 @@ impl Windows {
         if let Some((x, y)) = self.panel_at(height, &displays) {
             native::set_frame(&panel, Rect::new(x, y, Kind::Panel.width(), height));
             crate::applog::line(format!(
-                "window Panel: shown at ({x:.0}, {y:.0}) pt, {height:.0} pt tall{}",
-                if focus { ", focused" } else { "" }
+                "window panel: placed at ({x:.0}, {y:.0}) pt, {height:.0} pt tall"
             ));
         }
         if focus {
@@ -401,24 +429,34 @@ impl Windows {
         } else if !panel.is_visible().unwrap_or(false) {
             native::show_without_focus(&panel);
         }
+        let why = self.lock().panel_why;
+        let asked = if focus { "with focus" } else { "without focus" };
+        crate::applog::line(match native::facts(&panel) {
+            Some(facts) => format!("window panel: shown ({}, {asked}): {facts}", why.word()),
+            None => format!("window panel: shown ({}, {asked})", why.word()),
+        });
     }
 
+    /// Escape in the panel.
     pub fn hide_panel(&self) {
         if let Some(panel) = self.window(Kind::Panel) {
             let _ = panel.hide();
+            crate::applog::line("window panel: hidden (Escape)");
         }
     }
 
     /// Keeps the panel open while it doesn't have focus, for `hold`.
     pub fn hold(&self, hold: Hold) {
         self.lock().holds.add(hold);
+        crate::applog::line(format!("window panel: held open ({hold:?})"));
     }
 
     /// Lets go of `hold`. After a sign-in (done or not), the panel comes back with focus.
     pub fn release(&self, hold: Hold) {
         let last = self.lock().holds.release(hold);
+        crate::applog::line(format!("window panel: no longer held open ({hold:?})"));
         if last && hold == Hold::SignIn {
-            self.show_panel(true);
+            self.show_panel(ShowWhy::SignInDone);
         }
     }
 
@@ -442,12 +480,22 @@ impl Windows {
         };
         if wanted && !shown {
             self.place_bar(&bar);
-            native::show_without_focus(&bar);
-            self.set_bar_seen(true);
+            self.show_bar_now(&bar, "call");
         } else if !wanted && shown {
             let _ = bar.hide();
             self.set_bar_seen(false);
+            crate::applog::line("window bar: hidden (call over)");
         }
+    }
+
+    /// On screen without focus, and seen from now on (arming counts from here).
+    fn show_bar_now(&self, bar: &WebviewWindow, why: &str) {
+        native::show_without_focus(bar);
+        self.set_bar_seen(true);
+        crate::applog::line(match native::facts(bar) {
+            Some(facts) => format!("window bar: shown ({why}, without focus): {facts}"),
+            None => format!("window bar: shown ({why}, without focus)"),
+        });
     }
 
     /// Puts the bar where it was left (or its first place), onto a display that is there.
@@ -495,6 +543,10 @@ impl Windows {
                 return;
             }
             let place = (frame.x.round() as i32, frame.y.round() as i32);
+            crate::applog::line(format!(
+                "window bar: moved to ({}, {}) pt, saved",
+                place.0, place.1
+            ));
             me.lock().bar_saved = Some((frame.x, frame.y));
             if let Ok(path) = crate::settings_path(&me.inner.app) {
                 if let Ok(mut settings) = Settings::load(&path) {
@@ -544,7 +596,7 @@ impl Windows {
             self.on_main(|me| me.apply_bar());
         }
         if new_ring && !wanted {
-            self.show_panel(false);
+            self.show_panel(ShowWhy::Ring);
         }
     }
 
@@ -610,6 +662,25 @@ impl Windows {
         });
     }
 
+    /// Script mode's `show` step: the panel or the bar on screen unprompted, as a ring or a
+    /// call would bring them, so a test can read back that neither took the keyboard.
+    pub fn show_unprompted(&self, kind: Kind) {
+        match kind {
+            Kind::Panel => self.show_panel(ShowWhy::Script),
+            Kind::Bar => {
+                if !self.inner.live {
+                    return;
+                }
+                self.on_main(|me| {
+                    if let Some(bar) = me.window(Kind::Bar) {
+                        me.place_bar(&bar);
+                        me.show_bar_now(&bar, "script");
+                    }
+                });
+            }
+        }
+    }
+
     // Quitting.
 
     pub fn quitting(&self) -> bool {
@@ -628,8 +699,17 @@ impl Windows {
         let app = self.inner.app.clone();
         let calls = self.inner.calls.get().cloned();
         tauri::async_runtime::spawn(async move {
-            if let Some(calls) = calls.filter(Calls::busy) {
-                let _ = tokio::time::timeout(QUIT_TIMEOUT, calls.end()).await;
+            match calls.filter(Calls::busy) {
+                Some(calls) => {
+                    crate::applog::line("quit: ending or leaving the call first");
+                    let ended = tokio::time::timeout(QUIT_TIMEOUT, calls.end()).await;
+                    crate::applog::line(match ended {
+                        Ok(Ok(_)) => "quit: the call is over".to_owned(),
+                        Ok(Err(e)) => format!("quit: ending the call said: {e}"),
+                        Err(_) => "quit: the call didn't end in time; quitting anyway".to_owned(),
+                    });
+                }
+                None => crate::applog::line("quit: no call to end"),
             }
             app.exit(0);
         });

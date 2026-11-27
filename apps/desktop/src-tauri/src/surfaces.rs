@@ -347,6 +347,47 @@ pub fn bar_wanted(stage: &StageView) -> bool {
     !matches!(stage, StageView::Idle)
 }
 
+/// Why the panel is being shown, which decides whether it takes the keyboard: only when the
+/// person just asked for it. An unprompted show (a ring, a test) never does, so a stray Enter
+/// or Space can't press one of its buttons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ShowWhy {
+    /// The app was launched (or opened again).
+    #[default]
+    Launch,
+    /// A click on the tray or menu bar icon.
+    TrayClick,
+    /// The icon's menu: Open TwinCursor.
+    MenuOpen,
+    /// A sign-in in the browser is over; the panel comes back.
+    SignInDone,
+    /// Someone is ringing.
+    Ring,
+    /// Script mode's `show` step.
+    Script,
+}
+
+impl ShowWhy {
+    pub fn takes_focus(self) -> bool {
+        match self {
+            ShowWhy::Launch | ShowWhy::TrayClick | ShowWhy::MenuOpen | ShowWhy::SignInDone => true,
+            ShowWhy::Ring | ShowWhy::Script => false,
+        }
+    }
+
+    /// As the log says it.
+    pub fn word(self) -> &'static str {
+        match self {
+            ShowWhy::Launch => "launch",
+            ShowWhy::TrayClick => "tray click",
+            ShowWhy::MenuOpen => "menu: Open",
+            ShowWhy::SignInDone => "sign-in over",
+            ShowWhy::Ring => "ring",
+            ShowWhy::Script => "script",
+        }
+    }
+}
+
 /// What a click on the menu bar icon does to the panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayClick {
@@ -420,6 +461,22 @@ impl Holds {
 
     pub fn held(&self) -> bool {
         self.sign_in > 0 || self.permission > 0
+    }
+
+    /// What it is held open for, as the log says it.
+    pub fn describe(&self) -> String {
+        let mut why = Vec::new();
+        if self.sign_in > 0 {
+            why.push("a sign-in in the browser");
+        }
+        if self.permission > 0 {
+            why.push("a permission prompt");
+        }
+        if why.is_empty() {
+            "nothing".into()
+        } else {
+            why.join(" and ")
+        }
     }
 
     fn count(&mut self, hold: Hold) -> &mut u32 {
@@ -769,6 +826,22 @@ mod tests {
         ] {
             assert!(bar_wanted(&stage), "{stage:?}");
         }
+    }
+
+    #[test]
+    fn only_a_show_the_person_asked_for_takes_the_keyboard() {
+        for why in [
+            ShowWhy::Launch,
+            ShowWhy::TrayClick,
+            ShowWhy::MenuOpen,
+            ShowWhy::SignInDone,
+        ] {
+            assert!(why.takes_focus(), "{why:?}");
+        }
+        // A ring comes unasked: the panel shows, the app the person is in keeps the keyboard.
+        assert!(!ShowWhy::Ring.takes_focus());
+        assert!(!ShowWhy::Script.takes_focus());
+        assert_eq!(ShowWhy::Ring.word(), "ring");
     }
 
     #[test]
