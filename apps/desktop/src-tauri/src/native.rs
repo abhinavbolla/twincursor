@@ -19,6 +19,53 @@
 
 use crate::surfaces::{Display, Kind, Rect};
 
+/// Windows' extended window styles this file reads and sets (`WS_EX_*`), as numbers so the
+/// words for them are tested on every platform.
+const WS_EX_TOPMOST: u32 = 0x0000_0008;
+const WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
+const WS_EX_APPWINDOW: u32 = 0x0004_0000;
+const WS_EX_NOACTIVATE: u32 = 0x0800_0000;
+
+/// A tray panel's or floating bar's extended style: a tool window (no taskbar button, not in
+/// Alt-Tab) and never an app window, whatever else is set.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn tool_style(ex: u32) -> u32 {
+    (ex | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW
+}
+
+/// An unowned window's extended style in words, as the log says it: whether it has a taskbar
+/// button and an Alt-Tab entry, and whether it is topmost. With `focused`, whether it has the
+/// keyboard.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn style_words(ex: u32, focused: Option<bool>) -> String {
+    let tool = ex & WS_EX_TOOLWINDOW != 0;
+    let app = ex & WS_EX_APPWINDOW != 0;
+    let mut words = vec![
+        if tool { "tool window" } else { "app window" },
+        // An unowned window gets a taskbar button unless it is a tool window, and always with
+        // WS_EX_APPWINDOW.
+        if app || !tool {
+            "taskbar button, in Alt-Tab"
+        } else {
+            "no taskbar button, not in Alt-Tab"
+        },
+        if ex & WS_EX_TOPMOST != 0 {
+            "topmost"
+        } else {
+            "not topmost"
+        },
+    ];
+    if ex & WS_EX_NOACTIVATE != 0 {
+        words.push("never activated");
+    }
+    match focused {
+        Some(true) => words.push("focused"),
+        Some(false) => words.push("not focused"),
+        None => {}
+    }
+    words.join(", ")
+}
+
 #[cfg(target_os = "macos")]
 mod mac {
     use objc2::MainThreadMarker;
@@ -87,6 +134,11 @@ mod mac {
     /// On screen, in front, without becoming key: the app the person is in keeps the keyboard.
     pub fn show_without_focus(w: &WebviewWindow) {
         with(w, |window, _| window.orderFrontRegardless());
+    }
+
+    /// Read-back window facts for the log: only Windows has a log by default.
+    pub fn facts(_w: &WebviewWindow) -> Option<String> {
+        None
     }
 
     fn main_height(mtm: MainThreadMarker) -> f64 {
@@ -213,13 +265,16 @@ pub use mac::*;
 mod win {
     use tauri::{Runtime, WebviewWindow, WebviewWindowBuilder};
     use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
     use windows_sys::Win32::Graphics::Dwm::{
         DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
     };
     use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-        SWP_NOZORDER, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
+        GetForegroundWindow, GetWindowLongPtrW, IsWindowVisible, SetWindowLongPtrW, SetWindowPos,
+        ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE, WM_STYLECHANGING,
     };
 
     use super::{Display, Kind, Rect};
@@ -258,9 +313,78 @@ mod win {
         crate::surfaces::panel_origin_at_taskbar(icon, height, displays)
     }
 
-    /// Rounded corners where Windows offers them (11). Windows 10 ignores the request.
+    /// Which subclass this is, among the window's (tao has its own).
+    const TOOL_WINDOW_SUBCLASS: usize = 0x5443_746f;
+
+    /// Keeps the window a tool window. tao makes every window without an owner an app window
+    /// (`WS_EX_APPWINDOW`), and its `skip_taskbar` only takes the button off the taskbar
+    /// (`ITaskbarList::DeleteTab`), so the window stays in Alt-Tab; and tao writes the whole
+    /// extended style again whenever it changes a window's state (shown, hidden, focused,
+    /// themed). Every such write passes through `WM_STYLECHANGING`, where this turns it into a
+    /// tool window's style before Windows applies it.
+    unsafe extern "system" fn keep_tool_window(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _id: usize,
+        _data: usize,
+    ) -> LRESULT {
+        if msg == WM_STYLECHANGING && wparam as i32 == GWL_EXSTYLE {
+            // SAFETY: for WM_STYLECHANGING, lparam points at the STYLESTRUCT being applied.
+            if let Some(change) = unsafe { (lparam as *mut STYLESTRUCT).as_mut() } {
+                change.styleNew = super::tool_style(change.styleNew);
+            }
+        }
+        // SAFETY: passing the message on, as a subclass must.
+        unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+    }
+
+    fn ex_style(h: HWND) -> u32 {
+        // SAFETY: a live window handle.
+        unsafe { GetWindowLongPtrW(h, GWL_EXSTYLE) as u32 }
+    }
+
+    /// What Windows says about the window now, in words, read back rather than what was asked
+    /// for: its style, and, when it is on screen, whether it has the keyboard.
+    pub fn facts(w: &WebviewWindow) -> Option<String> {
+        let h = hwnd(w)?;
+        // SAFETY: live window handles; plain queries.
+        let (visible, foreground) =
+            unsafe { (IsWindowVisible(h) != 0, GetForegroundWindow() == h) };
+        Some(super::style_words(
+            ex_style(h),
+            visible.then_some(foreground),
+        ))
+    }
+
+    /// A tool window that stays one, and rounded corners where Windows offers them (11);
+    /// Windows 10 ignores that request.
     pub fn dress(w: &WebviewWindow, _kind: Kind) {
         let Some(h) = hwnd(w) else { return };
+        // SAFETY: on the main thread, which owns the window (`Windows::create` runs in setup);
+        // the subclass procedure lives as long as the program.
+        let guarded = unsafe {
+            let ok = SetWindowSubclass(h, Some(keep_tool_window), TOOL_WINDOW_SUBCLASS, 0) != 0;
+            SetWindowLongPtrW(h, GWL_EXSTYLE, super::tool_style(ex_style(h)) as isize);
+            SetWindowPos(
+                h,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+            ok
+        };
+        if !guarded {
+            crate::applog::line(format!(
+                "window {}: couldn't keep it a tool window ({})",
+                w.label(),
+                std::io::Error::last_os_error()
+            ));
+        }
         let round = DWMWCP_ROUND;
         // SAFETY: a live window handle and a 4-byte value of the documented type. A failure
         // (Windows 10) changes nothing.
@@ -281,6 +405,9 @@ mod win {
                 "not offered (square)"
             }
         ));
+        if let Some(facts) = facts(w) {
+            crate::applog::line(format!("window {}: made: {facts}", w.label()));
+        }
     }
 
     /// On screen and on top, without activating it: the app the person is in keeps the
@@ -450,6 +577,10 @@ mod other {
         let _ = w.show();
     }
 
+    pub fn facts(_w: &WebviewWindow) -> Option<String> {
+        None
+    }
+
     pub fn displays(_w: &WebviewWindow) -> Vec<Display> {
         Vec::new()
     }
@@ -479,3 +610,41 @@ mod other {
 
 #[cfg(not(any(target_os = "macos", windows)))]
 pub use other::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What the Windows 10 PC reported for both windows before the fix: TOPMOST, WINDOWEDGE,
+    /// ACCEPTFILES and APPWINDOW.
+    const SEEN: u32 = 0x0004_0118;
+
+    #[test]
+    fn the_style_seen_on_windows_10_had_a_taskbar_button() {
+        assert_eq!(
+            style_words(SEEN, None),
+            "app window, taskbar button, in Alt-Tab, topmost"
+        );
+    }
+
+    #[test]
+    fn a_tool_window_has_no_taskbar_button_and_stays_topmost() {
+        let fixed = tool_style(SEEN);
+        assert_eq!(fixed, 0x0000_0198);
+        assert_eq!(
+            style_words(fixed, Some(false)),
+            "tool window, no taskbar button, not in Alt-Tab, topmost, not focused"
+        );
+        // Applying it again changes nothing, and nothing else in the style is touched.
+        assert_eq!(tool_style(fixed), fixed);
+        assert_eq!(tool_style(0), WS_EX_TOOLWINDOW);
+        assert_eq!(
+            style_words(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, Some(true)),
+            "tool window, no taskbar button, not in Alt-Tab, not topmost, never activated, focused"
+        );
+        assert_eq!(
+            style_words(0, None),
+            "app window, taskbar button, in Alt-Tab, not topmost"
+        );
+    }
+}

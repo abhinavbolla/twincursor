@@ -191,7 +191,7 @@ engine's own native window (ADR 0007, and [the IPC protocol](ipc.md)).
   |---|---|---|
   | Share, Call | Yes | No (no capture or injection there); refused in `calls.rs` |
   | Join by link or ring, watch, talk, take control | Yes | Yes |
-  | Windows | Titled, title bar hidden; AppKit for no-focus show, Spaces, frames | Undecorated, off the taskbar; `SW_SHOWNOACTIVATE`, `SetWindowPos` in each display's pixels; rounded corners on Windows 11 only, a hairline drawn by the page |
+  | Windows | Titled, title bar hidden; AppKit for no-focus show, Spaces, frames | Undecorated tool windows (no taskbar button, not in Alt-Tab), kept so by a `WM_STYLECHANGING` subclass; `SW_SHOWNOACTIVATE`, `SetWindowPos` in each display's pixels; rounded corners on Windows 11 only, a hairline drawn by the page |
   | Panel | Hangs under the menu bar icon | Stands on the taskbar by the tray icon (any edge) |
   | Tray icon | Template image | White mark on an indigo tile |
   | Browser | `/usr/bin/open` | `rundll32 url.dll,FileProtocolHandler`, no shell |
@@ -200,6 +200,15 @@ engine's own native window (ADR 0007, and [the IPC protocol](ipc.md)).
   | Permissions | Asked through `tc-engine permissions` | None to ask; the mic is Windows' own prompt |
   | Engine process | Ends when its stdin closes | The same, no console window, and a kill-on-close job object |
   | Log file | None (`TWINCURSOR_LOG_FILE` to have one) | `%LOCALAPPDATA%\dev.twincursor.desktop\logs\twincursor.log` |
+
+  tao, under Tauri, makes every window without an owner an app window (`WS_EX_APPWINDOW`); its
+  `skip_taskbar` only removes the taskbar button through `ITaskbarList`, leaving the window in
+  Alt-Tab, and it rewrites the whole extended style whenever a window's state changes. So
+  `native.rs` subclasses both windows and turns every extended-style change into a tool
+  window's as it happens, and the log reads the style back (`window panel: made: tool window, no
+  taskbar button, …`), which CI's smoke test checks. A process listing also shows tao's and
+  tray-icon's own message windows: "Tao Thread Event Target" (16 × 16 at 0, 0, visible but
+  layered and click-through, so it never draws or takes a click) and `tray_icon_app` (hidden).
 
 ### 2. WebRTC through LiveKit (self-hostable SFU)
 - LiveKit's Rust SDK (`livekit` crate, built on libwebrtc) gives us congestion control,

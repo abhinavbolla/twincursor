@@ -9,9 +9,15 @@
 # 1. With no backend named, the app starts, finds tc-engine.exe next to it, says it isn't
 #    connected to a server, says it can't share (a Windows app is a guest), and exits 0. Its
 #    log file must say the same, and that the windows and the tray icon were made.
-# 2. With LIVEKIT set, a LiveKit dev server is started on 127.0.0.1, and the app joins an empty
+#    Both windows must read back from Windows as tool windows: no taskbar button, not in
+#    Alt-Tab, topmost.
+# 2. With the windows live, the panel and the call bar are brought on screen unprompted (as a
+#    ring and a call do). Read back afterwards, neither may have taken the keyboard, and both
+#    must still be tool windows; the tray icon must have been made.
+# 3. With LIVEKIT set, a LiveKit dev server is started on 127.0.0.1, and the app joins an empty
 #    room as a guest (the room-code path, dev keys): it starts its engine, the engine connects,
-#    the script leaves, the engine exits, and the app exits 0. No sharer is needed for that.
+#    the script leaves, the engine exits, and the app exits 0. No sharer is needed for that. The
+#    engine must read back as inside the app's job object.
 #
 # APP (default target/release/twincursor-desktop.exe) is the app; OUT a folder for the reports
 # and logs (a fresh temporary one by default). Nothing here captures, injects or plays sound:
@@ -75,6 +81,8 @@ logged "$L" "engine: found at" "the log says where the engine is"
 logged "$L" "backend: none named" "the log says no backend is named"
 logged "$L" "window Panel: made (hidden)" "the log says the panel was made"
 logged "$L" "window Bar: made (hidden)" "the log says the call bar was made"
+logged "$L" "window panel: made: tool window, no taskbar button, not in Alt-Tab, topmost" "the panel reads back as a topmost tool window"
+logged "$L" "window bar: made: tool window, no taskbar button, not in Alt-Tab, topmost" "the bar reads back as a topmost tool window"
 logged "$L" "exiting" "the log says it exited"
 # The page inside a hidden window may not lay itself out; say so either way.
 if grep -qF "window Panel: page drawn" "$L"; then
@@ -83,8 +91,16 @@ else
   echo "  note: the hidden panel's page didn't report its height (not a failure)"
 fi
 
+echo "==> 2. the panel and the bar shown unprompted"
+run_app shown '{"accounts":{"inject_record":"unused.jsonl"},"windows":true,"steps":[{"do":"show","surface":"panel"},{"do":"wait_ms","ms":2500},{"do":"show","surface":"bar"},{"do":"wait_ms","ms":1500}],"quit":true}'
+L="$OUT/shown.log"
+check "$OUT/shown.jsonl" '.kind == "script" and .done and .ok' "the script passed"
+logged "$L" "tray icon: made" "the tray icon was made"
+logged "$L" "window panel: shown (script, without focus): tool window, no taskbar button, not in Alt-Tab, topmost, not focused" "the panel came up without taking the keyboard, still a tool window"
+logged "$L" "window bar: shown (script, without focus): tool window, no taskbar button, not in Alt-Tab, topmost, not focused" "the bar came up without taking the keyboard, still a tool window"
+
 if [ -n "$LIVEKIT" ]; then
-  echo "==> 2. a guest joins an empty room on a LiveKit dev server"
+  echo "==> 3. a guest joins an empty room on a LiveKit dev server"
   "$LIVEKIT" --dev --bind 127.0.0.1 >"$OUT/livekit.log" 2>&1 &
   lk=$!
   trap 'kill "$lk" 2>/dev/null || true' EXIT
@@ -103,6 +119,7 @@ if [ -n "$LIVEKIT" ]; then
   check "$R" '.kind == "exited"' "the engine exited after leaving"
   check "$R" '.kind == "script" and .done and .ok' "every script step passed"
   logged "$OUT/join.log" "engine: started (Join" "the log says the engine started"
+  logged "$OUT/join.log" "engine: in the app's job object (Windows ends it with the app)" "the engine reads back as inside the app's job object"
   kill "$lk" 2>/dev/null || true
 fi
 

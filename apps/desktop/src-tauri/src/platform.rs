@@ -221,9 +221,9 @@ mod win {
         OpenClipboard, SetClipboardData,
     };
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob,
+        JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows_sys::Win32::System::Memory::{
         GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
@@ -397,16 +397,25 @@ mod win {
             crate::applog::line("engine: no job object; it relies on its stdin closing");
             return;
         };
+        let process = child.as_raw_handle() as HANDLE;
         // SAFETY: both handles are live: the job's for the process's life, the child's while
         // `child` is borrowed.
-        let ok =
-            unsafe { AssignProcessToJobObject(job as HANDLE, child.as_raw_handle() as HANDLE) };
+        let ok = unsafe { AssignProcessToJobObject(job as HANDLE, process) };
         if ok == 0 {
             crate::applog::line(format!(
                 "engine: couldn't join the job object ({})",
                 std::io::Error::last_os_error()
             ));
         }
+        // Read back, rather than trusting the call above.
+        let mut inside = 0;
+        // SAFETY: as above; `inside` is written by the call.
+        let asked = unsafe { IsProcessInJob(process, job as HANDLE, &mut inside) };
+        crate::applog::line(match (asked != 0, inside != 0) {
+            (true, true) => "engine: in the app's job object (Windows ends it with the app)",
+            (true, false) => "engine: NOT in the app's job object; it relies on its stdin closing",
+            (false, _) => "engine: couldn't tell whether it is in the app's job object",
+        });
     }
 
     /// A Windows guest needs only the microphone, which Windows asks about itself.

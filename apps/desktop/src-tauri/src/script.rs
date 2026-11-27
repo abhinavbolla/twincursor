@@ -149,6 +149,18 @@ pub enum Step {
     },
     /// Stop sharing, or leave.
     End,
+    /// Bring the panel or the call bar on screen unprompted, as a ring or a call would (needs
+    /// `"windows": true`). The app logs what Windows says about it afterwards.
+    Show {
+        surface: Surface,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Surface {
+    Panel,
+    Bar,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -200,6 +212,7 @@ pub enum Act {
         accept: bool,
     },
     End,
+    Show(Surface),
 }
 
 impl Script {
@@ -516,6 +529,7 @@ impl Host<'_> {
                 })
             }
             Step::End => (self.act)(Act::End).map(drop),
+            Step::Show { surface } => (self.act)(Act::Show(*surface)).map(drop),
         }
     }
 }
@@ -789,6 +803,7 @@ mod tests {
         for text in [
             r#"{"accounts":{"inject_record":"unused.jsonl"},"steps":[{"do":"wait_home","home":{"account":{"configured":false}}}],"quit":true}"#,
             r#"{"call":{"room":"smoke","name":"Windows guest","quality":"1080p","inject_record":"unused.jsonl","role":"join"},"steps":[{"do":"wait_for","event":{"event":"connection","state":"connected"}},{"do":"send","cmd":"leave"},{"do":"wait_exit"}],"quit":true}"#,
+            r#"{"accounts":{"inject_record":"unused.jsonl"},"windows":true,"steps":[{"do":"show","surface":"panel"},{"do":"wait_ms","ms":2500},{"do":"show","surface":"bar"},{"do":"wait_ms","ms":1500}],"quit":true}"#,
         ] {
             let s: Script = serde_json::from_str(text).unwrap();
             s.check().unwrap();

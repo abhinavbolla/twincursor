@@ -61,8 +61,8 @@ The same two windows, with Windows' conventions (`native.rs`, `surfaces.rs`):
 
 - **The tray icon** is in the taskbar's notification area: the mark in white on an indigo tile,
   since Windows doesn't tint tray icons and taskbars are light or dark. A click opens or closes
-  the panel; a right click opens the same menu. No menu bar, and no taskbar button for either
-  window.
+  the panel; a right click opens the same menu. No menu bar, and no taskbar button or Alt-Tab
+  entry for either window (both are tool windows).
 - **The panel stands on the taskbar** by the icon, 8 pt from it, centred on it and kept 8 pt
   inside the display's usable area; it follows a taskbar on the top, left or right edge too,
   and keeps its edge by the taskbar as it grows. Without the icon's place: bottom right of the

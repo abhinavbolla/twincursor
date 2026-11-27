@@ -467,6 +467,7 @@ fn run_script(app: AppHandle, run: ScriptRun) {
         ..
     } = run;
     let calls = app.state::<Calls>().inner().clone();
+    let windows = app.state::<Windows>().inner().clone();
     // What the app found at start, so a test can check it without a window.
     let info = engine_info();
     report.write(serde_json::json!({
@@ -512,6 +513,13 @@ fn run_script(app: AppHandle, run: ScriptRun) {
                         calls.answer_ring(&call_id, accept).await
                     }
                     script::Act::End => calls.end().await,
+                    script::Act::Show(surface) => {
+                        windows.show_unprompted(match surface {
+                            script::Surface::Panel => surfaces::Kind::Panel,
+                            script::Surface::Bar => surfaces::Kind::Bar,
+                        });
+                        Ok(calls.home())
+                    }
                 }
             })?;
             Ok(serde_json::to_value(view).unwrap_or(Value::Null))
@@ -641,7 +649,7 @@ fn main() {
             calls.start_polling();
             if run.is_none() {
                 // Launching the app opens the panel, as a click on the icon does.
-                windows.show_panel(true);
+                windows.show_panel(surfaces::ShowWhy::Launch);
             }
             if let Some(run) = run {
                 let handle = app.handle().clone();
@@ -675,7 +683,7 @@ fn main() {
         #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => {
             if let Some(windows) = app.try_state::<Windows>() {
-                windows.show_panel(true);
+                windows.show_panel(surfaces::ShowWhy::Launch);
             }
         }
         RunEvent::Exit => {
