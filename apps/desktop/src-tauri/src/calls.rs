@@ -75,8 +75,27 @@ pub const KNOCK_GIVE_UP: Duration = Duration::from_secs(45);
 /// How long leaving waits for the engine to go before stopping it.
 const ENGINE_GONE_TIMEOUT: Duration = Duration::from_secs(7);
 /// How often a missing permission is checked again while the window says it is needed, so the
-/// message goes by itself once it is turned on in System Settings.
-pub const RECHECK_EVERY: Duration = Duration::from_secs(2);
+/// message goes by itself once it is turned on in System Settings: every [`RECHECK_FAST`] for
+/// [`RECHECK_FAST_FOR`] after the need appeared or the person last acted on it (a click, Open
+/// Settings, a reset), then every [`RECHECK_SLOW`], and not at all after [`RECHECK_STOP_AFTER`].
+/// The next click checks afresh and starts it again.
+pub const RECHECK_FAST: Duration = Duration::from_secs(2);
+pub const RECHECK_FAST_FOR: Duration = Duration::from_secs(120);
+pub const RECHECK_SLOW: Duration = Duration::from_secs(15);
+pub const RECHECK_STOP_AFTER: Duration = Duration::from_secs(600);
+
+/// How long until the next re-check, `since` the need appeared or was last acted on; `None` once
+/// re-checking stops.
+pub fn recheck_delay(since: Instant, now: Instant) -> Option<Duration> {
+    let gone = now.saturating_duration_since(since);
+    if gone >= RECHECK_STOP_AFTER {
+        None
+    } else if gone < RECHECK_FAST_FOR {
+        Some(RECHECK_FAST)
+    } else {
+        Some(RECHECK_SLOW)
+    }
+}
 
 pub const NOT_SIGNED_IN: &str = "Sign in first.";
 pub const IN_CALL: &str = "You're already in a call. Leave it first.";
@@ -264,12 +283,15 @@ enum Stage {
     Ending,
 }
 
-/// A guest owed control ([`OwedView`]); `shown` is when the window first showed it.
+/// A guest owed control ([`OwedView`]); `shown` is when the window first showed it. `seen`:
+/// they have been in the call since they were let in, so their leaving ends the offer, and
+/// giving control is never a promise for someone who has gone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Owed {
     identity: String,
     name: String,
     shown: Option<Instant>,
+    seen: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -311,6 +333,8 @@ struct State {
     sent_to_settings: HashSet<Permission>,
     /// The re-check timer is running.
     rechecking: bool,
+    /// When the needed permission appeared or was last acted on, for [`recheck_delay`].
+    recheck_from: Instant,
     /// What the last re-check found, so the log has changes rather than every tick.
     rechecked: Option<(Permission, bool)>,
     owed: Option<Owed>,
@@ -444,6 +468,7 @@ impl Calls {
             stuck: false,
             sent_to_settings: HashSet::new(),
             rechecking: false,
+            recheck_from: setup.clock.now(),
             rechecked: None,
             owed: None,
             notice_needs: None,
@@ -742,6 +767,16 @@ impl Calls {
                         .collect();
                     s.knock_seen.retain(|id, _| knocking.contains(id));
                     s.members = h.members;
+                    // Turned away or removed since: nobody to give control to.
+                    let admitted = |s: &State, identity: &str| {
+                        s.members.iter().any(|m| {
+                            m.state == MemberState::Admitted
+                                && format!("guest-{}", m.user_id) == identity
+                        })
+                    };
+                    if s.owed.as_ref().is_some_and(|o| !admitted(&s, &o.identity)) {
+                        s.owed = None;
+                    }
                 }
                 // The backend no longer has this app's call open: it is over.
                 (Stage::Hosting { .. }, _) => gone = true,
@@ -863,7 +898,7 @@ impl Calls {
 
     /// Whether `which` is granted, asking macOS the first time it is missing in this run. Sets
     /// or clears what the view says is needed. Refused again after macOS was asked, it is
-    /// [`HomeView::stuck`]. While it is missing it is checked again every [`RECHECK_EVERY`].
+    /// [`HomeView::stuck`]. While it is missing it is checked again on [`recheck_delay`]'s schedule.
     async fn ensure(&self, which: Permission) -> Result<bool, String> {
         let permits = self.inner.setup.permits.clone();
         let asked = self.lock().requested.contains(&which);
@@ -912,6 +947,7 @@ impl Calls {
                 if asked {
                     s.stuck = true;
                 }
+                s.recheck_from = self.now();
             }
         }
         if !granted {
@@ -940,7 +976,8 @@ impl Calls {
         s.notice_needs = Some(text);
     }
 
-    /// Checks `needs` again every [`RECHECK_EVERY`] until it is granted. One timer at a time.
+    /// Checks `needs` again on [`recheck_delay`]'s schedule until it is granted or the schedule
+    /// ends. One timer at a time.
     fn start_rechecking(&self) {
         {
             let mut s = self.lock();
@@ -952,12 +989,23 @@ impl Calls {
         let me = self.clone();
         self.inner.setup.runtime.spawn(async move {
             loop {
-                tokio::time::sleep(RECHECK_EVERY).await;
-                me.recheck().await;
-                let mut s = me.lock();
-                if s.needs.is_none() {
-                    s.rechecking = false;
-                    break;
+                let delay = {
+                    let mut s = me.lock();
+                    let delay = recheck_delay(s.recheck_from, me.now());
+                    if s.needs.is_none() || delay.is_none() {
+                        s.rechecking = false;
+                        break;
+                    }
+                    delay
+                };
+                tokio::time::sleep(delay.unwrap_or(RECHECK_SLOW)).await;
+                // Not past the end of the schedule, even after a long sleep.
+                let stop = {
+                    let s = me.lock();
+                    recheck_delay(s.recheck_from, me.now()).is_none()
+                };
+                if !stop {
+                    me.recheck().await;
                 }
             }
         });
@@ -1016,7 +1064,11 @@ impl Calls {
             "permission: System Settings opened for {}",
             which.word()
         ));
-        self.lock().sent_to_settings.insert(which);
+        {
+            let mut s = self.lock();
+            s.sent_to_settings.insert(which);
+            s.recheck_from = self.now();
+        }
         self.start_rechecking();
     }
 
@@ -1054,6 +1106,7 @@ impl Calls {
             s.requested.insert(which);
             s.sent_to_settings.remove(&which);
             s.stuck = false;
+            s.recheck_from = self.now();
             s.rechecked = None;
             if granted && s.needs == Some(which) {
                 Self::no_longer_needed(&mut s, None);
@@ -1241,7 +1294,21 @@ impl Calls {
                     .cloned()
                     .and_then(|p| serde_json::from_value(p).ok())
                     .unwrap_or_default();
+                // The owed guest joined, or left after being in the call: then the offer goes.
+                let present = |s: &State, identity: &str| {
+                    s.participants
+                        .iter()
+                        .any(|p| p.identity == identity && p.role == ipc::Role::Guest)
+                };
+                let here = s.owed.as_ref().map(|o| present(s, &o.identity));
+                match (here, s.owed.as_mut()) {
+                    (Some(true), Some(owed)) => owed.seen = true,
+                    (Some(false), Some(owed)) if owed.seen => s.owed = None,
+                    _ => {}
+                }
             }
+            // The hotkey or Take back: nobody controls now, so nothing is offered either.
+            "revoked" => s.owed = None,
             "error" => {
                 s.engine_error = event
                     .get("message")
@@ -1292,6 +1359,13 @@ impl Calls {
     pub async fn send_command(&self, command: &ipc::Command) -> Result<(), String> {
         if let ipc::Command::AllowControl { request } = command {
             return self.allow_control(*request).await;
+        }
+        if matches!(command, ipc::Command::RevokeControl) {
+            // Take back means nobody controls now: the offer goes too, whatever the engine says.
+            let cleared = self.lock().owed.take().is_some();
+            if cleared {
+                self.emit();
+            }
         }
         let s = self.lock();
         let running = s
@@ -1689,10 +1763,16 @@ impl Calls {
             let mut s = self.lock();
             Self::needs_notice(&mut s, let_in_without_control(&name));
             if state == MemberState::Admitted {
+                let identity = format!("guest-{user_id}");
+                let seen = s
+                    .participants
+                    .iter()
+                    .any(|p| p.identity == identity && p.role == ipc::Role::Guest);
                 s.owed = Some(Owed {
-                    identity: format!("guest-{user_id}"),
+                    identity,
                     name: name.clone(),
                     shown: None,
+                    seen,
                 });
             }
         }
@@ -1744,6 +1824,7 @@ impl Calls {
                 identity: identity.to_owned(),
                 name,
                 shown: None,
+                seen: true,
             });
             self.emit();
             return Err(NEEDS_ACCESSIBILITY.into());
@@ -1767,8 +1848,8 @@ impl Calls {
     }
 
     /// Give control to the guest [`HomeView::owed`] names: armed like a knock, then exactly
-    /// what Give control does (or, for someone let in who hasn't joined yet, what Let in with
-    /// control does). The Accessibility check comes first, as always.
+    /// what Give control does (or, for someone let in who has never been in the call since,
+    /// what Let in with control does). The Accessibility check comes first, as always.
     pub async fn give_owed_control(&self) -> Result<HomeView, String> {
         let (identity, present, call_id) = {
             let s = self.lock();
@@ -1782,6 +1863,10 @@ impl Calls {
                 .participants
                 .iter()
                 .any(|p| p.identity == owed.identity && p.role == ipc::Role::Guest);
+            if !present && owed.seen {
+                // Gone (the participants event clears this; never a promise for them).
+                return Err(NOT_IN_THE_CALL.into());
+            }
             (owed.identity.clone(), present, call_id)
         };
         if present {

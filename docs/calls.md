@@ -119,11 +119,17 @@ TwinCursor needs Accessibility."); they can ask again once it is granted. The
 microphone is asked for by the engine when a call starts.
 
 The app asks macOS once per run. While a permission is needed, the app checks it again
-every two seconds (`tc-engine permissions`, which never prompts), so the window stops asking as
-soon as it is turned on; a re-check never gives anyone control. A guest who was let in without
-control, or whom Give control couldn't trust, is then `owed`: the bar offers **Give control to
-Sam**, armed a second after it is shown like a knock, and clicking it does exactly what Give
-control does (or, for someone let in who hasn't joined yet, what Let in with control does).
+(`tc-engine permissions`, which never prompts): every 2 s for two minutes after the need
+appeared or you last clicked, opened Settings or reset, then every 15 s, and not at all after ten
+minutes, until the next click checks afresh. So the window stops asking soon after it is turned
+on; a re-check never gives anyone control. A guest who was let in without control, or whom Give
+control couldn't trust, is then `owed`: the bar offers **Give control to Sam**, armed a second
+after it is shown like a knock, and clicking it does exactly what Give control does (or, for
+someone let in who has never been in the call since, what Let in with control does). The offer
+ends when that guest leaves the call after being in it, is no longer let in (turned away or
+removed), or the call ends, so it is never a promise for someone who has gone. Any revoke ends it
+too, the hotkey and Take back alike, even before anything was given: Give control in the menu
+stays for a deliberate grant.
 
 Still refused after macOS was asked, and after either Open Settings or another attempt, the
 permission is `stuck`. The window then offers **Reset and ask again** (`reset_permission`):

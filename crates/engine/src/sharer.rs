@@ -418,6 +418,9 @@ fn run(
             }
             apply_with(controller.revoke(), outgoing, seam);
             controller.injector_mut().settle();
+            if let Seam::App(app) = seam {
+                app.send(Event::Revoked);
+            }
         }
         let effects = match rx.recv_timeout(TICK) {
             Ok(In::Link(LinkEvent::Data { from, payload })) => match protocol::decode(&payload) {
@@ -950,6 +953,27 @@ mod tests {
         assert!(events.contains(&Event::Error {
             message: "Control was just taken back, so nobody was given it.".into()
         }));
+    }
+
+    #[test]
+    fn every_revoke_is_told_to_the_app_even_with_nobody_in_control() {
+        let events = control_thread_from(false, false, |handle, tx| {
+            std::thread::spawn({
+                let revoke = handle.revoke.clone();
+                let tx = tx.clone();
+                move || {
+                    std::thread::sleep(Duration::from_millis(300));
+                    revoke.trip();
+                    std::thread::sleep(Duration::from_millis(300));
+                    let _ = tx.send(In::Stop);
+                }
+            });
+        });
+        assert_eq!(
+            events.iter().filter(|e| **e == Event::Revoked).count(),
+            1,
+            "{events:?}"
+        );
     }
 
     #[test]

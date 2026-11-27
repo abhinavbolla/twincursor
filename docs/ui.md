@@ -142,8 +142,9 @@ Sections under the row:
 - **Needs Accessibility**: "TwinCursor needs Accessibility to give control." **Open Settings**.
   Shown after Let in with control, Give control or Allow found it missing; after an Allow, the
   request is turned down and a notice names who wasn't given control. The refusal itself isn't
-  repeated as a notice. The app checks again every two seconds while this shows, so it goes by
-  itself once Accessibility is on.
+  repeated as a notice. The app checks again while this shows (every 2 s at first, then less
+  often, stopping after ten minutes until the next click), so it goes by itself once
+  Accessibility is on.
 - **Still refused**: once macOS was asked and you went to System Settings (Open Settings) or
   tried again, and macOS still says no: "macOS still says no. If TwinCursor is already on in the
   list, it may be the switch from an older copy." **Open Settings** (quiet) and **Reset and ask

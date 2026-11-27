@@ -267,10 +267,13 @@ struct FakePermits {
     resets: Mutex<Vec<Permission>>,
     /// What the fake tccutil exits with.
     reset_code: Mutex<i32>,
+    /// How often `granted` was asked.
+    checks: AtomicUsize,
 }
 
 impl Permits for FakePermits {
     fn granted(&self, which: Permission) -> Result<bool, String> {
+        self.checks.fetch_add(1, Ordering::SeqCst);
         Ok(!self.missing.lock().unwrap().contains(&which))
     }
     fn request(&self, which: Permission) -> Result<bool, String> {
@@ -1169,6 +1172,151 @@ async fn turned_on_later_the_message_goes_at_a_recheck_and_giving_control_is_one
     assert_eq!(view.owed, None);
     assert_eq!(w.calls.give_owed_control().await.unwrap_err(), NOBODY_OWED);
     assert_eq!(w.permits.requests(), [Permission::Accessibility]);
+}
+
+/// Sam let in with control while Accessibility was off, then turned on and re-checked: Give
+/// control to Sam is offered and armed.
+async fn owed_sam(w: &World, joined: bool) -> String {
+    let sam = format!("guest-{SAM}");
+    w.permits.without(Permission::Accessibility);
+    w.knocked().await;
+    w.clock.advance(ARMING);
+    w.calls.answer_knock(SAM, true, true).await.unwrap();
+    w.hosting(json!([{ "user_id": SAM, "name": "Sam", "handle": null, "avatar_url": null, "state": "admitted" }]));
+    if joined {
+        w.participants(0, &[(&sam, "guest")]);
+    }
+    w.permits.grant_all();
+    w.calls.recheck().await;
+    w.clock.advance(ARMING);
+    assert!(w.calls.home().owed.unwrap().armed);
+    sam
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn owed_control_ends_when_the_guest_leaves_and_is_never_a_promise_for_them() {
+    let w = world(true).await;
+    owed_sam(&w, true).await;
+    w.participants(0, &[]);
+    assert_eq!(w.calls.home().owed, None);
+    assert_eq!(w.calls.give_owed_control().await.unwrap_err(), NOBODY_OWED);
+    assert!(w.arrivals(0).is_empty() && w.trusts(0).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn owed_control_ends_when_they_are_no_longer_admitted() {
+    for state in ["turned_away", "left"] {
+        let w = world(true).await;
+        owed_sam(&w, false).await;
+        w.hosting(json!([{ "user_id": SAM, "name": "Sam", "handle": null, "avatar_url": null, "state": state }]));
+        assert_eq!(w.calls.poll_once().await, Polled::Done);
+        assert_eq!(w.calls.home().owed, None, "{state}");
+    }
+    // Gone from the members altogether.
+    let w = world(true).await;
+    owed_sam(&w, false).await;
+    w.hosting(json!([]));
+    assert_eq!(w.calls.poll_once().await, Polled::Done);
+    assert_eq!(w.calls.home().owed, None);
+    assert_eq!(w.calls.give_owed_control().await.unwrap_err(), NOBODY_OWED);
+    assert!(w.arrivals(0).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn owed_control_ends_when_the_call_does() {
+    let w = world(true).await;
+    owed_sam(&w, true).await;
+    w.calls.end().await.unwrap();
+    assert_eq!(w.calls.home().owed, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn take_back_and_the_hotkey_end_the_offer() {
+    // Take back from the window.
+    let w = world(true).await;
+    owed_sam(&w, true).await;
+    w.calls
+        .send_command(&ipc::Command::RevokeControl)
+        .await
+        .unwrap();
+    assert_eq!(w.calls.home().owed, None);
+    assert!(w.trusts(0).is_empty());
+
+    // The hotkey, which the engine reports as `revoked`.
+    let w = world(true).await;
+    owed_sam(&w, true).await;
+    w.event(0, json!({ "event": "revoked" }));
+    assert_eq!(w.calls.home().owed, None);
+
+    // Before anything was offered: a revoke while Accessibility was still off leaves nothing
+    // to offer once it is on.
+    let w = world(true).await;
+    let sam = format!("guest-{SAM}");
+    w.permits.without(Permission::Accessibility);
+    w.knocked().await;
+    w.clock.advance(ARMING);
+    w.calls.answer_knock(SAM, true, true).await.unwrap();
+    w.participants(0, &[(&sam, "guest")]);
+    w.event(0, json!({ "event": "revoked" }));
+    w.permits.grant_all();
+    w.calls.recheck().await;
+    assert_eq!(w.calls.home().owed, None);
+    assert_eq!(
+        w.calls.home().notice.as_deref(),
+        Some(ACCESSIBILITY_ON),
+        "Give control in the menu is still there"
+    );
+    w.calls.give_control(&sam).await.unwrap();
+    assert_eq!(w.trusts(0), [(sam, Some(1))]);
+}
+
+#[test]
+fn the_recheck_slows_down_then_stops() {
+    let t = Instant::now();
+    let at = |secs: u64| recheck_delay(t, t + Duration::from_secs(secs));
+    assert_eq!(at(0), Some(RECHECK_FAST));
+    assert_eq!(at(119), Some(RECHECK_FAST));
+    assert_eq!(at(120), Some(RECHECK_SLOW));
+    assert_eq!(at(599), Some(RECHECK_SLOW));
+    assert_eq!(at(600), None);
+    assert_eq!(
+        (
+            RECHECK_FAST,
+            RECHECK_FAST_FOR,
+            RECHECK_SLOW,
+            RECHECK_STOP_AFTER
+        ),
+        (
+            Duration::from_secs(2),
+            Duration::from_secs(120),
+            Duration::from_secs(15),
+            Duration::from_secs(600)
+        )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_recheck_timer_stops_after_ten_minutes_and_a_click_starts_it_again() {
+    let w = world(true).await;
+    let sam = format!("guest-{SAM}");
+    w.permits.without(Permission::Accessibility);
+    w.host().await;
+    w.participants(0, &[(&sam, "guest")]);
+    assert!(w.calls.give_control(&sam).await.is_err());
+    let checks = || w.permits.checks.load(Ordering::SeqCst);
+    let after_click = checks();
+    // Ten minutes on: the timer's next wake-up ends it without asking.
+    w.clock.advance(RECHECK_STOP_AFTER);
+    tokio::time::sleep(RECHECK_FAST + Duration::from_millis(300)).await;
+    assert_eq!(checks(), after_click, "no check past the end");
+    tokio::time::sleep(RECHECK_FAST + Duration::from_millis(300)).await;
+    assert_eq!(checks(), after_click, "and none later either");
+    assert_eq!(w.calls.home().needs, Some(Permission::Accessibility));
+    // A click checks afresh, and the timer runs again.
+    assert!(w.calls.give_control(&sam).await.is_err());
+    let clicked = checks();
+    assert_eq!(clicked, after_click + 1);
+    eventually("a re-check", || checks() > clicked).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

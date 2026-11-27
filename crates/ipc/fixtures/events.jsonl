@@ -13,6 +13,7 @@
 {"event":"voice","sending":false,"muted":false,"mic":null,"speaker":null}
 {"event":"stats","width":1920,"height":1080,"fps":59.8,"kbps":2480.5,"rtt_ms":4.2,"codec":"h264","shown_pct":100}
 {"event":"stats","width":3840,"height":2160,"fps":60.0,"kbps":9800.0,"rtt_ms":null,"codec":"h265","shown_pct":null}
+{"event":"revoked"}
 {"event":"error","message":"No one is asking for control right now."}
 {"event":"ended","reason":"left"}
 {"event":"ended","reason":"disconnected"}
