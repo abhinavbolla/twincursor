@@ -12,6 +12,7 @@ import { Mark, MoreIcon } from "./icons";
 import { Menu, type MenuItem } from "./Menu";
 import { forget, type ShownLine } from "./notices";
 import { panelModel, type MeView, type PanelMain, type PersonRow, type RingCard } from "./panelModel";
+import { RESET_LABEL, STILL_NO } from "./permissions";
 import { MAC, signInLine, type PlatformInfo } from "./platform";
 import { useCall, useHome, usePlatform } from "./useSurface";
 
@@ -188,10 +189,17 @@ export function Panel({ bridge, home, call, menuOpen = false, platform = MAC }: 
             ))}
             {model.needsScreenRecording && (
               <div className="panel-note" role="status">
-                <span>TwinCursor needs Screen Recording to share your screen.</span>
-                <button type="button" className="small" onClick={() => void bridge.openPane("screen_recording")}>
-                  Open Settings
-                </button>
+                <span>{model.screenRecordingStuck ? STILL_NO : "TwinCursor needs Screen Recording to share your screen."}</span>
+                <span className="panel-note-actions">
+                  <button type="button" className="small" onClick={() => void bridge.openPane("screen_recording")}>
+                    Open Settings
+                  </button>
+                  {model.screenRecordingStuck && (
+                    <button type="button" className="small" onClick={() => run(() => bridge.resetPermission("screen_recording"))}>
+                      {RESET_LABEL}
+                    </button>
+                  )}
+                </span>
               </div>
             )}
             {model.error !== null && <NoticeRow text={model.error} tone="bad" close={() => dismiss(model.error ?? "")} />}

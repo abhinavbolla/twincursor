@@ -886,6 +886,13 @@ mod tests {
     }
 
     #[test]
+    fn the_app_knows_this_sentence() {
+        // The call bar tells this refusal apart from its own (apps/desktop/src/permissions.ts).
+        let ui = include_str!("../../../apps/desktop/src/permissions.ts");
+        assert!(ui.contains(&format!("\"{NEEDS_ACCESSIBILITY}\"")));
+    }
+
+    #[test]
     fn trust_on_arrival_trusts_a_guest_who_joins_later() {
         let events = control_thread_from(false, true, |handle, tx| {
             handle.trust_on_arrival(SAM.into());

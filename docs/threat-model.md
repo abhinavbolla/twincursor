@@ -202,6 +202,13 @@ for TwinCursor and grants nothing to anything else (ADR 0007). Run from a termin
 and `tc-engine` get the terminal's permissions instead, and so does everything else running from
 it.
 
+macOS records each grant against the app's code signature. An ad hoc signed build has a
+signature of its own every time, so a grant made to one build doesn't carry over to the next,
+even while System Settings shows the switch on. **Reset and ask again** runs `tccutil reset` for
+TwinCursor's own identifier only and then asks macOS again; it grants nothing and gives nobody
+control. Checking a permission again never gives control either: control stays an explicit,
+armed click.
+
 ## Supply chain
 
 - `Cargo.lock` is committed, and CI builds with `--locked`.

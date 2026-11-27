@@ -16,6 +16,38 @@ export interface PermissionStatus {
   microphone: Access;
 }
 
+/** The Rust side's refusals for a missing permission (`calls.rs`). The needs section is where
+ * that is said, so they aren't repeated as notices, and once it is granted they are stale. */
+export const NEEDS_ACCESSIBILITY_ERROR =
+  "TwinCursor needs Accessibility to give control. Turn it on in System Settings, then try again.";
+export const NEEDS_SCREEN_RECORDING_ERROR =
+  "TwinCursor needs Screen Recording to share your screen. Turn it on in System Settings, then try again.";
+
+/** What the running engine says when it can't make real input (`NEEDS_ACCESSIBILITY` in
+ * crates/engine/src/sharer.rs). */
+export const ENGINE_NEEDS_ACCESSIBILITY = "TwinCursor needs Accessibility to let someone control this Mac.";
+
+/** The engine refused although the app's fresh check said yes: the share's process can't use
+ * the grant, and a new one can. */
+export const RESHARE_FOR_ACCESSIBILITY =
+  "macOS says Accessibility is on, but this share can't use it yet. Stop and share again for it to take effect.";
+
+/** Still refused after macOS was asked and the person went to System Settings or tried again.
+ * It doesn't claim to know why. */
+export const STILL_NO = "macOS still says no. If TwinCursor is already on in the list, it may be the switch from an older copy.";
+export const RESET_LABEL = "Reset and ask again";
+
+/** A missing permission's refusal, rewritten for where it shows, or null to leave it out. */
+export function permissionLine(text: string, needs: "screen_recording" | "accessibility" | null): string | null {
+  if (text === NEEDS_ACCESSIBILITY_ERROR || text === NEEDS_SCREEN_RECORDING_ERROR) {
+    return null;
+  }
+  if (text === ENGINE_NEEDS_ACCESSIBILITY) {
+    return needs === "accessibility" ? null : RESHARE_FOR_ACCESSIBILITY;
+  }
+  return text;
+}
+
 export const PERMISSION_LABELS: Record<PermissionName, string> = {
   screen_recording: "Screen Recording",
   accessibility: "Accessibility",

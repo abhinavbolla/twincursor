@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::time::Instant;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::engine::{self, EnvHook, Launcher, Plan, Sink, TestHooks};
 
@@ -125,7 +125,7 @@ impl Clipboard for MemoryClipboard {
 }
 
 /// A permission the flows ask for when they first need it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Permission {
     /// To share the screen.
@@ -141,6 +141,14 @@ impl Permission {
             Permission::Accessibility => "accessibility",
         }
     }
+
+    /// The service's name for `tccutil`.
+    pub fn tcc_service(self) -> &'static str {
+        match self {
+            Permission::ScreenRecording => "ScreenCapture",
+            Permission::Accessibility => "Accessibility",
+        }
+    }
 }
 
 /// macOS permissions. Where the platform has none to ask for (Windows), all are granted.
@@ -148,6 +156,10 @@ pub trait Permits: Send + Sync {
     fn granted(&self, which: Permission) -> Result<bool, String>;
     /// Asks macOS (its prompt, the first time). Returns whether it is granted afterwards.
     fn request(&self, which: Permission) -> Result<bool, String>;
+    /// Clears TwinCursor's own entry for `which` in macOS's privacy list (`tccutil reset`, for
+    /// this app's identifier only), so that the next request lists this copy afresh. Returns
+    /// tccutil's exit code.
+    fn reset(&self, which: Permission) -> Result<i32, String>;
 }
 
 /// The engine's view of the permissions, in a fresh `tc-engine permissions` each time: macOS
@@ -173,7 +185,16 @@ impl Permits for EnginePermits {
         }
         engine_says(&["permissions", "--request", which.word()], which)
     }
+    fn reset(&self, which: Permission) -> Result<i32, String> {
+        if !crate::platform::ASKS_PERMISSIONS {
+            return Err(NOTHING_TO_RESET.into());
+        }
+        crate::platform::reset_permission(which.tcc_service())
+    }
 }
+
+/// What a reset says where there is no permission list to reset.
+pub const NOTHING_TO_RESET: &str = "There's no permission to reset here.";
 
 /// Everything granted, for `--script` mode: it shares the synthetic pattern (no Screen Recording
 /// needed) and records input instead of injecting it (no Accessibility needed).
@@ -185,6 +206,9 @@ impl Permits for ScriptPermits {
     }
     fn request(&self, _which: Permission) -> Result<bool, String> {
         Ok(true)
+    }
+    fn reset(&self, _which: Permission) -> Result<i32, String> {
+        Ok(0)
     }
 }
 

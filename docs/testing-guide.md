@@ -55,7 +55,10 @@ Settings.
 | Microphone | When your first call starts | To send your voice. |
 | Accessibility | The first time you click **Let in with control**, **Give control** or **Allow** | To type and click for the guest while you allow it. |
 
-After allowing Screen Recording in System Settings, click **Share my screen** again.
+After allowing Screen Recording in System Settings, click **Share my screen** again. After
+allowing Accessibility, the bar notices by itself within a couple of seconds and offers **Give
+control** again. If it keeps saying "macOS still says no" although TwinCursor is on in the list,
+click **Reset and ask again** and turn it on once more when macOS asks.
 
 ## Start a call
 

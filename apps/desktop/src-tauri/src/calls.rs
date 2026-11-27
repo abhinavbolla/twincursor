@@ -74,6 +74,9 @@ pub const FAILURES_BEFORE_BACKOFF: u32 = 3;
 pub const KNOCK_GIVE_UP: Duration = Duration::from_secs(45);
 /// How long leaving waits for the engine to go before stopping it.
 const ENGINE_GONE_TIMEOUT: Duration = Duration::from_secs(7);
+/// How often a missing permission is checked again while the window says it is needed, so the
+/// message goes by itself once it is turned on in System Settings.
+pub const RECHECK_EVERY: Duration = Duration::from_secs(2);
 
 pub const NOT_SIGNED_IN: &str = "Sign in first.";
 pub const IN_CALL: &str = "You're already in a call. Leave it first.";
@@ -98,6 +101,15 @@ pub const STOPPED: &str = "Stopped.";
 pub const ENGINE_STOPPED: &str = "The call stopped unexpectedly.";
 pub const NO_LONGER_WAITING: &str = "You're no longer waiting to join that call.";
 pub const TRUST_FROM_WINDOW: &str = "Control is given with Let in with control or Give control.";
+pub const ACCESSIBILITY_ON: &str = "Accessibility is on. You can give control now.";
+pub const NOTHING_TO_RESET: &str = "macOS isn't refusing that permission now.";
+pub const NOBODY_OWED: &str = "Nobody is waiting to be given control.";
+
+fn reset_failed(code: i32) -> String {
+    format!(
+        "The reset didn't work (tccutil exited with {code}). In System Settings, select TwinCursor in the list, remove it with −, then try again."
+    )
+}
 
 fn turned_away(host: &str) -> String {
     format!("{host} didn't let you in.")
@@ -159,6 +171,15 @@ pub struct KnockView {
     pub armed: bool,
 }
 
+/// A guest who wasn't given control for want of Accessibility, now that it is on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OwedView {
+    pub identity: String,
+    pub name: String,
+    /// Giving control is possible now ([`ARMING`] after this was first shown).
+    pub armed: bool,
+}
+
 /// Someone else on this app's call, as the backend has them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MemberView {
@@ -186,6 +207,12 @@ pub struct HomeView {
     pub error: Option<String>,
     /// A permission needed right now, for "Open Settings".
     pub needs: Option<Permission>,
+    /// `needs` is still refused after macOS was asked and the person went to System Settings
+    /// or tried again: the window offers to reset TwinCursor's entry and ask again.
+    pub stuck: bool,
+    /// Someone who would have been given control but for Accessibility, once it is on: one
+    /// click gives it, armed like a knock.
+    pub owed: Option<OwedView>,
     /// "Can't reach the server." while the poll keeps failing.
     pub server_problem: Option<String>,
 }
@@ -237,6 +264,14 @@ enum Stage {
     Ending,
 }
 
+/// A guest owed control ([`OwedView`]); `shown` is when the window first showed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Owed {
+    identity: String,
+    name: String,
+    shown: Option<Instant>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CallRef {
     call_id: String,
@@ -270,6 +305,15 @@ struct State {
     knock_trouble_since: Option<Instant>,
     /// Permissions macOS was asked for in this run (its prompt shows once).
     requested: HashSet<Permission>,
+    /// See [`HomeView::stuck`].
+    stuck: bool,
+    /// Permissions the window's Open Settings was used for in this run.
+    sent_to_settings: HashSet<Permission>,
+    /// The re-check timer is running.
+    rechecking: bool,
+    owed: Option<Owed>,
+    /// The notice that says a permission is missing, so it can go once it isn't.
+    notice_needs: Option<String>,
     engine: Option<Running>,
     /// The engine whose output counts; one per `Engines::start`.
     gen: u64,
@@ -318,6 +362,7 @@ impl State {
         self.knock_seen.clear();
         self.knock_trouble_since = None;
         self.awake = None;
+        self.owed = None;
         if notice.is_some() {
             self.notice = notice;
         }
@@ -394,6 +439,11 @@ impl Calls {
             failures: 0,
             knock_trouble_since: None,
             requested: HashSet::new(),
+            stuck: false,
+            sent_to_settings: HashSet::new(),
+            rechecking: false,
+            owed: None,
+            notice_needs: None,
             engine: None,
             gen: 0,
             proc: 0,
@@ -472,6 +522,17 @@ impl Calls {
                 }
             }
         }
+        let owed = match s.owed.as_mut() {
+            Some(owed) if hosting && s.needs != Some(Permission::Accessibility) => {
+                let shown = *owed.shown.get_or_insert(now);
+                Some(OwedView {
+                    identity: owed.identity.clone(),
+                    name: owed.name.clone(),
+                    armed: armed(now, shown, s.sight),
+                })
+            }
+            _ => None,
+        };
         HomeView {
             account: s.account.clone(),
             stage,
@@ -482,6 +543,8 @@ impl Calls {
             notice: s.notice.clone(),
             error: s.error.clone(),
             needs: s.needs,
+            stuck: s.needs.is_some() && s.stuck,
+            owed,
             server_problem: (s.failures >= FAILURES_BEFORE_BACKOFF).then(|| CANT_REACH.to_owned()),
         }
     }
@@ -501,7 +564,9 @@ impl Calls {
             if changed {
                 s.last_home = Some(view.clone());
             }
-            let arm = view.knocks.iter().any(|k| !k.armed) && !s.arm_timer;
+            let arm = (view.knocks.iter().any(|k| !k.armed)
+                || view.owed.as_ref().is_some_and(|o| !o.armed))
+                && !s.arm_timer;
             if arm {
                 s.arm_timer = true;
             }
@@ -511,7 +576,8 @@ impl Calls {
             (self.inner.setup.on_home)(&view);
         }
         if arm {
-            // Knocks turn armed with time alone: say so when they do.
+            // Knocks (and Give control for someone owed it) turn armed with time alone: say so
+            // when they do.
             let me = self.clone();
             self.inner.setup.runtime.spawn(async move {
                 tokio::time::sleep(ARMING / 4).await;
@@ -793,7 +859,8 @@ impl Calls {
     // Permissions.
 
     /// Whether `which` is granted, asking macOS the first time it is missing in this run. Sets
-    /// or clears what the view says is needed.
+    /// or clears what the view says is needed. Refused again after macOS was asked, it is
+    /// [`HomeView::stuck`]. While it is missing it is checked again every [`RECHECK_EVERY`].
     async fn ensure(&self, which: Permission) -> Result<bool, String> {
         let permits = self.inner.setup.permits.clone();
         let asked = self.lock().requested.contains(&which);
@@ -809,18 +876,146 @@ impl Calls {
         .await
         .map_err(|e| e.to_string())
         .and_then(|r: Result<(bool, bool), String>| r)?;
-        let mut s = self.lock();
-        if requested {
-            s.requested.insert(which);
-        }
-        if granted {
-            if s.needs == Some(which) {
-                s.needs = None;
+        {
+            let mut s = self.lock();
+            if requested {
+                s.requested.insert(which);
             }
-        } else {
-            s.needs = Some(which);
+            if granted {
+                if s.needs == Some(which) {
+                    Self::no_longer_needed(&mut s, None);
+                }
+            } else {
+                if s.needs != Some(which) {
+                    s.stuck = false;
+                }
+                s.needs = Some(which);
+                if asked {
+                    s.stuck = true;
+                }
+            }
+        }
+        if !granted {
+            self.start_rechecking();
         }
         Ok(granted)
+    }
+
+    /// `needs` is granted now: the view stops asking, and a notice that said it was missing
+    /// gives way to `notice`.
+    fn no_longer_needed(s: &mut State, notice: Option<&str>) {
+        s.needs = None;
+        s.stuck = false;
+        if s.notice.is_some() && s.notice == s.notice_needs {
+            s.notice = notice.map(str::to_owned);
+        } else if let Some(notice) = notice {
+            s.notice = Some(notice.to_owned());
+        }
+        s.notice_needs = None;
+    }
+
+    /// A notice that says a permission is missing.
+    fn needs_notice(s: &mut State, text: String) {
+        s.notice = Some(text.clone());
+        s.notice_needs = Some(text);
+    }
+
+    /// Checks `needs` again every [`RECHECK_EVERY`] until it is granted. One timer at a time.
+    fn start_rechecking(&self) {
+        {
+            let mut s = self.lock();
+            if s.rechecking || s.needs.is_none() {
+                return;
+            }
+            s.rechecking = true;
+        }
+        let me = self.clone();
+        self.inner.setup.runtime.spawn(async move {
+            loop {
+                tokio::time::sleep(RECHECK_EVERY).await;
+                me.recheck().await;
+                let mut s = me.lock();
+                if s.needs.is_none() {
+                    s.rechecking = false;
+                    break;
+                }
+            }
+        });
+    }
+
+    /// Checks the needed permission again, without asking macOS. Granted, the view stops
+    /// saying it is needed; still refused after macOS was asked and the person was sent to
+    /// System Settings, it is [`HomeView::stuck`]. Never gives anyone control.
+    pub async fn recheck(&self) {
+        let needs = self.lock().needs;
+        let Some(which) = needs else {
+            return;
+        };
+        let permits = self.inner.setup.permits.clone();
+        let answer = tokio::task::spawn_blocking(move || permits.granted(which))
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|r| r);
+        {
+            let mut s = self.lock();
+            match answer {
+                Ok(granted) if s.needs == Some(which) => {
+                    if granted {
+                        let notice = (which == Permission::Accessibility && s.owed.is_none())
+                            .then_some(ACCESSIBILITY_ON);
+                        Self::no_longer_needed(&mut s, notice);
+                    } else if s.requested.contains(&which) && s.sent_to_settings.contains(&which) {
+                        s.stuck = true;
+                    }
+                }
+                // Checked again at the next tick.
+                _ => {}
+            }
+        }
+        self.emit();
+    }
+
+    /// The window opened System Settings for `which` (its Open Settings).
+    pub fn opened_settings(&self, which: Permission) {
+        self.lock().sent_to_settings.insert(which);
+        self.start_rechecking();
+    }
+
+    /// Reset and ask again: clears TwinCursor's own entry for `which` in macOS's privacy list
+    /// (`tccutil reset`) and asks macOS again, which lists this copy of the app afresh. Only
+    /// while `which` is needed. Touches no other app's entry, and gives nobody control.
+    pub async fn reset_permission(&self, which: Permission) -> Result<HomeView, String> {
+        if self.lock().needs != Some(which) {
+            return Err(NOTHING_TO_RESET.into());
+        }
+        let permits = self.inner.setup.permits.clone();
+        let (code, granted) = tokio::task::spawn_blocking(move || {
+            let code = permits.reset(which)?;
+            let granted = if code == 0 {
+                permits.request(which)?
+            } else {
+                permits.granted(which)?
+            };
+            Ok((code, granted))
+        })
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r: Result<(i32, bool), String>| r)?;
+        {
+            let mut s = self.lock();
+            s.requested.insert(which);
+            s.sent_to_settings.remove(&which);
+            s.stuck = false;
+            if granted && s.needs == Some(which) {
+                Self::no_longer_needed(&mut s, None);
+            }
+        }
+        self.start_rechecking();
+        self.emit();
+        if code != 0 {
+            return Err(reset_failed(code));
+        }
+        Ok(self.home())
     }
 
     // Engines.
@@ -1079,7 +1274,7 @@ impl Calls {
                         .send_for(&ipc::Command::DenyControl { request }, proc);
                 }
                 s.asked_seen.remove(&request);
-                s.notice = Some(not_given_control(&name));
+                Self::needs_notice(&mut s, not_given_control(&name));
             }
             self.trace(json!({ "kind": "allow_refused", "why": "accessibility" }));
             self.emit();
@@ -1442,7 +1637,15 @@ impl Calls {
             self.trust_on_arrival(&call_id, &format!("guest-{user_id}"));
         }
         if control && !give {
-            self.lock().notice = Some(let_in_without_control(&name));
+            let mut s = self.lock();
+            Self::needs_notice(&mut s, let_in_without_control(&name));
+            if state == MemberState::Admitted {
+                s.owed = Some(Owed {
+                    identity: format!("guest-{user_id}"),
+                    name: name.clone(),
+                    shown: None,
+                });
+            }
         }
         self.trace(json!({ "kind": "let_in", "user_id": user_id, "control": give }));
         self.emit();
@@ -1478,23 +1681,26 @@ impl Calls {
     /// Gives control to someone already in this app's call: their requests are granted without
     /// a prompt until a revoke.
     pub async fn give_control(&self, identity: &str) -> Result<HomeView, String> {
-        {
+        let name = {
             let s = self.lock();
             s.hosting_id().ok_or(NOT_HOSTING)?;
-            let present = s
-                .participants
+            s.participants
                 .iter()
-                .any(|p| p.identity == identity && p.role == ipc::Role::Guest);
-            if !present {
-                return Err(NOT_IN_THE_CALL.into());
-            }
-        }
+                .find(|p| p.identity == identity && p.role == ipc::Role::Guest)
+                .map(|p| p.name.clone())
+                .ok_or(NOT_IN_THE_CALL)?
+        };
         if !self.ensure(Permission::Accessibility).await? {
+            self.lock().owed = Some(Owed {
+                identity: identity.to_owned(),
+                name,
+                shown: None,
+            });
             self.emit();
             return Err(NEEDS_ACCESSIBILITY.into());
         }
         {
-            let s = self.lock();
+            let mut s = self.lock();
             let running = s.engine.as_ref().ok_or(NO_CALL)?;
             running.handle.send_for(
                 &ipc::Command::TrustControl {
@@ -1502,8 +1708,42 @@ impl Calls {
                 },
                 s.proc,
             )?;
+            if s.owed.as_ref().is_some_and(|o| o.identity == identity) {
+                s.owed = None;
+            }
         }
         self.trace(json!({ "kind": "trust_sent", "identity": identity, "why": "give_control", "ok": true }));
+        self.emit();
+        Ok(self.home())
+    }
+
+    /// Give control to the guest [`HomeView::owed`] names: armed like a knock, then exactly
+    /// what Give control does (or, for someone let in who hasn't joined yet, what Let in with
+    /// control does). The Accessibility check comes first, as always.
+    pub async fn give_owed_control(&self) -> Result<HomeView, String> {
+        let (identity, present, call_id) = {
+            let s = self.lock();
+            let call_id = s.hosting_id().ok_or(NOT_HOSTING)?;
+            let owed = s.owed.as_ref().ok_or(NOBODY_OWED)?;
+            let shown = owed.shown.ok_or(TOO_SOON)?;
+            if !armed(self.now(), shown, s.sight) {
+                return Err(TOO_SOON.into());
+            }
+            let present = s
+                .participants
+                .iter()
+                .any(|p| p.identity == owed.identity && p.role == ipc::Role::Guest);
+            (owed.identity.clone(), present, call_id)
+        };
+        if present {
+            return self.give_control(&identity).await;
+        }
+        if !self.ensure(Permission::Accessibility).await? {
+            self.emit();
+            return Err(NEEDS_ACCESSIBILITY.into());
+        }
+        self.trust_on_arrival(&call_id, &identity);
+        self.lock().owed = None;
         self.emit();
         Ok(self.home())
     }

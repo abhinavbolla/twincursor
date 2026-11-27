@@ -8,7 +8,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { ComponentType } from "react";
 
 import { parseAccountState, type AccountState } from "./accountState";
-import { parseHomeView, type HomeView } from "./home";
+import { parseHomeView, type HomeView, type NeededPermission } from "./home";
 import type { EngineCommand, EngineOutput } from "./ipc";
 import { parseOutput } from "./ipc";
 import type { PermissionName } from "./permissions";
@@ -56,6 +56,11 @@ export interface Bridge {
   /** Refused with "Too soon. Try again." within a second of the knock being shown. */
   answerKnock(userId: string, letIn: boolean, control: boolean): Promise<HomeView>;
   giveControl(identity: string): Promise<HomeView>;
+  /** Give control to `home.owed`: refused with "Too soon. Try again." until it is armed. */
+  giveOwedControl(): Promise<HomeView>;
+  /** Reset and ask again: clears TwinCursor's own entry for this permission in macOS's list and
+   * asks macOS again. Only while `home.needs` is that permission. */
+  resetPermission(which: NeededPermission): Promise<HomeView>;
   ring(userId: string): Promise<HomeView>;
   answerRing(callId: string, accept: boolean): Promise<HomeView>;
   /** Ask to be invited, where this person may not start calls (`account.can_host` is false). */
@@ -148,6 +153,8 @@ function tauriBridge(): Bridge {
     answerKnock: (userId, letIn, control) =>
       invoke<unknown>("answer_knock", { user_id: userId, let_in: letIn, control }).then(homeAnswer),
     giveControl: (identity) => invoke<unknown>("give_control", { identity }).then(homeAnswer),
+    giveOwedControl: () => invoke<unknown>("give_owed_control").then(homeAnswer),
+    resetPermission: (which) => invoke<unknown>("reset_permission", { which }).then(homeAnswer),
     ring: (userId) => invoke<unknown>("ring", { user_id: userId }).then(homeAnswer),
     answerRing: (callId, accept) =>
       invoke<unknown>("answer_ring", { call_id: callId, accept }).then(homeAnswer),

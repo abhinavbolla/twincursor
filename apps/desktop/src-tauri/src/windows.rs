@@ -734,4 +734,8 @@ impl<P: Permits> Permits for HeldPermits<P> {
         self.windows.release(Hold::Permission);
         granted
     }
+
+    fn reset(&self, which: Permission) -> Result<i32, String> {
+        self.inner.reset(which)
+    }
 }

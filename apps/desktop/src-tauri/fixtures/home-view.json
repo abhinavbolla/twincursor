@@ -57,5 +57,11 @@
   "notice": "The call link is on your clipboard.",
   "error": null,
   "needs": "accessibility",
+  "stuck": true,
+  "owed": {
+    "identity": "guest-00000000-0000-4000-8000-00000000000b",
+    "name": "Sam",
+    "armed": false
+  },
   "server_problem": "Can't reach the server."
 }

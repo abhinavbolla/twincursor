@@ -99,7 +99,7 @@ The same two windows, with Windows' conventions (`native.rs`, `surfaces.rs`):
 | Sharing | "You're sharing your screen" with **Stop sharing**, the call link with **Copy link**; Call rings people into the call, and rows say "Ringing…" or "In the call"; a ring that went unanswered or was declined says "No answer" or "Declined" (muted) for 10 s after the panel first sees it, then the row shows **Call** again (`ringOutcomes.ts`) |
 | Knocking | "Waiting for **Alex** to let you in…" with **Cancel** |
 | In a call | "In **Alex**'s call" with **Leave** |
-| Needs Screen Recording | "TwinCursor needs Screen Recording to share your screen." with **Open Settings** |
+| Needs Screen Recording | "TwinCursor needs Screen Recording to share your screen." with **Open Settings**. Still refused after macOS was asked and you went to System Settings or tried again: "macOS still says no. If TwinCursor is already on in the list, it may be the switch from an older copy." with **Open Settings** and **Reset and ask again** |
 | Error, notice | One line each, closable; an error in the bad colour and stays until closed, a notice goes after 6 s (paused under the pointer) |
 | Server problem | A muted line pinned to the bottom |
 
@@ -141,7 +141,20 @@ Sections under the row:
   the same line).
 - **Needs Accessibility**: "TwinCursor needs Accessibility to give control." **Open Settings**.
   Shown after Let in with control, Give control or Allow found it missing; after an Allow, the
-  request is turned down and a notice names who wasn't given control.
+  request is turned down and a notice names who wasn't given control. The refusal itself isn't
+  repeated as a notice. The app checks again every two seconds while this shows, so it goes by
+  itself once Accessibility is on.
+- **Still refused**: once macOS was asked and you went to System Settings (Open Settings) or
+  tried again, and macOS still says no: "macOS still says no. If TwinCursor is already on in the
+  list, it may be the switch from an older copy." **Open Settings** (quiet) and **Reset and ask
+  again**, which clears TwinCursor's own entry in the Accessibility list and asks macOS again.
+- **Accessibility is on**: after Let in with control or Give control found it missing and it is
+  on now, "Accessibility is on." with **Give control to Sam**, off for a second with the knock's
+  line. Nothing is given until it is clicked. After a turned-down Allow, the notice "Accessibility
+  is on. You can give control now." replaces the one that said it was missing.
+- **Share again**: if the running share's engine still can't inject although the app's own check
+  says Accessibility is on, the error reads "macOS says Accessibility is on, but this share can't
+  use it yet. Stop and share again for it to take effect."
 - **Notices**: errors first, then notices; at most two, each closable. A notice goes away by
   itself after 6 s, paused while the pointer is over it; an error stays until closed
   (`notices.ts`).

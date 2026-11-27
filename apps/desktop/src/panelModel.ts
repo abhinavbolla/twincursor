@@ -5,6 +5,7 @@ import { safeAvatar } from "./accountState";
 import type { CallState } from "./call";
 import type { HomeView, MemberState } from "./home";
 import { shortName, type Phrase } from "./people";
+import { permissionLine } from "./permissions";
 import { CANT_SHARE_LINE, MAC, type PlatformInfo } from "./platform";
 import { RING_OUTCOME_LABEL, type RingOutcome } from "./ringOutcomes";
 
@@ -68,6 +69,8 @@ export type PanelModel =
       rings: RingCard[];
       /** Screen Recording is missing: the notice above the main action. */
       needsScreenRecording: boolean;
+      /** Still refused after asking: offer Reset and ask again. */
+      screenRecordingStuck: boolean;
       error: string | null;
       notice: string | null;
       main: PanelMain;
@@ -177,6 +180,9 @@ function callAction(home: HomeView, id: string, outcomes: ReadonlyMap<string, Ri
   }
 }
 
+/** A refusal for a missing permission isn't repeated beside the needs note (`permissions.ts`). */
+const lineOf = (text: string | null, home: HomeView): string | null => (text === null ? null : permissionLine(text, home.needs));
+
 export function panelModel(
   home: HomeView | null,
   call: CallState,
@@ -204,7 +210,8 @@ export function panelModel(
     },
     rings: home.rings.map((r) => ({ callId: r.call_id, name: r.host.name, avatar: safeAvatar(r.host.avatar_url) })),
     needsScreenRecording: platform.can_share && home.needs === "screen_recording",
-    error: shown(local.error ?? home.error),
+    screenRecordingStuck: platform.can_share && home.needs === "screen_recording" && home.stuck,
+    error: shown(lineOf(local.error ?? home.error, home)),
     notice: shown(home.notice),
     main: mainOf(home, call, platform),
     people: home.contacts.map((c) => ({

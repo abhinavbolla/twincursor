@@ -638,6 +638,11 @@ button.icon-button.muted:hover:not(:disabled) {
   min-width: 0;
 }
 
+.panel-note-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .panel-note {
   display: flex;
   flex-direction: column;
@@ -1019,6 +1024,18 @@ button.menu-item.separated::before {
 .bar-slim-text {
   flex: 1;
   min-width: 0;
+}
+
+/* Give control once Accessibility is on: armed like a knock, with the same line. */
+.bar-owed {
+  position: relative;
+}
+
+/* A sentence in a card, at the slim sections' size. */
+.bar-card-text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 16px;
 }
 
 .bar-notices {

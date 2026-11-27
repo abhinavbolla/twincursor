@@ -27,7 +27,7 @@ function home(state: string): Extract<PanelModel, { kind: "home" }> {
 describe("panel scenarios", () => {
   it("has every state the dev page promises", () => {
     const names = scenariosOf("panel").map((s) => s.name);
-    for (const name of ["off", "out", "signing", "home", "empty", "many", "ring", "needs", "starting", "hosting", "rang-missed", "rang-declined", "knocking", "joined", "error", "offline", "uninvited", "uninvited-asked"]) {
+    for (const name of ["off", "out", "signing", "home", "empty", "many", "ring", "needs", "needs-stuck", "starting", "hosting", "rang-missed", "rang-declined", "knocking", "joined", "error", "offline", "uninvited", "uninvited-asked"]) {
       expect(names).toContain(name);
     }
   });
@@ -86,6 +86,16 @@ describe("the panel", () => {
 
   it("asks for Screen Recording above the main action", () => {
     expect(home("needs").needsScreenRecording).toBe(true);
+    expect(home("needs").screenRecordingStuck).toBe(false);
+  });
+
+  it("says when macOS still says no to Screen Recording, without repeating the refusal", () => {
+    const m = home("needs-stuck");
+    expect(m.needsScreenRecording && m.screenRecordingStuck).toBe(true);
+    const s = findScenario("panel", "needs-stuck");
+    const refusal = "TwinCursor needs Screen Recording to share your screen. Turn it on in System Settings, then try again.";
+    const withError = s === undefined ? null : panelModel({ ...s.home, error: refusal }, replay(s.outputs));
+    expect(withError?.kind === "home" && withError.error).toBeNull();
   });
 
   it("shows a busy Share while starting, and Call can't be clicked", () => {
