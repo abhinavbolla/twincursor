@@ -311,6 +311,8 @@ struct State {
     sent_to_settings: HashSet<Permission>,
     /// The re-check timer is running.
     rechecking: bool,
+    /// What the last re-check found, so the log has changes rather than every tick.
+    rechecked: Option<(Permission, bool)>,
     owed: Option<Owed>,
     /// The notice that says a permission is missing, so it can go once it isn't.
     notice_needs: Option<String>,
@@ -442,6 +444,7 @@ impl Calls {
             stuck: false,
             sent_to_settings: HashSet::new(),
             rechecking: false,
+            rechecked: None,
             owed: None,
             notice_needs: None,
             engine: None,
@@ -875,7 +878,23 @@ impl Calls {
         })
         .await
         .map_err(|e| e.to_string())
-        .and_then(|r: Result<(bool, bool), String>| r)?;
+        .and_then(|r: Result<(bool, bool), String>| r)
+        .inspect_err(|e| {
+            crate::applog::line(format!(
+                "permission: {} couldn't be checked: {e}",
+                which.word()
+            ))
+        })?;
+        crate::applog::line(format!(
+            "permission: {} {}{}",
+            which.word(),
+            if granted { "granted" } else { "not granted" },
+            match (requested, asked) {
+                (true, _) => ", after asking macOS",
+                (false, true) => ", macOS was asked earlier in this run",
+                (false, false) => "",
+            }
+        ));
         {
             let mut s = self.lock();
             if requested {
@@ -906,6 +925,7 @@ impl Calls {
     fn no_longer_needed(s: &mut State, notice: Option<&str>) {
         s.needs = None;
         s.stuck = false;
+        s.rechecked = None;
         if s.notice.is_some() && s.notice == s.notice_needs {
             s.notice = notice.map(str::to_owned);
         } else if let Some(notice) = notice {
@@ -960,6 +980,18 @@ impl Calls {
             let mut s = self.lock();
             match answer {
                 Ok(granted) if s.needs == Some(which) => {
+                    if s.rechecked != Some((which, granted)) {
+                        crate::applog::line(format!(
+                            "permission: {} {} at a re-check",
+                            which.word(),
+                            if granted {
+                                "granted"
+                            } else {
+                                "still not granted"
+                            }
+                        ));
+                        s.rechecked = Some((which, granted));
+                    }
                     if granted {
                         let notice = (which == Permission::Accessibility && s.owed.is_none())
                             .then_some(ACCESSIBILITY_ON);
@@ -968,8 +1000,11 @@ impl Calls {
                         s.stuck = true;
                     }
                 }
-                // Checked again at the next tick.
-                _ => {}
+                Ok(_) => {}
+                Err(e) => crate::applog::line(format!(
+                    "permission: {} couldn't be re-checked: {e}",
+                    which.word()
+                )),
             }
         }
         self.emit();
@@ -977,6 +1012,10 @@ impl Calls {
 
     /// The window opened System Settings for `which` (its Open Settings).
     pub fn opened_settings(&self, which: Permission) {
+        crate::applog::line(format!(
+            "permission: System Settings opened for {}",
+            which.word()
+        ));
         self.lock().sent_to_settings.insert(which);
         self.start_rechecking();
     }
@@ -1000,12 +1039,22 @@ impl Calls {
         })
         .await
         .map_err(|e| e.to_string())
-        .and_then(|r: Result<(i32, bool), String>| r)?;
+        .and_then(|r: Result<(i32, bool), String>| r)
+        .inspect_err(|e| {
+            crate::applog::line(format!("permission: {} reset failed: {e}", which.word()))
+        })?;
+        crate::applog::line(format!(
+            "permission: {} reset (tccutil exit {code}){}; {}",
+            which.word(),
+            if code == 0 { ", macOS asked again" } else { "" },
+            if granted { "granted" } else { "not granted" }
+        ));
         {
             let mut s = self.lock();
             s.requested.insert(which);
             s.sent_to_settings.remove(&which);
             s.stuck = false;
+            s.rechecked = None;
             if granted && s.needs == Some(which) {
                 Self::no_longer_needed(&mut s, None);
             }

@@ -44,6 +44,16 @@ pub fn tccutil_command(service: &str) -> (&'static str, [&str; 3]) {
     ("/usr/bin/tccutil", ["reset", service, IDENTIFIER])
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// The log file on macOS, under `home`: `~/Library/Logs/TwinCursor/twincursor.log`, where
+/// Console finds it.
+pub fn mac_log_file(home: &Path) -> PathBuf {
+    home.join("Library")
+        .join("Logs")
+        .join("TwinCursor")
+        .join("twincursor.log")
+}
+
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 /// A page the app may open in the browser: http or https, and nothing in it that a command
 /// line could split or quote (whitespace, quotes, control characters). The sign-in page's
@@ -197,9 +207,10 @@ mod mac {
             .map_err(|e| format!("No config folder: {e}."))
     }
 
-    /// No log file unless `TWINCURSOR_LOG_FILE` asks for one.
+    /// `~/Library/Logs/TwinCursor/twincursor.log` ([`super::mac_log_file`]).
     pub fn default_log_file() -> Option<PathBuf> {
-        None
+        let home = std::env::var_os("HOME").filter(|v| !v.is_empty())?;
+        Some(super::mac_log_file(std::path::Path::new(&home)))
     }
 
     /// Runs [`super::tccutil_command`] for `service` and returns its exit code.
@@ -594,6 +605,14 @@ mod tests {
             )
         );
         assert_eq!(tccutil_command("ScreenCapture").1[2], IDENTIFIER);
+    }
+
+    #[test]
+    fn the_mac_log_is_in_the_users_logs_folder() {
+        assert_eq!(
+            mac_log_file(Path::new("/Users/sam")),
+            Path::new("/Users/sam/Library/Logs/TwinCursor/twincursor.log")
+        );
     }
 
     #[test]

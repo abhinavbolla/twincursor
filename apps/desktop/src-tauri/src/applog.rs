@@ -1,12 +1,14 @@
 //! The app's log file, so a run on someone else's computer says what happened: start-up, where
 //! the engine is, whether a backend is set up (its host only), the windows, sign-in's steps,
-//! the engine's start, exit and log lines, and errors. Never a token, a pass, a call link or
-//! clipboard text: what is written here is only what the lines below choose to write.
+//! the engine's start, exit and log lines, every permission check, request and reset with its
+//! answer, and errors. Never a token, a pass, a call link or clipboard text: what is written
+//! here is only what the lines below choose to write.
 //!
-//! On Windows it is `%LOCALAPPDATA%\dev.twincursor.desktop\logs\twincursor.log`
-//! ([`crate::platform::default_log_file`]); on macOS there is none unless
-//! `TWINCURSOR_LOG_FILE` names a file (it does on every platform). A log over 2 MB at start-up
-//! is moved to `twincursor.log.old` first, so it never grows without end.
+//! It is `~/Library/Logs/TwinCursor/twincursor.log` on macOS and
+//! `%LOCALAPPDATA%\dev.twincursor.desktop\logs\twincursor.log` on Windows
+//! ([`crate::platform::default_log_file`]), or the file `TWINCURSOR_LOG_FILE` names. A log over
+//! 2 MB at start-up is moved to `twincursor.log.old` first, so it never grows without end. Each
+//! line starts with the time in UTC (`2026-11-18 11:06:40Z`) and the seconds since start.
 
 use std::fmt::Display;
 use std::fs::{File, OpenOptions};
@@ -62,7 +64,7 @@ pub fn init() -> Option<Result<PathBuf, String>> {
     Some(result)
 }
 
-/// The wall clock as UTC `YYYY-MM-DD HH:MM:SS`, without a date crate.
+/// The wall clock as UTC `YYYY-MM-DD HH:MM:SSZ`, without a date crate.
 pub fn utc(at: SystemTime) -> String {
     let secs = at.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let (days, rest) = (secs / 86_400, secs % 86_400);
@@ -77,7 +79,7 @@ pub fn utc(at: SystemTime) -> String {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
     format!(
-        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}",
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}Z",
         rest / 3600,
         rest % 3600 / 60,
         rest % 60
@@ -113,11 +115,11 @@ mod tests {
 
     #[test]
     fn utc_dates() {
-        assert_eq!(utc(UNIX_EPOCH), "1970-01-01 00:00:00");
+        assert_eq!(utc(UNIX_EPOCH), "1970-01-01 00:00:00Z");
         let t = UNIX_EPOCH + Duration::from_secs(1_795_000_000);
-        assert_eq!(utc(t), "2026-11-18 11:06:40");
+        assert_eq!(utc(t), "2026-11-18 11:06:40Z");
         let leap = UNIX_EPOCH + Duration::from_secs(951_782_400);
-        assert_eq!(utc(leap), "2000-02-29 00:00:00");
+        assert_eq!(utc(leap), "2000-02-29 00:00:00Z");
     }
 
     #[test]

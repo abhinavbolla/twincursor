@@ -169,7 +169,25 @@ pub struct EnginePermits;
 fn engine_says(args: &[&str], which: Permission) -> Result<bool, String> {
     let exe = engine::engine_path()?;
     let status = engine::run_once(&exe, args)?;
-    Ok(status[which.word()] == "granted" || status[which.word()] == "not_applicable")
+    let answer = status[which.word()].as_str().unwrap_or("unreadable");
+    // Which engine answered, so a log shows which copy macOS was asked about. A check that
+    // answers as the last one did (the re-check while a permission is missing runs every few
+    // seconds) isn't written again; a request always is.
+    let said = format!(
+        "permission: tc-engine {} says {}={answer} ({})",
+        args.join(" "),
+        which.word(),
+        status["executable"].as_str().unwrap_or("?"),
+    );
+    static LAST_CHECK: Mutex<Option<String>> = Mutex::new(None);
+    let mut last = LAST_CHECK.lock().unwrap_or_else(|e| e.into_inner());
+    if args.len() > 1 || last.as_deref() != Some(said.as_str()) {
+        crate::applog::line(format!("{said}, engine pid {}", status["pid"]));
+        if args.len() == 1 {
+            *last = Some(said);
+        }
+    }
+    Ok(answer == "granted" || answer == "not_applicable")
 }
 
 impl Permits for EnginePermits {

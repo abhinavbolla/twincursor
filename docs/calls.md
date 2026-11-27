@@ -138,6 +138,9 @@ engine still refuses while the app's fresh check says yes, the bar says "macOS s
 Accessibility is on, but this share can't use it yet. Stop and share again for it to take
 effect."
 
+Every check, request and reset is written to the app's log with its answer, whether macOS was
+asked, and tccutil's exit code; a re-check is written only when its answer changes.
+
 ## What the window gets
 
 Every change to accounts and calls arrives on the `home` event as one view, which `home_state`

@@ -220,7 +220,15 @@ async fn permissions(request: bool) -> Result<Value, String> {
         } else {
             &["permissions"]
         };
-        engine::run_once(&exe, args)
+        let status = engine::run_once(&exe, args);
+        match &status {
+            Ok(status) => applog::line(format!(
+                "permissions: listed{}: {status}",
+                if request { " after asking macOS" } else { "" }
+            )),
+            Err(e) => applog::line(format!("permissions: couldn't list: {e}")),
+        }
+        status
     })
     .await
     .map_err(|e| e.to_string())?

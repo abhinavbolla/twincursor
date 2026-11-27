@@ -60,6 +60,9 @@ allowing Accessibility, the bar notices by itself within a couple of seconds and
 control** again. If it keeps saying "macOS still says no" although TwinCursor is on in the list,
 click **Reset and ask again** and turn it on once more when macOS asks.
 
+On a Mac, the app's log is `~/Library/Logs/TwinCursor/twincursor.log` (times in UTC). It never
+holds your sign-in or a call link.
+
 ## Start a call
 
 1. **Sharer:** click **Share my screen**. The call link goes on your clipboard: send it to your
