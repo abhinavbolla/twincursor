@@ -127,7 +127,7 @@ pub(crate) fn start(room: &Room, link: ControlLink) -> [JoinHandle<()>; 2] {
     });
     // Participants already in the room produce no connect event, and a screen subscribed before
     // `events` existed (the viewer starts the link after setting up its voice) no subscribed
-    // event. One subscribed meanwhile may be reported twice, which only means a second hello.
+    // event. One subscribed meanwhile may be reported twice, as may one who joined meanwhile.
     for (identity, participant) in room.remote_participants() {
         on_event(LinkEvent::Joined {
             identity: identity.to_string(),

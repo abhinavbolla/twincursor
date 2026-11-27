@@ -221,7 +221,8 @@ token's name field**: the account's name in a call pass, the typed `--name` othe
 Guests **announce the codecs they decode** in the `hello` they already send the sharer on the
 control channel (`crates/protocol`, a `decoders` list that older peers ignore). The sharer
 shows them in `participants`, so a sharer using HEVC can see a guest that can't decode it. The
-desktop app then starts its engine again with `--codec h264` for the rest of the call (and does
+guest says hello as soon as the sharer is in the room, not when the picture arrives, since a guest
+that can't decode the codec never gets one. The desktop app then starts its engine again with `--codec h264` for the rest of the call (and does
 the same, once, if an engine sharing with HEVC fails before it sends any video). For tests,
 `tc-engine view --decoders h264,vp8` announces only the codecs listed.
 

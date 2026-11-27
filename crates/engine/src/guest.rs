@@ -1,7 +1,8 @@
 //! The guest's side of remote control in the viewer.
 //!
 //! One thread owns the [`GuestSession`]. The window (or a script) hands it input, the link hands
-//! it the sharer's answers, and it sends to the sharer whose screen we're receiving.
+//! it the sharer's answers, and it sends to the sharer: the participant whose identity says so
+//! (`app::role_of`), found when they join, or failing that the one whose screen we receive.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -12,12 +13,12 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use control::guest::{GuestSession, GuestState};
-use ipc::{ConnectionState, ControlState, Event, Peer};
+use ipc::{ConnectionState, ControlState, Event, Peer, Role};
 use media::link::{ControlLink, LinkEvent, LinkSender, Outgoing};
 use protocol::{InputEvent, Message, Platform};
 use serde::Deserialize;
 
-use crate::app::{Events, People};
+use crate::app::{role_of, Events, People};
 use crate::{Error, ScriptError};
 
 const TICK: Duration = Duration::from_millis(4);
@@ -359,18 +360,32 @@ fn run(
         if let (Some(app), Ok(In::Link(event))) = (app.as_mut(), &received) {
             app.link(event, &name);
         }
-        match received {
-            Ok(In::Link(LinkEvent::Sharing(identity))) => {
-                tracing::info!(%identity, "sharer found");
-                sharer = Some(identity);
-                out.push(hello(&name));
-                offer.start(now);
-                out.extend(viewport.fresh(now));
-                // A request made before the sharer was found went nowhere: make it now.
-                if session.state() == GuestState::Requested {
-                    out.push(Message::RequestControl);
-                }
+        // The sharer is found as soon as they are in the room, by the role in their identity, not
+        // when their screen arrives: a guest that can't decode the sharer's codec never receives
+        // it, and the decoders in its hello are what make the sharer switch. A sharer joining
+        // again (already known) is offered the hello again; their screen arriving after that is
+        // no news. The screen still finds a sharer whose identity carries no role.
+        let found = match &received {
+            Ok(In::Link(LinkEvent::Joined { identity, .. })) => {
+                (role_of(identity) == Role::Sharer).then(|| identity.clone())
             }
+            Ok(In::Link(LinkEvent::Sharing(identity))) => {
+                (sharer.as_ref() != Some(identity)).then(|| identity.clone())
+            }
+            _ => None,
+        };
+        if let Some(identity) = found {
+            tracing::info!(%identity, "sharer found");
+            sharer = Some(identity);
+            out.push(hello(&name));
+            offer.start(now);
+            out.extend(viewport.fresh(now));
+            // A request made before the sharer was found went nowhere: make it now.
+            if session.state() == GuestState::Requested {
+                out.push(Message::RequestControl);
+            }
+        }
+        match received {
             Ok(In::Link(LinkEvent::Data { from, payload })) if Some(&from) == sharer.as_ref() => {
                 match protocol::decode(&payload) {
                     Ok(Message::HelloAck) => {
@@ -916,6 +931,71 @@ mod tests {
         h.from("sharer-c", &Message::HelloAck);
         h.sent(200);
         assert_eq!(hellos(&h.sent(600), "sharer-c"), 0);
+    }
+
+    fn joined(identity: &str) -> LinkEvent {
+        LinkEvent::Joined {
+            identity: identity.into(),
+            name: "Alex".into(),
+        }
+    }
+
+    /// A guest that can't decode the sharer's codec never receives the screen: the sharer must
+    /// still hear its decoders, or it never learns to switch.
+    #[test]
+    fn a_sharer_whose_screen_never_arrives_still_gets_the_hello() {
+        let mut h = Harness::start();
+        h.tx.send(In::Ui(Ui::Viewport((1920, 1080)))).unwrap();
+        // Others in the room are no sharer: a guest, and an identity with no role.
+        h.link(joined("guest-b"));
+        h.link(joined("Sam"));
+        assert_eq!(h.sent(400), []);
+
+        h.link(joined("sharer-a"));
+        let sent = h.sent(700);
+        assert!(hellos(&sent, "sharer-a") >= 2, "{sent:?}");
+        assert!(sent.iter().all(|(who, _)| who == "sharer-a"));
+        let decoders = sent.iter().find_map(|(_, m)| match m {
+            Message::Hello { decoders, .. } => Some(decoders.clone()),
+            _ => None,
+        });
+        assert_eq!(decoders, Some(crate::app::decoders()));
+        assert!(sent.contains(&("sharer-a".into(), viewport_message((1920, 1080)))));
+
+        // The answer stops the offers, and the screen arriving later is no news.
+        h.from("sharer-a", &Message::HelloAck);
+        h.sent(200);
+        h.link(LinkEvent::Sharing("sharer-a".into()));
+        assert_eq!(hellos(&h.sent(800), "sharer-a"), 0);
+
+        // The sharer joining again (a new connection under the same identity) may have forgotten
+        // us: offered again, until it answers.
+        h.link(joined("sharer-a"));
+        assert!(hellos(&h.sent(600), "sharer-a") >= 2);
+        h.from("sharer-a", &Message::HelloAck);
+        h.sent(200);
+        assert_eq!(hellos(&h.sent(600), "sharer-a"), 0);
+    }
+
+    #[test]
+    fn a_request_made_before_the_sharer_joins_waits_for_them() {
+        let mut h = Harness::start();
+        h.tx.send(In::Ui(Ui::Request)).unwrap();
+        h.link(joined("guest-b"));
+        assert_eq!(h.sent(300), [], "nobody to ask yet");
+
+        h.link(joined("sharer-a"));
+        let sent = h.sent(100);
+        let request = sent
+            .iter()
+            .position(|(_, m)| *m == Message::RequestControl)
+            .expect("request sent once the sharer is found");
+        assert!(sent[..request]
+            .iter()
+            .any(|(_, m)| matches!(m, Message::Hello { .. })));
+        assert!(sent.iter().all(|(who, _)| who == "sharer-a"));
+        h.tx.send(In::Ui(Ui::Release)).unwrap();
+        h.sent(100);
     }
 
     #[test]

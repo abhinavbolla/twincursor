@@ -282,7 +282,9 @@ custom libwebrtc build. Do it only if real-network numbers call for it.
   250 ms until the sharer answers with `HelloAck`, then not again; every 2 s after 15 s
   unanswered, for a sharer from before `HelloAck`. The answer is about the hello only: it
   grants nothing and says nothing about control. The viewer offers the hello again after a full
-  reconnect (the sharer forgot it when the old connection left) and to each new sharer. A
+  reconnect (the sharer forgot it when the old connection left) and to each new sharer, found
+  by the role in its identity as soon as it is in the room: a guest that can't decode the
+  sharer's codec never receives the screen, and its decoders are what make the sharer switch. A
   request for control that may arrive before the hello goes after one, so the sharer is asked
   by name. `bench/engine-e2e.sh` joins a viewer to a call under way and checks that the
   sharer's app has its decoders within 1 s of showing the viewer, without a request.
