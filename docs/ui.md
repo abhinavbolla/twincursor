@@ -66,6 +66,7 @@ when they show is decided in `surfaces.rs`, as plain tested functions).
 | Signing in | "Finish signing in in your browser…" and a quiet **Cancel** |
 | Home | Rings on top ("**Sam Rivera** is calling", **Decline**, **Join**); **Share my screen**; **Paste link** with "Join with a link someone sent you"; **People**, one 36 px row each with a **Call** button |
 | No people | "People you've been in a call with show up here." |
+| Invite-only, not invited | In place of Share my screen, a note: "You can join calls with a link. Sharing your own screen is by invitation on this server." with a quiet **Ask to be invited**, which becomes the muted "Asked. You'll be able to share once you're added." (also on later launches). **Paste link** is the primary button, unless a ring holds it. People rows have no **Call** (calling means sharing); rings still show with **Decline** and **Join** |
 | Starting | Share reads "Starting…", nothing moves |
 | Sharing | "You're sharing your screen" with **Stop sharing**, the call link with **Copy link**; Call rings people into the call, and rows say "Ringing…" or "In the call"; a ring that went unanswered or was declined says "No answer" or "Declined" (muted) for 10 s after the panel first sees it, then the row shows **Call** again (`ringOutcomes.ts`) |
 | Knocking | "Waiting for **Alex** to let you in…" with **Cancel** |
@@ -148,7 +149,7 @@ Sections under the row:
 
 - `?view=panel&state=<name>`: `off`, `out`, `out-menu`, `signing`, `home`, `empty`, `many`, `ring`, `rings`,
   `needs`, `starting`, `hosting`, `rang-missed`, `rang-declined`, `knocking`, `joined`, `error`,
-  `offline`
+  `offline`, `uninvited`, `uninvited-asked`
 - `?view=bar&state=<name>`: `alone`, `knock`, `knock2`, `knock-nohandle`, `with`, `trusted`,
   `controlling`, `asked`, `needs`, `menu`, `notice`, `g-knocking`, `g-watching`, `g-asked`,
   `g-controlling`, `reconnecting`, `muted`, `long-trusted`, `long-controlling`,

@@ -43,6 +43,7 @@ export function Panel({ bridge, home, call, menuOpen = false }: Props) {
   const [signInError, setSignInError] = useState<string | null>(null);
   const [guideError, setGuideError] = useState<string | null>(null);
   const [sharing, setSharing] = useState(false);
+  const [asking, setAsking] = useState(false);
 
   const outcomes = useRingOutcomes(home?.members ?? NO_MEMBERS);
   const model = panelModel(home, call, { dismissed, error, signingIn, outcomes });
@@ -96,6 +97,15 @@ export function Panel({ bridge, home, call, menuOpen = false }: Props) {
       .share()
       .catch((e: unknown) => setError(sentence(e)))
       .finally(() => setSharing(false));
+  };
+
+  const askToHost = () => {
+    setAsking(true);
+    setError(null);
+    bridge
+      .askToHost()
+      .catch((e: unknown) => setError(sentence(e)))
+      .finally(() => setAsking(false));
   };
 
   const signedIn = model.kind === "home";
@@ -189,7 +199,15 @@ export function Panel({ bridge, home, call, menuOpen = false }: Props) {
                 hover={(over) => model.notice !== null && hoverNotice(model.notice, over)}
               />
             )}
-            <Main main={model.main} sharing={sharing} share={share} paste={() => run(() => bridge.joinFromClipboard())} act={(op) => run(() => (op === "end" ? bridge.end() : bridge.cancelKnock()))} />
+            <Main
+              main={model.main}
+              sharing={sharing}
+              share={share}
+              asking={asking}
+              ask={askToHost}
+              paste={() => run(() => bridge.joinFromClipboard())}
+              act={(op) => run(() => (op === "end" ? bridge.end() : bridge.cancelKnock()))}
+            />
           </div>
 
           <section className="people" aria-labelledby="people-head">
@@ -281,10 +299,48 @@ function Main(props: {
   main: PanelMain;
   sharing: boolean;
   share: () => void;
+  asking: boolean;
+  ask: () => void;
   paste: () => void;
   act: (op: "end" | "cancel_knock") => void;
 }) {
   const main = props.main;
+  if (main.kind === "invite") {
+    return (
+      <div className="panel-main">
+        <div className="panel-note invite">
+          <span>You can join calls with a link. Sharing your own screen is by invitation on this server.</span>
+          {main.asked ? (
+            <span className="invite-asked muted" role="status">
+              Asked. You'll be able to share once you're added.
+            </span>
+          ) : (
+            <button
+              type="button"
+              className="small quiet"
+              aria-busy={props.asking}
+              onClick={props.asking ? undefined : props.ask}
+            >
+              Ask to be invited
+            </button>
+          )}
+        </div>
+        <button
+          type="button"
+          className={`wide${main.primary ? " primary" : ""}`}
+          aria-describedby="paste-hint"
+          aria-busy={main.busy}
+          disabled={main.busy}
+          onClick={props.paste}
+        >
+          Paste link
+        </button>
+        <p className="hint center" id="paste-hint">
+          Join with a link someone sent you
+        </p>
+      </div>
+    );
+  }
   if (main.kind === "share") {
     const busy = main.busy || props.sharing;
     return (

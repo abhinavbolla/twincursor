@@ -39,6 +39,11 @@ export type CallOp = "end" | "cancel_knock";
 export type PanelMain =
   /** Share my screen and Paste link. `primary` is false while a ring card holds the primary button. */
   | { kind: "share"; busy: boolean; primary: boolean }
+  /**
+   * This server doesn't let this person start calls: the invitation line, Ask to be invited (or
+   * that they asked), and Paste link as the primary action unless a ring card holds it.
+   */
+  | { kind: "invite"; busy: boolean; primary: boolean; asked: boolean }
   | {
       kind: "call";
       dot: "good" | "pending" | "off";
@@ -93,8 +98,13 @@ function mainOf(home: HomeView, call: CallState): PanelMain {
   const stage = home.stage;
   switch (stage.kind) {
     case "idle":
-    case "starting":
-      return { kind: "share", busy: stage.kind === "starting", primary: home.rings.length === 0 };
+    case "starting": {
+      const busy = stage.kind === "starting";
+      const primary = home.rings.length === 0;
+      return home.account.can_host
+        ? { kind: "share", busy, primary }
+        : { kind: "invite", busy, primary, asked: home.account.asked_to_host };
+    }
     case "hosting":
       return {
         kind: "call",
@@ -125,6 +135,12 @@ function mainOf(home: HomeView, call: CallState): PanelMain {
 }
 
 function actionFor(home: HomeView, id: string, outcomes: ReadonlyMap<string, RingOutcome>): PersonAction {
+  const action = callAction(home, id, outcomes);
+  // Calling means sharing: someone this server doesn't let start calls has no Call button.
+  return action.kind === "call" && !home.account.can_host ? { kind: "none" } : action;
+}
+
+function callAction(home: HomeView, id: string, outcomes: ReadonlyMap<string, RingOutcome>): PersonAction {
   switch (home.stage.kind) {
     case "idle":
       return { kind: "call", enabled: true };

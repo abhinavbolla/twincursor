@@ -32,6 +32,8 @@ pub enum Error {
     NotAllowed,
     #[error("You can only ring someone who has you as a contact too.")]
     NotAContact,
+    #[error("This server is invite-only. Ask whoever runs it to add your GitHub handle.")]
+    NotInvited,
     #[error("The server couldn't read the request.")]
     BadRequest,
 
@@ -76,6 +78,7 @@ impl Error {
             Error::OwnCall => "own_call",
             Error::NotAllowed => "not_allowed",
             Error::NotAContact => "not_a_contact",
+            Error::NotInvited => "not_invited",
             Error::BadRequest => "bad_argument",
             Error::PortTaken(_) => "port_taken",
             Error::SignInInProgress => "sign_in_in_progress",
@@ -107,6 +110,7 @@ impl Error {
             "bad_argument" => Error::BadRequest,
             "not_allowed" => Error::NotAllowed,
             "not_a_contact" => Error::NotAContact,
+            "not_invited" => Error::NotInvited,
             "not_signed_in" | "no_profile" => Error::NotSignedIn,
             _ => return None,
         })
@@ -161,6 +165,10 @@ mod tests {
                 "not_a_contact",
                 "You can only ring someone who has you as a contact too.",
             ),
+            (
+                "not_invited: this server is invite-only",
+                "This server is invite-only. Ask whoever runs it to add your GitHub handle.",
+            ),
             ("not_signed_in", "You're not signed in."),
             ("no_profile", "You're not signed in."),
         ];
@@ -202,6 +210,7 @@ mod tests {
             Error::OwnCall,
             Error::NotAllowed,
             Error::NotAContact,
+            Error::NotInvited,
             Error::BadRequest,
             Error::PortTaken(53682),
             Error::SignInInProgress,

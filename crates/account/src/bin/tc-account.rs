@@ -44,10 +44,10 @@ enum Cmd {
         #[arg(long)]
         email: String,
     },
-    /// Your profile.
+    /// Your profile, and whether you may start calls on this server (can_host).
     Whoami,
-    /// Contacts, the call you host, rings and knocks. --hosting names the call you are sharing,
-    /// which is the host's heartbeat.
+    /// You (with can_host), contacts, the call you host, rings and knocks. --hosting names the
+    /// call you are sharing, which is the host's heartbeat.
     Inbox {
         #[arg(long, value_name = "CALL")]
         hosting: Option<String>,
@@ -83,6 +83,9 @@ enum Cmd {
     End { call: String },
     /// Remove someone from your contacts.
     RemoveContact { contact: String },
+    /// Ask whoever runs the server to let you start calls (an invite-only server). Asking again
+    /// changes nothing.
+    AskToHost,
     /// A call pass for a call. Prints who it is for, without the token.
     Pass {
         call: String,
@@ -187,6 +190,10 @@ async fn run(cli: Cli) -> Result<Output, Error> {
         }
         Cmd::RemoveContact { contact } => {
             account.remove_contact(&contact).await?;
+            json(json!({ "ok": true }))
+        }
+        Cmd::AskToHost => {
+            account.ask_to_host().await?;
             json(json!({ "ok": true }))
         }
         Cmd::Pass { call, print_env } => {

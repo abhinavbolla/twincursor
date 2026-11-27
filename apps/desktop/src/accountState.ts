@@ -14,6 +14,10 @@ export interface AccountState {
   me: Me | null;
   /** A sign-in is waiting for the browser. */
   signing_in: boolean;
+  /** They may start calls (share, ring) on this server. The server decides; true until it says. */
+  can_host: boolean;
+  /** They asked whoever runs the server to let them start calls. */
+  asked_to_host: boolean;
 }
 
 /** What the Account card shows. */
@@ -49,7 +53,9 @@ export function parseAccountState(value: unknown): AccountState | null {
   if (
     typeof v.configured !== "boolean" ||
     typeof v.signed_in !== "boolean" ||
-    typeof v.signing_in !== "boolean"
+    typeof v.signing_in !== "boolean" ||
+    typeof v.can_host !== "boolean" ||
+    typeof v.asked_to_host !== "boolean"
   ) {
     return null;
   }
@@ -57,7 +63,14 @@ export function parseAccountState(value: unknown): AccountState | null {
   if (v.me !== null && v.me !== undefined && me === null) {
     return null;
   }
-  return { configured: v.configured, signed_in: v.signed_in, me, signing_in: v.signing_in };
+  return {
+    configured: v.configured,
+    signed_in: v.signed_in,
+    me,
+    signing_in: v.signing_in,
+    can_host: v.can_host,
+    asked_to_host: v.asked_to_host,
+  };
 }
 
 /** An avatar URL the window may load: GitHub's avatar host over HTTPS, nothing else. */

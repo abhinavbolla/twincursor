@@ -26,7 +26,7 @@ select is(
    where has_table_privilege('anon', t.name, 'SELECT')),
   0, 'anon can read no table');
 
--- Functions: anon executes nothing of ours; authenticated executes exactly the ten RPCs.
+-- Functions: anon executes nothing of ours; authenticated executes exactly the eleven RPCs.
 select is(
   (select count(*)::int
    from pg_proc f join pg_namespace n on n.oid = f.pronamespace
@@ -40,9 +40,9 @@ select is(
    where n.nspname = 'public'
      and not exists (select 1 from pg_depend d where d.objid = f.oid and d.deptype = 'e')
      and has_function_privilege('authenticated', f.oid, 'EXECUTE')),
-  array['answer_knock', 'answer_ring', 'end_call', 'inbox', 'knock', 'leave_call',
+  array['answer_knock', 'answer_ring', 'ask_to_host', 'end_call', 'inbox', 'knock', 'leave_call',
         'pass_claims', 'remove_contact', 'ring', 'start_call'],
-  'authenticated can execute the ten RPC functions and nothing else in public');
+  'authenticated can execute the eleven RPC functions and nothing else in public');
 select is(
   (select count(*)::int
    from pg_proc f join pg_namespace n on n.oid = f.pronamespace

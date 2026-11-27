@@ -41,6 +41,11 @@ struct Knobs {
     rings: Value,
     contacts: Value,
     inbox_delay: Duration,
+    /// What inbox says of `me`: may they start calls, and have they asked.
+    can_host: bool,
+    asked_to_host: bool,
+    /// start_call and ring answer not_invited, whatever inbox says.
+    not_invited: bool,
 }
 
 impl Default for Knobs {
@@ -58,6 +63,9 @@ impl Default for Knobs {
             rings: json!([]),
             contacts: json!([]),
             inbox_delay: Duration::ZERO,
+            can_host: true,
+            asked_to_host: false,
+            not_invited: false,
         }
     }
 }
@@ -79,7 +87,8 @@ fn answer(knobs: &Mutex<Knobs>, r: &Request) -> Reply {
         "/rest/v1/rpc/inbox" => Reply::json(
             200,
             json!({
-                "me": profile(ME, "Alex"),
+                "me": { "id": ME, "name": "Alex", "handle": null, "avatar_url": null,
+                        "can_host": k.can_host, "asked_to_host": k.asked_to_host },
                 "contacts": k.contacts,
                 "hosting": k.hosting,
                 "rings": k.rings,
@@ -87,6 +96,14 @@ fn answer(knobs: &Mutex<Knobs>, r: &Request) -> Reply {
             }),
         )
         .after(k.inbox_delay),
+        "/rest/v1/rpc/start_call" | "/rest/v1/rpc/ring" if k.not_invited => Reply::json(
+            403,
+            json!({ "code": "42501", "message": "not_invited: this server is invite-only" }),
+        ),
+        "/rest/v1/rpc/ask_to_host" => {
+            k.asked_to_host = true;
+            Reply::empty(204)
+        }
         "/rest/v1/rpc/start_call" | "/rest/v1/rpc/ring" => match k.start_call {
             Ok(()) => Reply::json(200, json!([{ "call_id": CALL, "code": CODE }])),
             Err(status) => Reply::json(status, json!({})),
@@ -1350,6 +1367,72 @@ async fn a_leftover_call_is_ended() {
     assert_eq!(w.engines_started(), 0);
 }
 
+// Invite-only servers.
+
+const NOT_INVITED: &str =
+    "This server is invite-only. Ask whoever runs it to add your GitHub handle.";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn someone_who_may_not_host_is_refused_here_without_asking_the_server() {
+    let w = world(true).await;
+    {
+        let mut k = w.knobs();
+        k.can_host = false;
+        k.contacts = json!([profile(SAM, "Sam")]);
+    }
+    assert_eq!(w.calls.poll_once().await, Polled::Done);
+    let view = w.calls.home();
+    assert!(!view.account.can_host && !view.account.asked_to_host);
+    assert_eq!(w.calls.share().await.unwrap_err(), NOT_INVITED);
+    assert_eq!(w.calls.ring(SAM).await.unwrap_err(), NOT_INVITED);
+    assert!(w.rpc("start_call").is_empty() && w.rpc("ring").is_empty());
+    assert_eq!(w.engines_started(), 0);
+    assert_eq!(w.calls.home().stage, StageView::Idle);
+
+    // Joining is the same as for anyone.
+    w.calls.join_link(CODE).await.unwrap();
+    assert!(matches!(w.calls.home().stage, StageView::Knocking { .. }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_server_refusing_a_call_shows_the_sentence_and_flips_the_view() {
+    let w = world(true).await;
+    w.calls.poll_once().await;
+    assert!(w.calls.home().account.can_host);
+    // Removed from the list since the last poll: the server refuses.
+    w.knobs().not_invited = true;
+    assert_eq!(w.calls.share().await.unwrap_err(), NOT_INVITED);
+    let view = w.calls.home();
+    assert_eq!(view.error.as_deref(), Some(NOT_INVITED));
+    assert!(
+        !view.account.can_host,
+        "the panel shows the invite-only state at once"
+    );
+    assert_eq!(view.stage, StageView::Idle);
+    assert_eq!(w.passes(), 0);
+    assert_eq!(w.engines_started(), 0);
+    // The next refusal comes from here.
+    assert_eq!(w.calls.share().await.unwrap_err(), NOT_INVITED);
+    assert_eq!(w.rpc("start_call").len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ask_to_host_tells_the_server_and_the_view() {
+    let w = world(true).await;
+    w.knobs().can_host = false;
+    w.calls.poll_once().await;
+    let view = w.calls.ask_to_host().await.unwrap();
+    assert!(view.account.asked_to_host && !view.account.can_host);
+    assert_eq!(w.rpc("ask_to_host").len(), 1);
+    assert_eq!(w.rpc("ask_to_host")[0].json(), json!({}));
+    // On a later launch, the server says so.
+    w.calls.poll_once().await;
+    assert!(w.calls.home().account.asked_to_host);
+
+    let w = world(false).await;
+    assert_eq!(w.calls.ask_to_host().await.unwrap_err(), NOT_SIGNED_IN);
+}
+
 // Rings.
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1487,6 +1570,8 @@ fn the_home_view_fixture_is_what_the_window_gets() {
                 avatar_url: None,
             }),
             signing_in: false,
+            can_host: true,
+            asked_to_host: false,
         },
         stage: StageView::Hosting {
             call_id: CALL.into(),
