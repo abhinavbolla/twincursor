@@ -657,7 +657,8 @@ pub fn engine_path() -> Result<PathBuf, String> {
     );
     for path in &tried {
         if path.is_file() {
-            return Ok(path.canonicalize().unwrap_or_else(|_| path.clone()));
+            let found = path.canonicalize().unwrap_or_else(|_| path.clone());
+            return Ok(without_verbatim_prefix(found));
         }
     }
     let tried: Vec<_> = tried.iter().map(|p| p.display().to_string()).collect();
@@ -665,6 +666,17 @@ pub fn engine_path() -> Result<PathBuf, String> {
         "no {ENGINE} at {} (run `cargo build --release -p twincursor-engine-cli`)",
         tried.join(" or ")
     ))
+}
+
+/// `C:\…` for Windows' `\\?\C:\…`, which `canonicalize` gives there: the same file, in the
+/// form people (and the log) read. Anything else, network paths included, is left as it is.
+fn without_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let plain = path
+        .to_str()
+        .and_then(|text| text.strip_prefix(r"\\?\"))
+        .filter(|rest| rest.as_bytes().get(1) == Some(&b':'))
+        .map(PathBuf::from);
+    plain.unwrap_or(path)
 }
 
 pub fn in_bundle(path: &Path) -> bool {
@@ -965,6 +977,24 @@ mod tests {
             "granted"
         );
         assert!(last_json(["[1, 2]"].iter().copied()).is_none());
+    }
+
+    #[test]
+    fn a_windows_path_loses_its_verbatim_prefix() {
+        assert_eq!(
+            without_verbatim_prefix(PathBuf::from(r"\\?\D:\a\TwinCursor\tc-engine.exe")),
+            PathBuf::from(r"D:\a\TwinCursor\tc-engine.exe")
+        );
+        for kept in [
+            r"\\?\UNC\server\share\tc-engine.exe",
+            "/Applications/TwinCursor.app/Contents/MacOS/tc-engine",
+            r"C:\TwinCursor\tc-engine.exe",
+        ] {
+            assert_eq!(
+                without_verbatim_prefix(PathBuf::from(kept)),
+                PathBuf::from(kept)
+            );
+        }
     }
 
     #[test]
