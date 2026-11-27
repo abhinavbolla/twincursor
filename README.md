@@ -44,13 +44,14 @@ behind your hands. TwinCursor is built around three ideas:
 | | Status |
 |---|---|
 | Mac menu bar app: share, join by link, let people in, ring people you've paired with | Works; builds are unsigned |
+| Windows app, as a guest: sign in, join by link or answer a ring, watch, talk, take control | Built and started in CI; not yet tried on a real PC. It can't share its screen |
 | Sign-in with GitHub, contacts, call links | Works, on a Supabase backend |
-| Screen sharing up to 4K, with HEVC at 4K | Works: Mac sharer; Mac viewer, or Windows viewer from the command line |
+| Screen sharing up to 4K, with HEVC at 4K | Works: Mac sharer; Mac or Windows viewer |
 | Voice, with echo cancellation and mute | Works |
 | Remote control, with trusted control for a call and a global revoke hotkey | Works (Mac sharer), in hands-on testing |
 | Call health numbers, and auto-throttle on poor networks | Works |
 | Self-hosting | A [guide](docs/self-hosting.md): your own Supabase project and LiveKit server |
-| Windows app with sign-in, Linux, camera, end-to-end encryption | Planned |
+| Sharing from Windows, Linux, camera, end-to-end encryption | Planned |
 
 The [roadmap](docs/ROADMAP.md) has the full plan.
 
@@ -65,6 +66,9 @@ There are two ways to use TwinCursor:
   them: [self-hosting](docs/self-hosting.md).
 
 A build with no backend opens, but says it isn't connected to a server.
+
+On Windows, the app is a zip: unzip it and run `TwinCursor.exe`
+([testing guide](docs/testing-guide.md#windows)). It joins calls but can't share its screen.
 
 ## Build from source
 
@@ -109,8 +113,29 @@ target/release/tc-spike view --url ws://192.168.1.20:7880
 ```
 
 `--dev` uses well-known keys and an unencrypted connection, so only do this on a network you
-trust. To build the viewer on Windows, use the Rust MSVC toolchain and clone to a short path such
-as `C:\tc`, because deep folders hit git's filename limit.
+trust.
+
+### On Windows
+
+You'll need the Rust MSVC toolchain (Visual Studio Build Tools 2022), Node 20.19 or newer and
+Git. Clone to a short path such as `C:\tc`, because deep folders hit Windows' path length
+limit. In PowerShell:
+
+```powershell
+cd C:\tc\apps\desktop
+npm ci
+npm run build
+cd C:\tc
+$env:CARGO_PROFILE_RELEASE_DEBUG = "0"
+cargo build --locked --release -p twincursor-engine-cli
+cargo build --locked --release -p twincursor-desktop --features tauri/custom-protocol
+.\target\release\twincursor-desktop.exe
+```
+
+`tauri/custom-protocol` puts the page inside the exe; without it the app looks for a
+development server and its windows stay blank. The app finds `tc-engine.exe` next to itself.
+To point it at a backend, set `TWINCURSOR_SUPABASE_URL` and `TWINCURSOR_SUPABASE_KEY` first.
+`packaging/windows/package-app.sh` (in Git Bash) builds the zip that CI and releases ship.
 
 ## Measured performance
 

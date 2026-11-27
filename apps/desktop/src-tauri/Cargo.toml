@@ -37,5 +37,16 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
     "NSScreen", "NSEvent", "NSApplication", "NSAppearance", "NSGraphics", "objc2-core-foundation",
 ] }
 
+# Windows: the clipboard, a window shown without taking focus, frames set in one step, rounded
+# corners on Windows 11, the light or dark setting, the WebView2 check's message box, and a job
+# object that ends the engine with the app. Already in the tree through Tauri (tray-icon, muda)
+# at this version; MIT or Apache-2.0.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole",
+    "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Registry",
+    "Win32_Graphics_Dwm", "Win32_UI_WindowsAndMessaging", "Win32_Security",
+] }
+
 [dev-dependencies]
 twincursor-account = { path = "../../../crates/account", features = ["fake"] }

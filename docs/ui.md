@@ -55,6 +55,34 @@ when they show is decided in `surfaces.rs`, as plain tested functions).
 - **Looking at the other appearance.** `TWINCURSOR_APPEARANCE=light` or `=dark` in the app's
   environment draws it that way whatever the system says, without changing System Settings.
 
+### On Windows
+
+The same two windows, with Windows' conventions (`native.rs`, `surfaces.rs`):
+
+- **The tray icon** is in the taskbar's notification area: the mark in white on an indigo tile,
+  since Windows doesn't tint tray icons and taskbars are light or dark. A click opens or closes
+  the panel; a right click opens the same menu. No menu bar, and no taskbar button for either
+  window.
+- **The panel stands on the taskbar** by the icon, 8 pt from it, centred on it and kept 8 pt
+  inside the display's usable area; it follows a taskbar on the top, left or right edge too,
+  and keeps its edge by the taskbar as it grows. Without the icon's place: bottom right of the
+  main display.
+- **The windows** have no title bar or frame. Windows 11 rounds their corners when asked;
+  Windows 10 keeps them square, so the page draws a 1 px hairline in `--float-line` inside the
+  edge (`.in-window[data-platform="windows"]`), with the system's shadow where Tauri gives one.
+  The call bar is shown on top without activating it (`SW_SHOWNOACTIVATE`).
+- **Placement in pixels.** Windows places windows in physical pixels, and each display has its
+  own scale: a point on a 150 % display is 1.5 pixels. Rects are converted with the scale of the
+  display their centre is on, so at 150 % the 340 pt panel is 510 pixels wide.
+- **The panel is a guest's.** Where a Mac shows **Share my screen**, it says "Sharing from
+  Windows isn't available yet. You can join a call with a link." and **Paste link** is the
+  main button (unless a ring card holds it). People have no **Call** button. This comes before
+  the invite list: on an invite-only server there is no **Ask to be invited** on Windows, since an
+  invitation wouldn't let it share (`share` and `ring` refuse for the platform first, then for
+  the invite). Signed out, it says
+  "Sign in to join calls with a link." Rings, knocking and being in a call look as on a Mac, and
+  so does the call bar's guest row (**Control**, F9).
+
 ## The panel
 
 340 px wide, as tall as its content up to 520 px; the people list scrolls inside.
@@ -160,7 +188,8 @@ Sections under the row:
 - add `&frame=desktop` for a busy pretend desktop behind, `&theme=light` or `&theme=dark` to pin
   the theme, `&window=1` to see a surface as its native window shows it (edge to edge, in a frame
   of the height the window would be given), `&menu=1` to open the panel's account menu or the
-  bar's menu in any state
+  bar's menu in any state, `&platform=windows` to see any state as the Windows app shows it (no
+  Share or Call; with `&window=1`, the square edge and its hairline)
 
 An unknown state lists the valid ones. The states are plain data in `src/scenarios.ts` (a home
 view and the engine output so far) and are also the fixtures for the view-model tests. Each

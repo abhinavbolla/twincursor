@@ -5,6 +5,7 @@ import { safeAvatar } from "./accountState";
 import type { CallState } from "./call";
 import type { HomeView, MemberState } from "./home";
 import { shortName, type Phrase } from "./people";
+import { CANT_SHARE_LINE, MAC, type PlatformInfo } from "./platform";
 import { RING_OUTCOME_LABEL, type RingOutcome } from "./ringOutcomes";
 
 export interface FaceView {
@@ -39,6 +40,8 @@ export type CallOp = "end" | "cancel_knock";
 export type PanelMain =
   /** Share my screen and Paste link. `primary` is false while a ring card holds the primary button. */
   | { kind: "share"; busy: boolean; primary: boolean }
+  /** Where this app can't share (Windows): one line saying so, and Paste link as the action. */
+  | { kind: "join"; note: string; busy: boolean; primary: boolean }
   /**
    * This server doesn't let this person start calls: the invitation line, Ask to be invited (or
    * that they asked), and Paste link as the primary action unless a ring card holds it.
@@ -94,13 +97,17 @@ const MEMBER_LABEL: Partial<Record<MemberState, string>> = {
 const dotOf = (call: CallState): "good" | "pending" | "off" =>
   call.connection === "connected" ? "good" : call.connection === "disconnected" ? "off" : "pending";
 
-function mainOf(home: HomeView, call: CallState): PanelMain {
+function mainOf(home: HomeView, call: CallState, platform: PlatformInfo): PanelMain {
   const stage = home.stage;
   switch (stage.kind) {
     case "idle":
     case "starting": {
       const busy = stage.kind === "starting";
       const primary = home.rings.length === 0;
+      // A platform that can't share comes first: an invitation wouldn't let it share.
+      if (!platform.can_share) {
+        return { kind: "join", note: CANT_SHARE_LINE, busy, primary };
+      }
       return home.account.can_host
         ? { kind: "share", busy, primary }
         : { kind: "invite", busy, primary, asked: home.account.asked_to_host };
@@ -134,7 +141,11 @@ function mainOf(home: HomeView, call: CallState): PanelMain {
   }
 }
 
-function actionFor(home: HomeView, id: string, outcomes: ReadonlyMap<string, RingOutcome>): PersonAction {
+function actionFor(home: HomeView, id: string, outcomes: ReadonlyMap<string, RingOutcome>, platform: PlatformInfo): PersonAction {
+  if (!platform.can_share) {
+    // Calling someone means sharing your screen first.
+    return { kind: "none" };
+  }
   const action = callAction(home, id, outcomes);
   // Calling means sharing: someone this server doesn't let start calls has no Call button.
   return action.kind === "call" && !home.account.can_host ? { kind: "none" } : action;
@@ -166,7 +177,12 @@ function callAction(home: HomeView, id: string, outcomes: ReadonlyMap<string, Ri
   }
 }
 
-export function panelModel(home: HomeView | null, call: CallState, local: PanelLocal = NO_LOCAL): PanelModel {
+export function panelModel(
+  home: HomeView | null,
+  call: CallState,
+  local: PanelLocal = NO_LOCAL,
+  platform: PlatformInfo = MAC,
+): PanelModel {
   if (home === null) {
     return { kind: "loading" };
   }
@@ -187,16 +203,16 @@ export function panelModel(home: HomeView | null, call: CallState, local: PanelL
       avatar: safeAvatar(me?.avatar_url ?? null),
     },
     rings: home.rings.map((r) => ({ callId: r.call_id, name: r.host.name, avatar: safeAvatar(r.host.avatar_url) })),
-    needsScreenRecording: home.needs === "screen_recording",
+    needsScreenRecording: platform.can_share && home.needs === "screen_recording",
     error: shown(local.error ?? home.error),
     notice: shown(home.notice),
-    main: mainOf(home, call),
+    main: mainOf(home, call, platform),
     people: home.contacts.map((c) => ({
       id: c.id,
       name: c.name,
       handle: c.handle,
       avatar: safeAvatar(c.avatar_url),
-      action: actionFor(home, c.id, local.outcomes),
+      action: actionFor(home, c.id, local.outcomes, platform),
     })),
     serverProblem: home.server_problem,
   };

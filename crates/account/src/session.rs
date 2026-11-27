@@ -1,9 +1,11 @@
 //! The signed-in session and where it is kept.
 //!
 //! The session is a bearer credential: whoever has the refresh token can act as this person until
-//! they sign out. [`FileStore`] keeps it in a file only this user can read (mode 0600, written
-//! atomically). Once builds are signed, a Keychain store replaces it; an unsigned build would make
-//! macOS ask for the Keychain on every update.
+//! they sign out. [`FileStore`] keeps it in a file only this user can read, written atomically:
+//! on Unix the file's mode is 0600; on Windows no mode is set, and the file is private because
+//! the caller puts it in this user's own app data folder, which only this user (and the
+//! system's administrators) can open. Once builds are signed, a Keychain store replaces it on
+//! macOS; an unsigned build would make macOS ask for the Keychain on every update.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -242,6 +244,22 @@ mod tests {
         store.clear().unwrap();
         assert_eq!(store.load().unwrap(), None);
         store.clear().unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Everywhere, Windows included (where the folder, not a mode, keeps it to this user): a
+    /// leftover temporary file doesn't get in the way, and a save replaces the old file.
+    #[test]
+    fn a_save_replaces_the_file_past_a_leftover_temporary_one() {
+        let dir = temp_dir("replace");
+        let store = FileStore::new(dir.join("session.json"));
+        store.save(&session()).unwrap();
+        std::fs::write(store.tmp(), b"half-written").unwrap();
+        let mut next = session();
+        next.expires_at += 3600;
+        store.save(&next).unwrap();
+        assert_eq!(store.load().unwrap(), Some(next));
+        assert!(!store.tmp().exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 

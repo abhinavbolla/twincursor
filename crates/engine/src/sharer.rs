@@ -280,6 +280,8 @@ impl Lazy {
         }
     }
 
+    // Real input is made later only where it exists (macOS); the tests make one too.
+    #[cfg(any(target_os = "macos", test))]
     fn later(make: MakeInjector) -> Self {
         Self {
             injector: None,

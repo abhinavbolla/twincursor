@@ -7,6 +7,7 @@ import type { Bridge } from "./bridge";
 import { callReducer, initialCall, type CallState } from "./call";
 import type { HomeView } from "./home";
 import type { EngineOutput } from "./ipc";
+import { MAC, type PlatformInfo } from "./platform";
 
 /** The home view: `homeState()` once, then every `home` event. Null until the first arrives. */
 export function useHome(bridge: Bridge): HomeView | null {
@@ -33,6 +34,25 @@ export function useHome(bridge: Bridge): HomeView | null {
     };
   }, [bridge]);
   return home;
+}
+
+/**
+ * What the platform can do, asked once. Null until it answers; a bridge that can't answer is
+ * taken for a Mac (what the app was before it asked).
+ */
+export function usePlatform(bridge: Bridge): PlatformInfo | null {
+  const [platform, setPlatform] = useState<PlatformInfo | null>(null);
+  useEffect(() => {
+    let live = true;
+    bridge.platformInfo().then(
+      (p) => live && setPlatform(p),
+      () => live && setPlatform(MAC),
+    );
+    return () => {
+      live = false;
+    };
+  }, [bridge]);
+  return platform;
 }
 
 type Action = { type: "replace"; state: CallState } | { type: "output"; output: EngineOutput };

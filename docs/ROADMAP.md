@@ -50,6 +50,11 @@ app bundle ([ADR 0007](adr/0007-shell-and-engine.md), [the UI](ui.md)).
 - A bundled app and disk image, with a backend built in and no LiveKit secret
 - A Windows viewer package for the terminal, and a one-page guide for testers
 
+**The app on Windows, as a guest.** The same tray app on Windows 10 and 11, for joining a Mac's
+call: sign in with GitHub, paste a link or answer a ring, wait to be let in, watch, talk, take
+control. It can't share. Built, unit-tested and started in CI on every change (alone, and as a
+guest joining a room on a LiveKit dev server), and shipped as a zip.
+
 **Accounts and calls.** A Supabase backend instead of a server of our own
 ([ADR 0011](adr/0011-accounts-and-call-passes.md)).
 
@@ -71,7 +76,8 @@ app bundle ([ADR 0007](adr/0007-shell-and-engine.md), [the UI](ui.md)).
   of the shared screen
 - [ ] Edit a real file on the sharer's Mac from another computer
 - [ ] A call over speakers on both ends, without headphones
-- [ ] The Windows viewer on a real PC: watch and talk with a Mac
+- [ ] The Windows app on a real PC: sign in, join by link and by a ring, watch, talk, take
+  control; the tray icon and the panel's place on the taskbar, at 100 % and other scales
 
 ## Next
 
@@ -93,7 +99,7 @@ app bundle ([ADR 0007](adr/0007-shell-and-engine.md), [the UI](ui.md)).
 
 - [ ] Camera
 - [ ] End-to-end encryption, so the LiveKit server relays media it can't read
-- [ ] A Windows app with sign-in, and sharing from Windows
+- [ ] Sharing from Windows (screen capture and input injection there), and a signed installer
 - [ ] Teams
 
 ## Then: your own devices

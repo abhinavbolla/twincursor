@@ -1,0 +1,50 @@
+name: Windows package
+
+# The Windows app as a zip testers unzip and run (packaging/windows/package-app.sh). Run it by
+# hand from the Actions tab (the zip is the run's artifact); the release workflow calls it for
+# every tag.
+#
+# The backend comes from two repository variables (Settings > Secrets and variables > Actions >
+# Variables), public values, not secrets: TWINCURSOR_BUILD_SUPABASE_URL (the project's URL) and
+# TWINCURSOR_BUILD_SUPABASE_KEY (its publishable or anon key). Unset, the zip has no backend and
+# the app says it isn't connected to a server. No LiveKit key goes into it either way.
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: ./.github/actions/setup-libwebrtc
+        with:
+          triple: win-x64-release
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Build the package
+        env:
+          TWINCURSOR_BUILD_SUPABASE_URL: ${{ vars.TWINCURSOR_BUILD_SUPABASE_URL }}
+          TWINCURSOR_BUILD_SUPABASE_KEY: ${{ vars.TWINCURSOR_BUILD_SUPABASE_KEY }}
+        run: packaging/windows/package-app.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-app
+          path: dist/*.zip

@@ -1305,6 +1305,23 @@ button.menu-item.separated::before {
   width: 340px;
 }
 
+/* Windows: an undecorated window there has square corners on Windows 10 (Windows 11 rounds
+   them when asked) and no edge of its own, so the page draws the hairline just inside the
+   window's edge, over everything and never in the way of a click. The dev page shows the same
+   square frame with `&platform=windows&window=1`. */
+.in-window[data-platform="windows"] body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  border: 1px solid var(--float-line);
+  pointer-events: none;
+  z-index: 2147483647;
+}
+
+[data-platform="windows"] .dev-window {
+  border-radius: 0;
+}
+
 .dev-window.bar-window {
   width: 440px;
 }

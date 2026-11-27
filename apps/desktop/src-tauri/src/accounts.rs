@@ -1,7 +1,8 @@
 //! The account, as the window sees it: whether one is set up, who is signed in, and signing in
-//! and out. The session lives in this process and in an owner-only file
-//! (`<app config dir>/session.json`); **the webview never receives a token**. Everything it gets
-//! is an [`AccountView`], built only from strings and booleans; the crate's tokens are
+//! and out. The session lives in this process and in a file only this user can read
+//! (`session.json` in `platform::session_dir`: owner-only in the app's config folder on macOS,
+//! in this user's local app data folder on Windows); **the webview never receives a token**.
+//! Everything it gets is an [`AccountView`], built only from strings and booleans; the crate's tokens are
 //! `account::Secret`s, which can't be serialized, so a token can't reach the window without
 //! someone writing `.expose()` here (the tests check the view's exact shape).
 
@@ -188,11 +189,16 @@ impl AccountShell {
             }
             *slot = Some(cancel.clone());
         }
+        crate::applog::line("sign-in: started, waiting for the browser");
         let result = account
             .sign_in(SignInOptions::default(), open, &cancel)
             .await;
         *self.signing_in.lock().unwrap() = None;
         *self.known.lock().unwrap() = None;
+        match &result {
+            Ok(_) => crate::applog::line("sign-in: signed in"),
+            Err(e) => crate::applog::line(format!("sign-in: didn't finish: {e}")),
+        }
         result.map_err(|e| e.to_string())?;
         Ok(self.view().await)
     }
@@ -212,25 +218,16 @@ impl AccountShell {
     }
 }
 
-/// Opens a page in the default browser: the sign-in page, or the self-hosting guide.
+/// Opens a page in the default browser: the sign-in page, or the self-hosting guide. Only the
+/// page's host goes to the log.
 pub fn open_browser(url: &str) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("/usr/bin/open")
-            .arg(url)
-            .status()
-            .map_err(|e| e.to_string())
-            .and_then(|s| {
-                s.success()
-                    .then_some(())
-                    .ok_or_else(|| "open failed".to_owned())
-            })
+    let host = crate::applog::host_of(url).to_owned();
+    let opened = crate::platform::open_url(url);
+    match &opened {
+        Ok(()) => crate::applog::line(format!("browser: opened a page on {host}")),
+        Err(e) => crate::applog::line(format!("browser: couldn't open a page on {host}: {e}")),
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = url;
-        Err("Opening the browser is only built for macOS so far.".into())
-    }
+    opened
 }
 
 #[cfg(test)]

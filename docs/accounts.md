@@ -50,13 +50,16 @@ reached.
 
 | What | Where | Who can read it |
 |---|---|---|
-| The session (access and refresh token, expiry, account id) | `session.json` in the app's config folder (`~/Library/Application Support/dev.twincursor.desktop/`) | Your user only (mode 0600, replaced atomically) |
+| The session (access and refresh token, expiry, account id) | macOS: `session.json` in the app's config folder (`~/Library/Application Support/dev.twincursor.desktop/`). Windows: `session.json` in `%LOCALAPPDATA%\dev.twincursor.desktop\` | macOS: your user only (mode 0600). Windows: your user, SYSTEM and administrators (the profile folder's permissions; no mode is set). Replaced atomically on both |
 | The PKCE verifier and the code | The app's memory, for one sign-in | Nobody else |
 | The backend's URL and public key | Built into the app, or the environment | Anyone: they are public |
 
 The session file holds a bearer credential: anyone who can read it can act as you until you sign
 out (see [the threat model](threat-model.md)). Once builds are signed, the session moves to the
 macOS Keychain; an unsigned build would make macOS ask for Keychain access after every update.
+On Windows it stays in the local (not roaming) app data folder, so a roaming profile doesn't
+copy it to other PCs; it isn't encrypted (DPAPI would protect it only from people without your
+Windows login, which the folder's permissions already do while Windows runs).
 
 ## What the window sees
 

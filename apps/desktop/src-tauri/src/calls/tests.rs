@@ -298,6 +298,11 @@ impl Drop for World {
 static WORLDS: AtomicUsize = AtomicUsize::new(0);
 
 async fn world(signed_in: bool) -> World {
+    world_on(signed_in, true).await
+}
+
+/// A world on a platform that can share (macOS) or can't (Windows, a guest only).
+async fn world_on(signed_in: bool, can_share: bool) -> World {
     let knobs = Arc::new(Mutex::new(Knobs::default()));
     let fake = {
         let knobs = knobs.clone();
@@ -337,6 +342,7 @@ async fn world(signed_in: bool) -> World {
         options: Options {
             quality: Quality::K4,
             voice: false,
+            can_share,
         },
         on_home: {
             let homes = homes.clone();
@@ -584,6 +590,31 @@ async fn share_needs_a_session_and_no_other_call() {
     assert_eq!(w.calls.share().await.unwrap_err(), IN_CALL);
     assert_eq!(w.calls.join_link(CODE).await.unwrap_err(), IN_CALL);
     assert_eq!(w.rpc("start_call").len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn where_sharing_isnt_built_share_and_ring_are_refused_and_joining_works() {
+    let w = world_on(true, false).await;
+    assert_eq!(
+        w.calls.share().await.unwrap_err(),
+        crate::platform::CANT_SHARE
+    );
+    assert_eq!(
+        w.calls.ring(SAM).await.unwrap_err(),
+        crate::platform::CANT_SHARE
+    );
+    // Nothing started: no call on the backend, no engine, no permission asked for.
+    assert!(w.rpc("start_call").is_empty());
+    assert!(w.rpc("ring").is_empty());
+    assert_eq!(w.engines_started(), 0);
+    assert!(w.permits.requests.lock().unwrap().is_empty());
+    assert!(matches!(w.calls.home().stage, StageView::Idle));
+    // A guest joins as on a Mac.
+    w.calls.join_link(CODE).await.unwrap();
+    w.knobs().knock = Ok("admitted");
+    w.calls.poll_once().await;
+    assert!(matches!(&w.calls.home().stage, StageView::Joined { host } if host.name == "Sam"));
+    assert_eq!(w.engines.started.lock().unwrap()[0].plan.role, Role::Join);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1392,6 +1423,24 @@ async fn someone_who_may_not_host_is_refused_here_without_asking_the_server() {
     // Joining is the same as for anyone.
     w.calls.join_link(CODE).await.unwrap();
     assert!(matches!(w.calls.home().stage, StageView::Knocking { .. }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn on_a_platform_that_cant_share_the_platform_is_the_reason_before_the_invite() {
+    let w = world_on(true, false).await;
+    w.knobs().can_host = false;
+    assert_eq!(w.calls.poll_once().await, Polled::Done);
+    assert!(!w.calls.home().account.can_host);
+    assert_eq!(
+        w.calls.share().await.unwrap_err(),
+        crate::platform::CANT_SHARE
+    );
+    assert_eq!(
+        w.calls.ring(SAM).await.unwrap_err(),
+        crate::platform::CANT_SHARE
+    );
+    assert!(w.rpc("start_call").is_empty() && w.rpc("ring").is_empty());
+    assert_eq!(w.engines_started(), 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]

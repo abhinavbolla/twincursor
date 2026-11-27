@@ -178,7 +178,28 @@ engine's own native window (ADR 0007, and [the IPC protocol](ipc.md)).
   sees as JSON lines, including every `home` view. It is the only path that answers a request
   without a click, exists only behind that flag, and can't inject real input or touch the real
   clipboard. Its windows exist but stay hidden unless the script sets `"windows": true`.
-  `bench/app-e2e.sh` and `bench/app-accounts-e2e.sh` use it.
+  `bench/app-e2e.sh` and `bench/app-accounts-e2e.sh` use it; a room-code call with
+  `"role": "join"` joins as a guest instead, which CI's Windows smoke test
+  (`bench/windows-smoke.sh`) uses.
+- **Platforms.** What differs between macOS and Windows is in two modules with the same
+  functions per platform, and nowhere else: `native.rs` for windows and displays, `platform.rs`
+  for the rest (what the platform can do, the browser, the clipboard, the session folder, the
+  log file, the engine process). On Windows the app is a guest: `platform_info` says it can't
+  share, the Rust side refuses Share and Call there, and the panel offers Paste link instead.
+
+  | | macOS | Windows |
+  |---|---|---|
+  | Share, Call | Yes | No (no capture or injection there); refused in `calls.rs` |
+  | Join by link or ring, watch, talk, take control | Yes | Yes |
+  | Windows | Titled, title bar hidden; AppKit for no-focus show, Spaces, frames | Undecorated, off the taskbar; `SW_SHOWNOACTIVATE`, `SetWindowPos` in each display's pixels; rounded corners on Windows 11 only, a hairline drawn by the page |
+  | Panel | Hangs under the menu bar icon | Stands on the taskbar by the tray icon (any edge) |
+  | Tray icon | Template image | White mark on an indigo tile |
+  | Browser | `/usr/bin/open` | `rundll32 url.dll,FileProtocolHandler`, no shell |
+  | Clipboard | NSPasteboard | Win32 (`CF_UNICODETEXT`) |
+  | Session file | App config folder, mode 0600 | `%LOCALAPPDATA%\dev.twincursor.desktop` |
+  | Permissions | Asked through `tc-engine permissions` | None to ask; the mic is Windows' own prompt |
+  | Engine process | Ends when its stdin closes | The same, no console window, and a kill-on-close job object |
+  | Log file | None (`TWINCURSOR_LOG_FILE` to have one) | `%LOCALAPPDATA%\dev.twincursor.desktop\logs\twincursor.log` |
 
 ### 2. WebRTC through LiveKit (self-hostable SFU)
 - LiveKit's Rust SDK (`livekit` crate, built on libwebrtc) gives us congestion control,

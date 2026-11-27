@@ -51,7 +51,8 @@ pub struct Script {
 }
 
 /// A share on the synthetic pattern, voice off. Where recorded input goes is required: a script
-/// can't make the app inject real input.
+/// can't make the app inject real input. With `"role": "join"`, the app joins the room as a
+/// guest instead (what a Windows app can do; its smoke test in CI joins an empty room).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScriptCall {
@@ -59,6 +60,12 @@ pub struct ScriptCall {
     pub name: String,
     pub quality: Quality,
     pub inject_record: PathBuf,
+    #[serde(default = "share_role")]
+    pub role: Role,
+}
+
+fn share_role() -> Role {
+    Role::Share
 }
 
 /// The account flows, on the synthetic pattern with voice off and input recorded.
@@ -215,7 +222,7 @@ impl Script {
     /// The room-code call to start at once, if this script has one.
     pub fn plan(&self) -> Option<Plan> {
         self.call.as_ref().map(|call| Plan {
-            role: Role::Share,
+            role: call.role,
             room: call.room.clone(),
             name: call.name.clone(),
             quality: call.quality,
@@ -753,6 +760,39 @@ mod tests {
             &have,
             &serde_json::json!({ "stage": { "kind": "idle" } })
         ));
+    }
+
+    #[test]
+    fn a_room_call_shares_unless_it_joins() {
+        let read = |text: &str| -> Script {
+            let s: Script = serde_json::from_str(text).unwrap();
+            s.check().unwrap();
+            s
+        };
+        let call = r#"{"room":"r","name":"Sam","quality":"1080p","inject_record":"x.jsonl"}"#;
+        let share = read(&format!(r#"{{"call":{call},"steps":[]}}"#));
+        assert_eq!(share.plan().unwrap().role, Role::Share);
+        let join = read(&format!(
+            r#"{{"call":{},"steps":[],"quit":true}}"#,
+            call.replace('}', r#","role":"join"}"#)
+        ));
+        let plan = join.plan().unwrap();
+        assert_eq!(
+            (plan.role, plan.room.as_str(), plan.pass),
+            (Role::Join, "r", false)
+        );
+    }
+
+    #[test]
+    fn the_ci_smoke_scripts_parse() {
+        // bench/windows-smoke.sh writes these two.
+        for text in [
+            r#"{"accounts":{"inject_record":"unused.jsonl"},"steps":[{"do":"wait_home","home":{"account":{"configured":false}}}],"quit":true}"#,
+            r#"{"call":{"room":"smoke","name":"Windows guest","quality":"1080p","inject_record":"unused.jsonl","role":"join"},"steps":[{"do":"wait_for","event":{"event":"connection","state":"connected"}},{"do":"send","cmd":"leave"},{"do":"wait_exit"}],"quit":true}"#,
+        ] {
+            let s: Script = serde_json::from_str(text).unwrap();
+            s.check().unwrap();
+        }
     }
 
     #[test]

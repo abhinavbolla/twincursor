@@ -5,6 +5,14 @@
 //!
 //! Geometry is in points, in the global display space with the origin at the top left of the
 //! main display and y growing downward (what Core Graphics uses). `windows.rs` converts.
+//!
+//! On Windows the system works in physical pixels, and each display has its own scale (100 %,
+//! 150 %…). A display's points are its pixels divided by its own scale, so a rect is converted
+//! with the scale of the display its centre is on ([`to_points`], [`to_pixels`]). With
+//! displays at different scales, point space can have gaps or overlaps between displays, but
+//! everything placed here is placed within one display, where the mapping is exact. The panel
+//! opens from the taskbar's notification area, which can be on any edge
+//! ([`panel_origin_at_taskbar`]).
 
 use std::time::{Duration, Instant};
 
@@ -128,6 +136,7 @@ fn clamp_x(x: f64, width: f64, work: &Rect) -> f64 {
     }
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 /// Where the panel's top-left corner goes: centred under the menu bar icon, on the icon's
 /// display, kept off that display's side edges. Without an icon (its place isn't known yet):
 /// top right of the main display. `None` without displays.
@@ -149,6 +158,145 @@ pub fn panel_origin(icon: Option<Rect>, displays: &[Display]) -> Option<(f64, f6
             main.work.y + PANEL_GAP,
         )),
     }
+}
+
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn clamp_y(y: f64, height: f64, work: &Rect) -> f64 {
+    let low = work.y + EDGE;
+    let high = work.bottom() - height - EDGE;
+    if high < low {
+        work.y + (work.h - height).max(0.0) / 2.0
+    } else {
+        y.clamp(low, high)
+    }
+}
+
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+/// Which edge of its display the taskbar holding the tray icon is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edge {
+    Bottom,
+    Top,
+    Left,
+    Right,
+}
+
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+/// The edge of display `d` the icon sits on: the side of the usable area it is outside of. An
+/// icon inside the usable area (a taskbar that hides itself, the hidden-icons flyout) belongs
+/// to the display edge nearest to it.
+pub fn taskbar_edge(icon: Rect, d: &Display) -> Edge {
+    let (cx, cy) = icon.centre();
+    let w = &d.work;
+    if cy >= w.bottom() {
+        return Edge::Bottom;
+    }
+    if cy < w.y {
+        return Edge::Top;
+    }
+    if cx < w.x {
+        return Edge::Left;
+    }
+    if cx >= w.right() {
+        return Edge::Right;
+    }
+    let f = &d.frame;
+    [
+        (f.bottom() - cy, Edge::Bottom),
+        (cx - f.x, Edge::Left),
+        (f.right() - cx, Edge::Right),
+        (cy - f.y, Edge::Top),
+    ]
+    .into_iter()
+    .min_by(|a, b| a.0.total_cmp(&b.0))
+    .map_or(Edge::Bottom, |(_, e)| e)
+}
+
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+/// Where the panel's top-left corner goes on Windows, for a panel `height` tall: beside the
+/// tray icon, on the side away from the taskbar's edge, [`EDGE`] from the taskbar and kept that
+/// far inside the display's usable area. With the taskbar at the bottom (the usual case) it stands on the taskbar, centred
+/// over the icon. Without an icon: the bottom right corner of the main display, where the
+/// notification area usually is. `None` without displays.
+pub fn panel_origin_at_taskbar(
+    icon: Option<Rect>,
+    height: f64,
+    displays: &[Display],
+) -> Option<(f64, f64)> {
+    let main = displays.first()?;
+    let Some(icon) = icon else {
+        let w = &main.work;
+        return Some((
+            w.right() - PANEL_WIDTH - EDGE,
+            clamp_y(w.bottom() - height - EDGE, height, w),
+        ));
+    };
+    let d = displays
+        .iter()
+        .find(|d| d.frame.contains(icon.centre()))
+        .unwrap_or(main);
+    let w = &d.work;
+    let (cx, cy) = icon.centre();
+    let (x, y) = match taskbar_edge(icon, d) {
+        Edge::Bottom => (
+            cx - PANEL_WIDTH / 2.0,
+            icon.y.min(w.bottom()) - EDGE - height,
+        ),
+        Edge::Top => (cx - PANEL_WIDTH / 2.0, icon.bottom().max(w.y) + EDGE),
+        Edge::Left => (icon.right().max(w.x) + EDGE, cy - height / 2.0),
+        Edge::Right => (
+            icon.x.min(w.right()) - EDGE - PANEL_WIDTH,
+            cy - height / 2.0,
+        ),
+    };
+    Some((clamp_x(x, PANEL_WIDTH, w), clamp_y(y, height, w)))
+}
+
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn scale_of(d: &Display) -> f64 {
+    if d.scale > 0.0 {
+        d.scale
+    } else {
+        1.0
+    }
+}
+
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+/// A rect in physical pixels (what Windows reports for a window) in points: divided by the
+/// scale of the display its centre is on (the main display's when it is on none).
+pub fn to_points(pixels: Rect, displays: &[Display]) -> Rect {
+    let scale = displays
+        .iter()
+        .find(|d| {
+            let s = scale_of(d);
+            let f = &d.frame;
+            Rect::new(f.x * s, f.y * s, f.w * s, f.h * s).contains(pixels.centre())
+        })
+        .or(displays.first())
+        .map_or(1.0, scale_of);
+    Rect::new(
+        pixels.x / scale,
+        pixels.y / scale,
+        pixels.w / scale,
+        pixels.h / scale,
+    )
+}
+
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+/// A rect in points in whole physical pixels: times the scale of the display its centre is on,
+/// so a window on a 150 % display is 1.5 times as many pixels as points there.
+pub fn to_pixels(points: Rect, displays: &[Display]) -> (i32, i32, i32, i32) {
+    let scale = displays
+        .iter()
+        .find(|d| d.frame.contains(points.centre()))
+        .or(displays.first())
+        .map_or(1.0, scale_of);
+    (
+        (points.x * scale).round() as i32,
+        (points.y * scale).round() as i32,
+        (points.w * scale).round() as i32,
+        (points.h * scale).round() as i32,
+    )
 }
 
 /// The call bar's first place: top centre of the main display, under the menu bar.
@@ -408,6 +556,134 @@ mod tests {
             Some((1512.0 - PANEL_WIDTH - EDGE, 37.0 + PANEL_GAP))
         );
         assert_eq!(panel_origin(None, &[]), None);
+    }
+
+    /// A 1920 × 1080 Windows display at 100 % with the taskbar (40 px) along `edge`.
+    fn windows_display(edge: Edge) -> Display {
+        let frame = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        let work = match edge {
+            Edge::Bottom => Rect::new(0.0, 0.0, 1920.0, 1040.0),
+            Edge::Top => Rect::new(0.0, 40.0, 1920.0, 1040.0),
+            Edge::Left => Rect::new(62.0, 0.0, 1858.0, 1080.0),
+            Edge::Right => Rect::new(0.0, 0.0, 1858.0, 1080.0),
+        };
+        Display {
+            frame,
+            work,
+            scale: 1.0,
+        }
+    }
+
+    #[test]
+    fn on_windows_the_panel_stands_on_a_bottom_taskbar_over_the_icon() {
+        let d = vec![windows_display(Edge::Bottom)];
+        let icon = Rect::new(1700.0, 1044.0, 24.0, 32.0);
+        assert_eq!(taskbar_edge(icon, &d[0]), Edge::Bottom);
+        let (x, y) = panel_origin_at_taskbar(Some(icon), 300.0, &d).unwrap();
+        assert_eq!(x, 1712.0 - PANEL_WIDTH / 2.0);
+        assert_eq!(y, 1040.0 - EDGE - 300.0);
+        // Near the right edge (the clock is further right): kept off the edge.
+        let corner = Rect::new(1880.0, 1044.0, 24.0, 32.0);
+        let (x, _) = panel_origin_at_taskbar(Some(corner), 300.0, &d).unwrap();
+        assert_eq!(x, 1920.0 - PANEL_WIDTH - EDGE);
+    }
+
+    #[test]
+    fn on_windows_the_panel_follows_a_taskbar_on_any_edge() {
+        let top = vec![windows_display(Edge::Top)];
+        let icon = Rect::new(1700.0, 4.0, 24.0, 32.0);
+        assert_eq!(taskbar_edge(icon, &top[0]), Edge::Top);
+        assert_eq!(
+            panel_origin_at_taskbar(Some(icon), 300.0, &top),
+            Some((1712.0 - PANEL_WIDTH / 2.0, 40.0 + EDGE))
+        );
+
+        let left = vec![windows_display(Edge::Left)];
+        let icon = Rect::new(19.0, 900.0, 24.0, 24.0);
+        assert_eq!(taskbar_edge(icon, &left[0]), Edge::Left);
+        let (x, y) = panel_origin_at_taskbar(Some(icon), 300.0, &left).unwrap();
+        assert_eq!(x, 62.0 + EDGE);
+        assert_eq!(y, 912.0 - 150.0);
+
+        let right = vec![windows_display(Edge::Right)];
+        let icon = Rect::new(1877.0, 1040.0, 24.0, 24.0);
+        assert_eq!(taskbar_edge(icon, &right[0]), Edge::Right);
+        let (x, y) = panel_origin_at_taskbar(Some(icon), 300.0, &right).unwrap();
+        assert_eq!(x, 1858.0 - EDGE - PANEL_WIDTH);
+        // Low on the screen: pulled up to stay inside it.
+        assert_eq!(y, 1080.0 - 300.0 - EDGE);
+    }
+
+    #[test]
+    fn on_windows_an_icon_in_the_flyout_or_unknown_still_places_the_panel() {
+        let d = vec![windows_display(Edge::Bottom)];
+        // The hidden-icons flyout sits above the taskbar, inside the usable area.
+        let flyout = Rect::new(1600.0, 980.0, 24.0, 24.0);
+        assert_eq!(taskbar_edge(flyout, &d[0]), Edge::Bottom);
+        let (_, y) = panel_origin_at_taskbar(Some(flyout), 300.0, &d).unwrap();
+        assert_eq!(y, 980.0 - EDGE - 300.0);
+        // No icon: bottom right of the main display's usable area.
+        assert_eq!(
+            panel_origin_at_taskbar(None, 300.0, &d),
+            Some((1920.0 - PANEL_WIDTH - EDGE, 1040.0 - 300.0 - EDGE))
+        );
+        assert_eq!(panel_origin_at_taskbar(None, 300.0, &[]), None);
+        // Taller than the display: centred in it rather than off its top.
+        let (_, y) =
+            panel_origin_at_taskbar(Some(Rect::new(1700.0, 1044.0, 24.0, 32.0)), 2000.0, &d)
+                .unwrap();
+        assert_eq!(y, 0.0);
+    }
+
+    /// Windows at 150 %: a 2880 × 1620 pixel display is 1920 × 1080 points, with a 48 pt
+    /// (72 px) taskbar; to its right a 1920 × 1080 display at 100 %, at pixel 2880.
+    fn mixed_scales() -> Vec<Display> {
+        vec![
+            Display {
+                frame: Rect::new(0.0, 0.0, 1920.0, 1080.0),
+                work: Rect::new(0.0, 0.0, 1920.0, 1032.0),
+                scale: 1.5,
+            },
+            Display {
+                frame: Rect::new(2880.0, 0.0, 1920.0, 1080.0),
+                work: Rect::new(2880.0, 0.0, 1920.0, 1040.0),
+                scale: 1.0,
+            },
+        ]
+    }
+
+    #[test]
+    fn at_150_percent_the_panel_is_placed_in_pixels_of_that_display() {
+        let d = mixed_scales();
+        // The tray reports pixels: an icon at (2550, 1563) px is (1700, 1042) pt.
+        let icon = icon_in_points(Rect::new(2550.0, 1563.0, 36.0, 48.0), &d).unwrap();
+        assert_eq!(icon, Rect::new(1700.0, 1042.0, 24.0, 32.0));
+        let (x, y) = panel_origin_at_taskbar(Some(icon), 300.0, &d).unwrap();
+        assert_eq!((x, y), (1712.0 - PANEL_WIDTH / 2.0, 1032.0 - EDGE - 300.0));
+        // In pixels the panel is 1.5 times its points: 510 × 450, its corner at 1.5 × too.
+        assert_eq!(
+            to_pixels(Rect::new(x, y, PANEL_WIDTH, 300.0), &d),
+            (2313, 1086, 510, 450)
+        );
+        // Read back from Windows' pixels, the same rect in points.
+        assert_eq!(
+            to_points(Rect::new(2313.0, 1086.0, 510.0, 450.0), &d),
+            Rect::new(1542.0, 724.0, 340.0, 300.0)
+        );
+    }
+
+    #[test]
+    fn on_the_100_percent_display_pixels_are_points() {
+        let d = mixed_scales();
+        let bar = Rect::new(3000.0, 12.0, BAR_WIDTH, 48.0);
+        assert_eq!(to_pixels(bar, &d), (3000, 12, 440, 48));
+        assert_eq!(to_points(Rect::new(3000.0, 12.0, 440.0, 48.0), &d), bar);
+        // Off every display: the main display's scale.
+        assert_eq!(
+            to_pixels(Rect::new(-5000.0, 0.0, 10.0, 10.0), &d),
+            (-7500, 0, 15, 15)
+        );
+        assert_eq!(to_pixels(bar, &[]), (3000, 12, 440, 48));
     }
 
     #[test]

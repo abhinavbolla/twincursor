@@ -1,5 +1,9 @@
-TwinCursor viewer for Windows
-=============================
+TwinCursor terminal viewer for Windows (test servers only)
+==========================================================
+
+Most people want the TwinCursor app for Windows instead (TwinCursor-<version>-windows-x64.zip):
+it signs in and joins calls by link. This terminal viewer is for a test round on a LiveKit
+server whose key you were given.
 
 Watch a Mac's shared screen and talk. Windows can join a call but can't share its own screen
 yet.

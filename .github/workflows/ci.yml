@@ -98,7 +98,7 @@ jobs:
         run: cargo build --locked --release --workspace
 
   # The viewer runs on Windows too, so make sure it keeps building there: tc-spike for
-  # development, and tc-engine for the testers' viewer package (packaging/windows).
+  # development, and tc-engine for the terminal viewer package (packaging/windows).
   windows-viewer:
     runs-on: windows-latest
     timeout-minutes: 45
@@ -124,6 +124,88 @@ jobs:
           target/release/tc-spike.exe view --help
           target/release/tc-engine.exe view --help
           target/release/tc-engine.exe config
+
+  # The desktop app on Windows, where it is a guest: it joins calls and takes control, but can't
+  # share. Builds the package people download (packaging/windows/package-app.sh, no backend),
+  # runs the tests that apply on Windows, then starts the real app (bench/windows-smoke.sh):
+  # alone, and as a guest in an empty room on a LiveKit dev server.
+  windows-app:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      # No debug info in Windows release builds: a lighter link, as on testers' PCs.
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+      # The LiveKit dev server the smoke test joins (github.com/livekit/livekit releases).
+      LIVEKIT_SERVER_VERSION: 1.13.11
+      LIVEKIT_SERVER_SHA256: 5d071ea43339f0140d24a66f0b2ff8a7bf6c4d0dceb19b30abca835670213667
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: ./.github/actions/setup-libwebrtc
+        with:
+          triple: win-x64-release
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Type-check and test the UI
+        working-directory: apps/desktop
+        run: |
+          npm ci --no-audit --no-fund
+          npx tsc --noEmit
+          npx vitest run
+
+      - name: Build the package (no backend)
+        run: packaging/windows/package-app.sh
+
+      # The Windows build has no warnings: the app, the engine and what they use, as the macOS
+      # rust job checks them.
+      - name: Clippy
+        run: |
+          cargo clippy --locked --release -p twincursor-engine-cli -p twincursor-engine -p twincursor-media -- -D warnings
+          cargo clippy --locked --release -p twincursor-desktop -p twincursor-account -p twincursor-ipc -p twincursor-protocol -p twincursor-control --all-targets -- -D warnings
+
+      - name: Test
+        run: |
+          cargo test --locked --release -p twincursor-desktop --features tauri/custom-protocol
+          cargo test --locked --release -p twincursor-account -p twincursor-ipc -p twincursor-protocol -p twincursor-control
+
+      - name: Get a LiveKit dev server
+        run: |
+          mkdir -p .livekit
+          zip="livekit_${LIVEKIT_SERVER_VERSION}_windows_amd64.zip"
+          curl -fsSL --retry 5 -o ".livekit/$zip" \
+            "https://github.com/livekit/livekit/releases/download/v${LIVEKIT_SERVER_VERSION}/$zip"
+          echo "${LIVEKIT_SERVER_SHA256}  .livekit/$zip" | sha256sum -c -
+          unzip -q -o ".livekit/$zip" -d .livekit
+          ls .livekit
+
+      - name: Smoke test the app
+        run: |
+          app=$(ls dist/TwinCursor-*-windows-x64/TwinCursor.exe)
+          APP="$app" OUT=smoke LIVEKIT=.livekit/livekit-server.exe bench/windows-smoke.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TwinCursor-windows-x64-no-backend
+          path: dist/*.zip
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-smoke-reports
+          path: smoke/
+          if-no-files-found: ignore
 
   # The backend (supabase/): the database's access rules and the call-pass Edge Function, run
   # against a local Supabase stack.

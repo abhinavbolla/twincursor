@@ -6,6 +6,7 @@ import type { Bridge } from "./bridge";
 import type { CallState } from "./call";
 import type { HomeView, Person } from "./home";
 import type { EngineCommand, EngineOutput } from "./ipc";
+import { MAC, CANT_SHARE, type PlatformInfo } from "./platform";
 import { ALEX, asGuest, asSharer, boot, guestIdentity, LINK, out, peer, type Scenario } from "./scenarios";
 import { replay } from "./useSurface";
 
@@ -15,7 +16,7 @@ const NOT_INVITED = "This server is invite-only. Ask whoever runs it to add your
  * A bridge over `base` (the mock, for everything else) whose home view and call
  * come from the scenario and change as the person clicks.
  */
-export function scenarioBridge(scenario: Scenario, base: Bridge): Bridge {
+export function scenarioBridge(scenario: Scenario, base: Bridge, platform: PlatformInfo = MAC): Bridge {
   let home: HomeView = scenario.home;
   let outputs: EngineOutput[] = [...scenario.outputs];
   let call: CallState = replay(outputs);
@@ -135,7 +136,11 @@ export function scenarioBridge(scenario: Scenario, base: Bridge): Bridge {
       setHome({ account, contacts: [] });
       return Promise.resolve(account);
     },
+    platformInfo: () => Promise.resolve(platform),
     share: () => {
+      if (!platform.can_share) {
+        return refuse(CANT_SHARE);
+      }
       if (!home.account.can_host) {
         return refuse(NOT_INVITED);
       }
@@ -204,6 +209,9 @@ export function scenarioBridge(scenario: Scenario, base: Bridge): Bridge {
       return ok();
     },
     ring: (userId) => {
+      if (!platform.can_share) {
+        return refuse(CANT_SHARE);
+      }
       if (!home.account.can_host) {
         return refuse(NOT_INVITED);
       }

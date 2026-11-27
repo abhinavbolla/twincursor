@@ -6,6 +6,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef, type RefObject } from "react";
 
+import { osOfUserAgent } from "./platform";
+
 export type WindowView = "panel" | "bar";
 
 /** Which surface a page shows: `?view=bar` is the call bar, anything else the panel. */
@@ -17,6 +19,8 @@ export function viewOf(params: URLSearchParams): WindowView {
 export function markInWindow(view: WindowView): void {
   document.documentElement.classList.add("in-window");
   document.documentElement.dataset.view = view;
+  // Windows 10 gives undecorated windows square corners and no hairline: the page draws one.
+  document.documentElement.dataset.platform = osOfUserAgent(navigator.userAgent);
 }
 
 /** The top and bottom of a box on the page, as `getBoundingClientRect` gives them. */

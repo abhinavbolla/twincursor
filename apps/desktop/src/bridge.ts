@@ -12,6 +12,7 @@ import { parseHomeView, type HomeView } from "./home";
 import type { EngineCommand, EngineOutput } from "./ipc";
 import { parseOutput } from "./ipc";
 import type { PermissionName } from "./permissions";
+import { parsePlatform, type PlatformInfo } from "./platform";
 
 export interface EngineInfo {
   /** Where the engine was found, or why it wasn't. */
@@ -67,6 +68,8 @@ export interface Bridge {
   quit(): Promise<void>;
   /** Opens the self-hosting guide in the browser. The address is fixed on the Rust side. */
   openGuide(): Promise<void>;
+  /** What this platform can do: only a Mac shares (and so calls people). */
+  platformInfo(): Promise<PlatformInfo>;
 }
 
 export interface LoadedBridge {
@@ -91,6 +94,15 @@ export function homeAnswer(value: unknown): HomeView {
     throw new Error("The app's answer about calls couldn't be read.");
   }
   return home;
+}
+
+/** The Rust side's platform answer, checked. */
+function platformAnswer(value: unknown): PlatformInfo {
+  const platform = parsePlatform(value);
+  if (platform === null) {
+    throw new Error("The app's platform answer couldn't be read.");
+  }
+  return platform;
 }
 
 /** The Rust side's call snapshot, checked. */
@@ -152,6 +164,7 @@ function tauriBridge(): Bridge {
     },
     quit: () => invoke<void>("quit"),
     openGuide: () => invoke<void>("open_self_hosting_guide"),
+    platformInfo: () => invoke<unknown>("platform_info").then(platformAnswer),
   };
 }
 
