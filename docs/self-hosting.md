@@ -40,8 +40,7 @@ cd twincursor
 
 ## 2. The backend
 
-The backend is one database migration
-(`supabase/migrations/20261126120000_accounts_and_calls.sql`: tables, access rules and the
+The backend is the database migrations in `supabase/migrations` (tables, access rules and the
 functions the app calls) and one Edge Function (`supabase/functions/call-pass`). Deploy them one
 of two ways.
 
@@ -210,7 +209,91 @@ If something fails:
 - **Sharing or joining fails as it starts**: check the function's three secrets, and its logs
   in the dashboard.
 
-## 6. Running the checks locally
+## 6. Choose who can start calls
+
+Your project's URL and public key are in every copy of the app, so anyone with a GitHub account
+can sign in to your backend. Every call runs on your LiveKit server, so you may want to choose
+who can *start* one. Joining stays open to everyone who signs in: a guest still has to be let in
+by the call's host, or rung by them.
+
+**The default is open:** everyone who signs in can share and ring. Nothing changes until you do
+the two steps below, in this order. If you turn invite-only on first, the server refuses: with
+an empty list, nobody could start a call, you included.
+
+The settings are two tables in your project, which only you can see: `invited` (GitHub handles
+that may start calls) and `server_settings` (one row, with `invite_only`). Use the dashboard's
+**Table Editor**, or paste the SQL into its **SQL Editor**. Handles are matched without regard to
+letter case; write them with or without the `@`.
+
+1. **Add your own GitHub handle.** In **Table Editor**, open the `invited` table, click
+   **Insert > Insert row**, type your handle in `handle` (a note such as "me" is optional), and
+   click **Save**. Or:
+
+   ```sql
+   insert into public.invited (handle, note) values ('your-github-handle', 'me');
+   ```
+
+2. **Turn invite-only on.** Open `server_settings`, click its one row's `invite_only` cell, set it
+   to `true`, and save. Or:
+
+   ```sql
+   update public.server_settings set invite_only = true;
+   ```
+
+   From the next poll (within two seconds), people not on the list see "You can join calls with a
+   link. Sharing your own screen is by invitation on this server." in place of **Share my
+   screen**, with **Ask to be invited**. If one tries anyway, the app says "This server is
+   invite-only. Ask whoever runs it to add your GitHub handle."
+
+3. **See who is waiting.** The `waiting_to_host` view lists everyone who signed in and isn't on
+   the list, those who clicked **Ask to be invited** first (`asked_to_host`, `asked_at`). Open it
+   in **Table Editor** like a table, or:
+
+   ```sql
+   select handle, name, signed_up_at, asked_to_host, asked_at from public.waiting_to_host;
+   ```
+
+   A row without a handle signed in some other way than GitHub (only possible if you turned
+   another sign-in method on); it can't be invited.
+
+4. **Add someone.** Insert their handle into `invited`, as in step 1. They can start calls from
+   their app's next poll, without signing in again. You can add a handle before that person has
+   ever signed in.
+
+   ```sql
+   insert into public.invited (handle, note) values ('their-github-handle', 'Sam, from the team');
+   ```
+
+5. **Remove someone.** In `invited`, tick their row and click **Delete 1 row**. Or:
+
+   ```sql
+   delete from public.invited where handle = 'their-github-handle';
+   ```
+
+   They can't start or ring into a new call from then on. A call they are hosting right now goes
+   on until they stop it (or their app stops for over 10 minutes): its guests stay, people can
+   still be let in, and their app can still reconnect to it. To end it at once as well:
+
+   ```sql
+   update public.calls set ended_at = now()
+   where ended_at is null
+     and host in (select id from public.profiles where lower(handle) = 'their-github-handle');
+   ```
+
+   New passes for that call stop at once; people already in it are disconnected by the host's app,
+   or when their pass's 10 minutes to join are up and they drop.
+
+The server refuses to remove the last handle while invite-only is on. To open the server again,
+set `invite_only` back to `false` first; the list can then be emptied.
+
+Invites are by GitHub handle. If someone renames their GitHub account, the invite stays with the
+old handle: invite the new one. A handle someone gives up can be taken by someone else on
+GitHub, who would then match your invite, so remove handles you no longer need.
+
+This limits who can start calls, not who can sign up: anyone can still create an account and
+join calls they are let into. To stop new accounts altogether, see "Who can sign in" in section 8.
+
+## 7. Running the checks locally
 
 You don't need a hosted project to work on the backend or the app. `supabase start` runs the
 whole backend in Docker, `livekit-server --dev` runs LiveKit, and the benches drive both:
@@ -218,7 +301,7 @@ whole backend in Docker, `livekit-server --dev` runs LiveKit, and the benches dr
 Commands section of [`CLAUDE.md`](../CLAUDE.md) lists `bench/account-e2e.sh` and
 `bench/app-accounts-e2e.sh`.
 
-## 7. What you are responsible for
+## 8. What you are responsible for
 
 Running a backend means holding other people's data and keys.
 
@@ -232,10 +315,11 @@ Running a backend means holding other people's data and keys.
 - **The LiveKit secret.** Keep it only in the function's secrets. Anyone who has it can mint a
   token for any room on your LiveKit server. If it leaks, make a new key on the LiveKit server,
   set the new values on the function, and delete the old key.
-- **Who can sign in.** Anyone with a GitHub account can create an account on your project: there
-  is no list of allowed GitHub accounts in TwinCursor. An account alone shows them nothing of
-  anyone else's: they can knock only with a link, and ring only people who have them as a
-  contact. To close the door, turn off **Allow new users to sign up** in Supabase's Auth settings
+- **Who can sign in.** Anyone with a GitHub account can create an account on your project. An
+  account alone shows them nothing of anyone else's: they can knock only with a link, and ring
+  only people who have them as a contact. On an open server, which is the default, any of them
+  can also start calls on your LiveKit server; section 6 limits that to people you invite. To
+  stop new accounts altogether, turn off **Allow new users to sign up** in Supabase's Auth settings
   ([general configuration](https://supabase.com/docs/guides/auth/general-configuration)) once
   your people have signed in; people who already have an account can still sign in. Turn it on
   again while someone new signs in for the first time.

@@ -40,6 +40,21 @@ Mark each line pass or fail. For a fail, note what happened, and copy the number
 | 2.6 | **Sign out**, then sign in again | Signed out at once; signing in works |
 | 2.7 | Turn Wi-Fi off for a minute while signed in | A muted "Can't reach the server." at the bottom of the panel; you stay signed in, and it goes away once Wi-Fi is back |
 
+### 2b. An invite-only server
+
+Only on a server whose owner has turned invite-only on (self-hosting guide, section 6), with B
+not on its list and A on it.
+
+| # | Do | Expect |
+|---|---|---|
+| 2b.1 | B: open the panel | "You can join calls with a link. Sharing your own screen is by invitation on this server." with **Ask to be invited**; **Paste link** is the primary button; no **Call** in People |
+| 2b.2 | B: **Ask to be invited** | It becomes "Asked. You'll be able to share once you're added."; the owner sees B with `asked_to_host` in `waiting_to_host` |
+| 2b.3 | Quit and reopen B's app | Still "Asked. …" |
+| 2b.4 | A shares; B joins with the link (sections 4 and 5) | Works as for anyone |
+| 2b.5 | A rings B | B can **Join** |
+| 2b.6 | The owner adds B's handle (in any letter case) | Within a few seconds B's panel shows **Share my screen** and **Call** |
+| 2b.7 | The owner removes A while A is sharing | A's call goes on; after A stops, A's panel shows the invite-only note |
+
 ## 3. Permissions, when first needed
 
 On a Mac that hasn't granted TwinCursor anything yet.

@@ -385,6 +385,18 @@ fn run(
                         }
                         if session.on_message(&message) {
                             tracing::info!(?message, state = ?session.state(), "sharer answered");
+                            // A turn-down that isn't the sharer's choice says why: show it.
+                            if let Message::Deny {
+                                reason: Some(reason),
+                            } = &message
+                            {
+                                tracing::warn!("control turned down: {reason}");
+                                if let Some(app) = app.as_ref() {
+                                    (app.events)(Event::Error {
+                                        message: reason.clone(),
+                                    });
+                                }
+                            }
                         }
                     }
                     Err(e) => tracing::debug!("bad control message: {e}"),
@@ -513,6 +525,29 @@ pub enum Step {
     Wait {
         ms: u64,
     },
+    /// Hold here, sending nothing, until `file` exists. If it says `go` the script carries on;
+    /// anything else, or no file within `timeout_ms`, gives control back and stops the script.
+    /// Lets a test check what the first input did before it sends the rest
+    /// (`bench/control-inject.sh`).
+    Gate {
+        file: PathBuf,
+        #[serde(default = "gate_timeout_ms")]
+        timeout_ms: u64,
+    },
+}
+
+fn gate_timeout_ms() -> u64 {
+    15_000
+}
+
+/// What a gate file says: `Some(true)` to go on, `Some(false)` to stop, `None` while there is
+/// nothing (or nothing complete) there yet.
+fn gate_says(contents: Option<&str>) -> Option<bool> {
+    let word = contents?.trim();
+    if word.is_empty() {
+        return None;
+    }
+    Some(word == "go")
 }
 
 /// How long `request` waits for the sharer.
@@ -579,6 +614,27 @@ pub fn play(guest: &Guest, steps: &[Step]) -> Result<(), ScriptError> {
                 }
             }
             Step::Wait { ms } => std::thread::sleep(Duration::from_millis(*ms)),
+            Step::Gate { file, timeout_ms } => {
+                let since = Instant::now();
+                let open = loop {
+                    let contents = std::fs::read_to_string(file).ok();
+                    if let Some(go) = gate_says(contents.as_deref()) {
+                        break go;
+                    }
+                    if since.elapsed() >= Duration::from_millis(*timeout_ms) {
+                        break false;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                };
+                if !open {
+                    guest.send(Ui::Release);
+                    return Err(ScriptError::Gated(format!(
+                        "{} didn't say go",
+                        file.display()
+                    )));
+                }
+                tracing::info!(gate = %file.display(), "gate open");
+            }
         }
         if matches!(step, Step::Input { .. } | Step::Type { .. })
             && guest.status.get() != GuestState::InControl
@@ -626,10 +682,28 @@ mod tests {
         let steps: Vec<Step> = serde_json::from_str(
             r#"[{"do":"request"},{"do":"input","event":{"kind":"move","x":0.5,"y":0.5}},
                 {"do":"type","text":"hi"},{"do":"wait","ms":5},{"do":"release"},
-                {"do":"await_control"},{"do":"await_end"}]"#,
+                {"do":"await_control"},{"do":"await_end"},
+                {"do":"gate","file":"/tmp/x/gate-canary"},
+                {"do":"gate","file":"g","timeout_ms":5}]"#,
         )
         .unwrap();
-        assert_eq!(steps.len(), 7);
+        assert_eq!(steps.len(), 9);
+        assert!(matches!(
+            &steps[7],
+            Step::Gate {
+                timeout_ms: 15_000,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_gate_opens_only_on_go() {
+        assert_eq!(gate_says(None), None);
+        assert_eq!(gate_says(Some("")), None, "written but not yet filled");
+        assert_eq!(gate_says(Some("go\n")), Some(true));
+        assert_eq!(gate_says(Some("stop\n")), Some(false));
+        assert_eq!(gate_says(Some("gone")), Some(false));
     }
 
     #[test]

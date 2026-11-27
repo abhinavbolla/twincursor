@@ -72,10 +72,28 @@ pub struct Waiting {
     pub host: Profile,
 }
 
+fn yes() -> bool {
+    true
+}
+
+/// The signed-in person: their profile, and whether they may start calls on this server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Me {
+    #[serde(flatten)]
+    pub profile: Profile,
+    /// They may start calls (share, ring): the server is open, or their GitHub handle is on its
+    /// invite list. `true` from a server without an invite list, which lets everyone.
+    #[serde(default = "yes")]
+    pub can_host: bool,
+    /// They asked to be able to start calls (`ask_to_host`).
+    #[serde(default)]
+    pub asked_to_host: bool,
+}
+
 /// `inbox()`: everything the app shows, in one answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Inbox {
-    pub me: Profile,
+    pub me: Me,
     #[serde(default)]
     pub contacts: Vec<Profile>,
     #[serde(default)]
@@ -197,7 +215,9 @@ mod tests {
             "something_new": 1
         }))
         .unwrap();
-        assert_eq!(inbox.me.handle.as_deref(), Some("alex"));
+        assert_eq!(inbox.me.profile.handle.as_deref(), Some("alex"));
+        // A server without the invite list says nothing about hosting: everyone may.
+        assert!(inbox.me.can_host && !inbox.me.asked_to_host);
         assert_eq!(inbox.contacts[0].handle, None);
         let members = &inbox.hosting.as_ref().unwrap().members;
         assert_eq!(
@@ -210,6 +230,23 @@ mod tests {
         );
         assert_eq!(inbox.rings[0].host.name, "Pat");
         assert_eq!(inbox.waiting[0].state, MemberState::TurnedAway);
+    }
+
+    #[test]
+    fn me_says_who_may_host() {
+        let me: Me = serde_json::from_value(json!({
+            "id": "u1", "name": "Alex", "handle": "alex-example", "avatar_url": null,
+            "can_host": false, "asked_to_host": true
+        }))
+        .unwrap();
+        assert_eq!(me.profile.name, "Alex");
+        assert!(!me.can_host && me.asked_to_host);
+        // Written back flat, as the backend has it (tc-account prints it).
+        assert_eq!(
+            serde_json::to_value(&me).unwrap(),
+            json!({ "id": "u1", "name": "Alex", "handle": "alex-example", "avatar_url": null,
+                    "can_host": false, "asked_to_host": true })
+        );
     }
 
     #[test]

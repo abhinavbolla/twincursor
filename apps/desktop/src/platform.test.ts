@@ -95,6 +95,21 @@ describe("the panel on Windows", () => {
     }
   });
 
+  it("puts the platform before the invite list: no Ask to be invited on Windows", () => {
+    for (const state of ["uninvited", "uninvited-asked"]) {
+      const m = onWindows(state);
+      expect(m.main, state).toEqual({ kind: "join", note: CANT_SHARE_LINE, busy: false, primary: true });
+      expect(m.people.every((p) => p.action.kind === "none")).toBe(true);
+    }
+    // On a Mac the invite rule applies as before.
+    const s = findScenario("panel", "uninvited");
+    if (s === undefined) {
+      throw new Error("uninvited");
+    }
+    const mac = panelModel(s.home, initialCall, undefined, MAC);
+    expect(mac.kind === "home" && mac.main).toEqual({ kind: "invite", busy: false, primary: true, asked: false });
+  });
+
   it("is a Mac's panel unless told otherwise", () => {
     const s = findScenario("panel", "home");
     if (s === undefined) {

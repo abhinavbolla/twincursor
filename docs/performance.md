@@ -542,6 +542,13 @@ Measuring this is easy to get wrong, so these are worth knowing before you compa
   full-size frames only. The network lab's constrained profiles haven't been re-run since.
 - **A sleeping display looks like a broken build.** ScreenCaptureKit lists no displays while the
   screen is asleep or locked, so unattended runs need `--capture pattern`.
+- **ScreenCaptureKit's first display isn't the main one.** `SCShareableContent.displays()` comes
+  in no promised order, so code that took `displays()[0]` could capture one display of a
+  two-display Mac while input and the label went to the main one. Shares now pick a display by id
+  (`engine::screen::choose`), so a real-screen row on a Mac with two displays measures the main
+  display unless `--display` says otherwise. libwebrtc's capturer (`--capture lk`) lists no
+  screens at all on macOS 26 and captures its own default, which is taken to be the main display:
+  it is refused for any other.
 - **The latency marker hides the app menus.** While a viewer sends ticks, the sharer paints a
   384x64 px grid of black and white blocks into the top-left corner of every frame
   (`crates/media/src/marker.rs`). On a Mac that covers the front app's name and first menus, so a

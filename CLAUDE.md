@@ -70,7 +70,10 @@ Fill these in as code lands; keep them accurate.
   `--capture pattern` pretends to be a 3840x2160 display, so every tier up to 2160 is 16:9
 - One window or app: `tc-spike windows [--json]` lists shareable windows (id, pixels, app, title);
   `tc-spike share --window <id or text> [--resolution native]` sends that window at its own pixel
-  size, `--app <name>` the display with only that app's windows. Not with `--allow-control`.
+  size, `--app <name>` the display with only that app's windows. With `--allow-control` every
+  request is turned down ("Control isn't available while one window is shared.")
+- Which display: a share captures the main display and control input goes to the same one;
+  `share --display <id>` picks another, `tc-spike displays` / `tc-engine displays` list the ids
   A whole-display share leaves out every TwinCursor window, so share and view work on one Mac.
   To judge sharpness on one Mac: `tc-spike share --window <text> --resolution native --no-adapt
   --audio off` and `tc-spike view --audio off` (the HUD says "shown 1:1" or "scaled to N%")
@@ -106,9 +109,12 @@ Fill these in as code lands; keep them accurate.
 - Remote control by hand: `tc-spike share --allow-control` and `tc-spike view`; F9 in the viewer
   asks for control and gives it back, F10 toggles the HUD while in control. The sharer injects
   real input by default (`--inject log` to only log); its terminal needs Accessibility
-- Real injection, read back: `bench/control-inject.sh` (screen unlocked, hands off for ~15 s; a
-  full-screen `tc-spike probe` window records what arrives). Nothing is injected while the screen
-  is locked
+- Real injection, read back: `bench/control-inject.sh` (screen unlocked, hands off for ~20 s,
+  nothing full-screen on the main display; a full-screen `tc-spike probe` window on the display
+  input goes to records what arrives, and nothing is sent until it says it is ready and has seen
+  a first pointer move). Nothing is injected while the screen is locked. Dry run with no real
+  input: `INJECT=record:FILE bench/control-inject.sh` (must abort at the canary; `DRY_FAKE=canary`,
+  `canary,lost` or `canary,buttons` fake probe records to take it further)
 - Remote-control checks that need someone at the Mac, in one go: `bench/control-acceptance.sh` (`STEPS="2 3"` for some)
   (hotkey, injection readback, overlay screenshot vs stream frame, capture latency)
 - Remote control under bad networks: `bench/netlab/control.sh [profile ...]` (Docker; the
@@ -127,7 +133,10 @@ Fill these in as code lands; keep them accurate.
   server
 - IPC end to end: `bench/engine-e2e.sh` (a scripted app drives a sharer and a headless guest:
   request, allow, typing recorded not injected, revoke, leave, and the engine exiting when its
-  stdin closes; pattern capture and `--audio off`, so no permissions or unlocked screen needed)
+  stdin closes; pattern capture and `--audio off`, so no permissions or unlocked screen needed).
+  Its last step shares a window it makes itself (`bench/control/test-window.swift`, small, behind
+  everything, never focused) and is skipped without Screen Recording. Benches never capture a
+  window found on screen
 - Call passes: `TWINCURSOR_PASS=$(target/release/tc-engine dev-pass --room R --role sharer
   --name Alex) tc-engine share --ipc ...` joins with a pass instead of a key and secret (no
   `--room`/`--name`); `bench/engine-e2e.sh` runs a call both ways

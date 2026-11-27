@@ -42,6 +42,11 @@ export type PanelMain =
   | { kind: "share"; busy: boolean; primary: boolean }
   /** Where this app can't share (Windows): one line saying so, and Paste link as the action. */
   | { kind: "join"; note: string; busy: boolean; primary: boolean }
+  /**
+   * This server doesn't let this person start calls: the invitation line, Ask to be invited (or
+   * that they asked), and Paste link as the primary action unless a ring card holds it.
+   */
+  | { kind: "invite"; busy: boolean; primary: boolean; asked: boolean }
   | {
       kind: "call";
       dot: "good" | "pending" | "off";
@@ -96,10 +101,17 @@ function mainOf(home: HomeView, call: CallState, platform: PlatformInfo): PanelM
   const stage = home.stage;
   switch (stage.kind) {
     case "idle":
-    case "starting":
-      return platform.can_share
-        ? { kind: "share", busy: stage.kind === "starting", primary: home.rings.length === 0 }
-        : { kind: "join", note: CANT_SHARE_LINE, busy: stage.kind === "starting", primary: home.rings.length === 0 };
+    case "starting": {
+      const busy = stage.kind === "starting";
+      const primary = home.rings.length === 0;
+      // A platform that can't share comes first: an invitation wouldn't let it share.
+      if (!platform.can_share) {
+        return { kind: "join", note: CANT_SHARE_LINE, busy, primary };
+      }
+      return home.account.can_host
+        ? { kind: "share", busy, primary }
+        : { kind: "invite", busy, primary, asked: home.account.asked_to_host };
+    }
     case "hosting":
       return {
         kind: "call",
@@ -134,6 +146,12 @@ function actionFor(home: HomeView, id: string, outcomes: ReadonlyMap<string, Rin
     // Calling someone means sharing your screen first.
     return { kind: "none" };
   }
+  const action = callAction(home, id, outcomes);
+  // Calling means sharing: someone this server doesn't let start calls has no Call button.
+  return action.kind === "call" && !home.account.can_host ? { kind: "none" } : action;
+}
+
+function callAction(home: HomeView, id: string, outcomes: ReadonlyMap<string, RingOutcome>): PersonAction {
   switch (home.stage.kind) {
     case "idle":
       return { kind: "call", enabled: true };

@@ -64,7 +64,10 @@ Windows login, which the folder's permissions already do while Windows runs).
 ## What the window sees
 
 The app's window (the webview) asks the Rust side for the account state and gets only
-`{ configured, signed_in, me: { id, name, handle, avatar_url } | null, signing_in }`. It never
+`{ configured, signed_in, me: { id, name, handle, avatar_url } | null, signing_in, can_host,
+asked_to_host }`. `can_host` is whether the server lets this person start calls (true until it
+has said otherwise, and from a server without an invite list); `asked_to_host` whether they asked
+to be invited ([calls](calls.md#on-an-invite-only-server)). It never
 receives a token, a code or the verifier: tokens in `crates/account` are `Secret`s, which can't
 be serialized or printed, and the tests check the exact shape the window gets. Avatars load only
 from `https://avatars.githubusercontent.com`, the one image host the window's content security
@@ -111,7 +114,7 @@ failure prints `{"error": "<sentence>", "kind": "<word>"}` and exits with status
 ```sh
 tc-account --session s.json sign-in                         # GitHub, in the browser
 TC_ACCOUNT_PASSWORD=… tc-account --session s.json password-sign-in --email a@example.test
-tc-account --session s.json whoami
+tc-account --session s.json whoami                          # with can_host and asked_to_host
 tc-account --session s.json inbox [--hosting CALL]
 tc-account --session s.json start-call                      # {call_id, code}
 tc-account --session s.json knock CODE
@@ -121,6 +124,7 @@ tc-account --session s.json answer-ring CALL --accept | --decline
 tc-account --session s.json leave CALL
 tc-account --session s.json end CALL
 tc-account --session s.json remove-contact CONTACT
+tc-account --session s.json ask-to-host                     # on an invite-only server
 tc-account --session s.json pass CALL                       # who the pass is for, no token
 eval "$(tc-account --session s.json pass CALL --print-env)" # sets TWINCURSOR_SERVER_URL, TWINCURSOR_PASS
 tc-account --session s.json sign-out
@@ -132,7 +136,9 @@ script can start `tc-engine` with it.
 
 `bench/account-e2e.sh` runs the whole chain on one Mac against the local stack and local
 LiveKit: two people sign in, one starts a call, the other knocks and is let in, both join with
-their passes, and someone never let in is refused. It also checks that no token turns up in
+their passes, and someone never let in is refused. Then it makes the server invite-only, as an
+owner would with the service key: the invited person can start a call, the other is told the
+server is invite-only but can still knock, be let in and get a guest pass, and asks to host. It also checks that no token turns up in
 anything it captured. The GitHub round trip itself needs a GitHub OAuth app and a person, so the
 bench stops at checking that the local auth server accepts the sign-in page and redirects to
 GitHub.

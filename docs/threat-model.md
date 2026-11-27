@@ -70,6 +70,13 @@ weaken them won't be merged.
   during a grant, with a known version and values in range. The viewer isn't trusted.
 - **Nothing stays held down.** Every held key and button is released on revoke, on disconnect, when
   the guest's window loses focus, and after 1 s without a heartbeat.
+- **Input lands on the display the guest sees, and nowhere else.** A share is about one display
+  (the main one unless the sharer picks another), and the capture, the injector and the label
+  all get that same display. If it goes away mid-call, control is taken back and stays off for
+  the rest of the share; input never moves to another display. While one window or app is
+  shared, nobody can be given control, since a click on the window's picture would land
+  elsewhere on the screen: every request is turned down with "Control isn't available while
+  one window is shared."
 - **Nothing is injected while the sharer's screen is locked.** Typed keys would land in the lock
   screen's password field, so a guest could try to unlock the computer. Input pauses until the
   sharer unlocks it; releases still go through.
@@ -111,9 +118,27 @@ hotkey, the on-screen label, and real input on macOS.*
   Paste link reads the clipboard only when you click it, in the app's Rust side; what it finds
   goes to the link parser and nowhere else (never to the window or a log), and anything over 256
   characters isn't looked at.
-- **Anyone with a GitHub account can sign up** on a backend that allows sign-ups. An account
-  alone can knock only with a link and ring only mutual contacts. Whoever runs the backend can
-  turn sign-ups off ([self-hosting](self-hosting.md#7-what-you-are-responsible-for)).
+- **Anyone with a GitHub account can sign up** on a backend that allows sign-ups, because the app
+  carries the backend's public address and key. An account alone can knock only with a link and
+  ring only mutual contacts. On an open server it can also start calls, which run on the host's
+  LiveKit server and cost them minutes. Whoever runs the backend can make it invite-only
+  ([self-hosting](self-hosting.md#6-choose-who-can-start-calls)): then only GitHub handles on its
+  list can start or ring into a call, the server checks it in `start_call` and `ring`, and the
+  app only shows what the server says. That doesn't cover everything:
+  - Sign-up stays open. Turning sign-ups off is a separate Supabase setting
+    ([self-hosting](self-hosting.md#8-what-you-are-responsible-for)).
+  - Guests in an invited host's call use LiveKit minutes too, as many as that host lets in. A
+    knock costs nothing until the host lets the person in; repeated knocks are database rows and
+    polls, not media.
+  - A host taken off the list keeps a call that is live until it ends, and can let people into
+    it; the guide has the SQL to end it at once.
+  - Invites are by handle. GitHub lets people rename, and a freed handle can be claimed by
+    someone else, who would then match the invite.
+  - A pass is good for 10 minutes to join and nothing takes it back, so ending a call doesn't
+    disconnect anyone already in the LiveKit room (see "A pass is valid…" in
+    [`supabase/README.md`](../supabase/README.md)).
+  - Anyone holding the LiveKit API secret can run rooms without the backend; it lives only in the
+    function's secrets.
 - **A room code is the only key to a room-code call.** The terminal tools and the Windows terminal viewer
   join rooms by name on a server whose key they hold; anyone with that key and the code can
   join. The menu bar app doesn't start such calls.
@@ -171,7 +196,8 @@ hotkey, the on-screen label, and real input on macOS.*
 ## macOS permissions
 
 TwinCursor needs Screen Recording to capture, Accessibility to inject input, and Microphone to
-talk. The desktop app holds these itself: its engine runs inside the app bundle, so macOS asks
+talk. Accessibility is first needed when control is given, not when sharing starts: without it,
+nobody is given control (or trusted with it), and the sharer is told what to allow. The desktop app holds these itself: its engine runs inside the app bundle, so macOS asks
 for TwinCursor and grants nothing to anything else (ADR 0007). Run from a terminal, `tc-spike`
 and `tc-engine` get the terminal's permissions instead, and so does everything else running from
 it.

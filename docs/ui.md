@@ -76,7 +76,10 @@ The same two windows, with Windows' conventions (`native.rs`, `surfaces.rs`):
   display their centre is on, so at 150 % the 340 pt panel is 510 pixels wide.
 - **The panel is a guest's.** Where a Mac shows **Share my screen**, it says "Sharing from
   Windows isn't available yet. You can join a call with a link." and **Paste link** is the
-  main button (unless a ring card holds it). People have no **Call** button. Signed out, it says
+  main button (unless a ring card holds it). People have no **Call** button. This comes before
+  the invite list: on an invite-only server there is no **Ask to be invited** on Windows, since an
+  invitation wouldn't let it share (`share` and `ring` refuse for the platform first, then for
+  the invite). Signed out, it says
   "Sign in to join calls with a link." Rings, knocking and being in a call look as on a Mac, and
   so does the call bar's guest row (**Control**, F9).
 
@@ -91,6 +94,7 @@ The same two windows, with Windows' conventions (`native.rs`, `surfaces.rs`):
 | Signing in | "Finish signing in in your browser…" and a quiet **Cancel** |
 | Home | Rings on top ("**Sam Rivera** is calling", **Decline**, **Join**); **Share my screen**; **Paste link** with "Join with a link someone sent you"; **People**, one 36 px row each with a **Call** button |
 | No people | "People you've been in a call with show up here." |
+| Invite-only, not invited | In place of Share my screen, a note: "You can join calls with a link. Sharing your own screen is by invitation on this server." with a quiet **Ask to be invited**, which becomes the muted "Asked. You'll be able to share once you're added." (also on later launches). **Paste link** is the primary button, unless a ring holds it. People rows have no **Call** (calling means sharing); rings still show with **Decline** and **Join** |
 | Starting | Share reads "Starting…", nothing moves |
 | Sharing | "You're sharing your screen" with **Stop sharing**, the call link with **Copy link**; Call rings people into the call, and rows say "Ringing…" or "In the call"; a ring that went unanswered or was declined says "No answer" or "Declined" (muted) for 10 s after the panel first sees it, then the row shows **Call** again (`ringOutcomes.ts`) |
 | Knocking | "Waiting for **Alex** to let you in…" with **Cancel** |
@@ -173,7 +177,7 @@ Sections under the row:
 
 - `?view=panel&state=<name>`: `off`, `out`, `out-menu`, `signing`, `home`, `empty`, `many`, `ring`, `rings`,
   `needs`, `starting`, `hosting`, `rang-missed`, `rang-declined`, `knocking`, `joined`, `error`,
-  `offline`
+  `offline`, `uninvited`, `uninvited-asked`
 - `?view=bar&state=<name>`: `alone`, `knock`, `knock2`, `knock-nohandle`, `with`, `trusted`,
   `controlling`, `asked`, `needs`, `menu`, `notice`, `g-knocking`, `g-watching`, `g-asked`,
   `g-controlling`, `reconnecting`, `muted`, `long-trusted`, `long-controlling`,

@@ -35,6 +35,14 @@ Click **Sign in with GitHub** in the panel. Your browser opens GitHub; approve t
 page says you're signed in. The panel then shows your picture at the top. If it says "This build
 isn't connected to a server.", you have a build without a server: ask for another.
 
+Some servers let only invited people share. If yours does and you aren't on its list yet, the
+panel says "You can join calls with a link. Sharing your own screen is by invitation on this
+server." in place of **Share my screen**, and has no **Call** buttons. You can still join: click
+**Paste link** with a link someone sent you, or **Join** when someone rings you. **Ask to be
+invited** lets whoever runs the server know; it then says "Asked. You'll be able to share once
+you're added." Once they add your GitHub handle, **Share my screen** appears within a few
+seconds, without signing in again.
+
 ## Permissions
 
 TwinCursor asks macOS for each permission the first time it needs it, and macOS asks you once

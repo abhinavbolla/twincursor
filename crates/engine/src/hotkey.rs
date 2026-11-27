@@ -40,6 +40,8 @@ pub struct SharerUi {
     event_loop: EventLoop<UiEvent>,
     handle: OverlayHandle,
     state: Arc<Mutex<OverlayState>>,
+    /// The shared display, where the overlay goes.
+    display: u32,
     /// Told when the mute hotkey flips mute, instead of printing to the terminal.
     on_mute: Option<MuteNotice>,
 }
@@ -48,15 +50,22 @@ pub struct SharerUi {
 pub type MuteNotice = Arc<dyn Fn(bool) + Send + Sync>;
 
 impl SharerUi {
-    /// Makes the event loop. Call it on the main thread.
-    pub fn new() -> Result<Self, Error> {
+    /// Makes the event loop. Call it on the main thread. `display` is the shared display
+    /// ([`crate::screen::choose`]): the label and the guest's pointer tag go on it, where the
+    /// guest's input lands.
+    pub fn new(display: u32) -> Result<Self, Error> {
         let mut builder = EventLoop::<UiEvent>::with_user_event();
         #[cfg(target_os = "macos")]
         {
             // No Dock icon and no menu bar: the sharer only needs the run loop and the overlay.
+            // Nor does it take focus: whatever the sharer is working in stays in front (and
+            // keeps the keyboard) when sharing starts. winit activates the app at launch by
+            // default, which took the keyboard from the window under test in
+            // bench/control-inject.sh.
             use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
             builder
                 .with_activation_policy(ActivationPolicy::Accessory)
+                .with_activate_ignoring_other_apps(false)
                 .with_default_menu(false);
         }
         let event_loop = builder.build()?;
@@ -66,6 +75,7 @@ impl SharerUi {
             event_loop,
             handle,
             state,
+            display,
             on_mute: None,
         })
     }
@@ -156,7 +166,7 @@ impl SharerUi {
             })
         };
         let mut app = App {
-            overlay: Overlay::new(self.state),
+            overlay: Overlay::new(self.state, self.display),
             start: Some(Box::new(start)),
             worker: None,
         };

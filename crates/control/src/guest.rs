@@ -79,7 +79,7 @@ impl GuestSession {
     pub fn on_message(&mut self, message: &Message) -> bool {
         let next = match (self.state, message) {
             (GuestState::Requested, Message::Grant) => GuestState::InControl,
-            (GuestState::Requested, Message::Deny)
+            (GuestState::Requested, Message::Deny { .. })
             | (GuestState::Requested | GuestState::InControl, Message::Revoke) => GuestState::Idle,
             _ => return false,
         };
@@ -216,13 +216,16 @@ mod tests {
         assert!(!g.on_message(&Message::Grant), "a grant nobody asked for");
         assert_eq!(g.request(t0), Some(Message::RequestControl));
         assert_eq!(g.request(t0), None, "already asked");
-        assert!(g.on_message(&Message::Deny));
+        assert!(g.on_message(&Message::Deny { reason: None }));
         assert_eq!(g.state(), GuestState::Idle);
 
         g.request(t0);
         assert!(g.on_message(&Message::Grant));
         assert_eq!(g.state(), GuestState::InControl);
-        assert!(!g.on_message(&Message::Deny), "deny only answers a request");
+        assert!(
+            !g.on_message(&Message::Deny { reason: None }),
+            "deny only answers a request"
+        );
         assert!(g.on_message(&Message::Revoke));
         assert_eq!(g.state(), GuestState::Idle);
         assert_eq!(g.release(), None);

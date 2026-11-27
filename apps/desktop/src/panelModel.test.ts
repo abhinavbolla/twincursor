@@ -27,7 +27,7 @@ function home(state: string): Extract<PanelModel, { kind: "home" }> {
 describe("panel scenarios", () => {
   it("has every state the dev page promises", () => {
     const names = scenariosOf("panel").map((s) => s.name);
-    for (const name of ["off", "out", "signing", "home", "empty", "many", "ring", "needs", "starting", "hosting", "rang-missed", "rang-declined", "knocking", "joined", "error", "offline"]) {
+    for (const name of ["off", "out", "signing", "home", "empty", "many", "ring", "needs", "starting", "hosting", "rang-missed", "rang-declined", "knocking", "joined", "error", "offline", "uninvited", "uninvited-asked"]) {
       expect(names).toContain(name);
     }
   });
@@ -161,6 +161,58 @@ describe("the panel", () => {
 
   it("pins a server problem to the bottom", () => {
     expect(home("offline").serverProblem).toBe("Can't reach the server.");
+  });
+
+  it("on an invite-only server, offers Paste link first and asking to be invited instead of Share", () => {
+    const m = home("uninvited");
+    expect(m.main).toEqual({ kind: "invite", busy: false, primary: true, asked: false });
+    expect(m.people).toHaveLength(3);
+    expect(m.people.every((p) => p.action.kind === "none")).toBe(true);
+    expect(home("uninvited-asked").main).toEqual({ kind: "invite", busy: false, primary: true, asked: true });
+  });
+
+  it("on an invite-only server, a ring still shows with Join and takes the primary button", () => {
+    const s = findScenario("panel", "uninvited");
+    if (s === undefined) {
+      throw new Error("no uninvited scenario");
+    }
+    const sam = s.home.contacts[0];
+    if (sam === undefined) {
+      throw new Error("no contacts");
+    }
+    const m = panelModel({ ...s.home, rings: [{ call_id: "c7", host: sam }] }, initialCall);
+    expect(m.kind === "home" && m.rings.map((r) => r.callId)).toEqual(["c7"]);
+    expect(m.kind === "home" && m.main).toEqual({ kind: "invite", busy: false, primary: false, asked: false });
+  });
+
+  it("on an invite-only server, joining works as for anyone", () => {
+    const s = findScenario("panel", "uninvited");
+    if (s === undefined) {
+      throw new Error("no uninvited scenario");
+    }
+    const starting = panelModel({ ...s.home, stage: { kind: "starting" } }, initialCall);
+    expect(starting.kind === "home" && starting.main).toEqual({ kind: "invite", busy: true, primary: true, asked: false });
+    const sam = s.home.contacts[0];
+    if (sam === undefined) {
+      throw new Error("no contacts");
+    }
+    const joined = panelModel({ ...s.home, stage: { kind: "joined", host: sam } }, initialCall);
+    expect(joined.kind === "home" && joined.main.kind).toBe("call");
+  });
+
+  it("a host taken off the list mid-call keeps the call, without Call buttons", () => {
+    const s = findScenario("panel", "hosting");
+    if (s === undefined) {
+      throw new Error("no hosting scenario");
+    }
+    const m = panelModel({ ...s.home, account: { ...s.home.account, can_host: false } }, replay(s.outputs));
+    if (m.kind !== "home") {
+      throw new Error(m.kind);
+    }
+    expect(m.main.kind === "call" && m.main.action).toEqual({ label: "Stop sharing", op: "end" });
+    const byName = Object.fromEntries(m.people.map((p) => [p.name, p.action]));
+    expect(byName["Sam Rivera"]).toEqual({ kind: "status", label: "In the call" });
+    expect(byName["Priya Natarajan"]).toEqual({ kind: "none" });
   });
 
   it("loads only GitHub avatars", () => {

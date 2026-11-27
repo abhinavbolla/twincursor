@@ -447,6 +447,13 @@ impl Account {
             .map(drop)
     }
 
+    /// Tells whoever runs the server you'd like to start calls. Asking again changes nothing.
+    pub async fn ask_to_host(&self) -> Result<(), Error> {
+        self.rpc::<IgnoredAny>("ask_to_host", json!({}))
+            .await
+            .map(drop)
+    }
+
     pub async fn remove_contact(&self, contact: &str) -> Result<(), Error> {
         self.rpc::<IgnoredAny>("remove_contact", json!({ "contact": contact }))
             .await

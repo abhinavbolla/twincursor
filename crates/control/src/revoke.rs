@@ -90,6 +90,10 @@ impl<I: Injector> Injector for Gated<I> {
     fn pointer(&self) -> Option<Point> {
         self.inner.pointer()
     }
+
+    fn display_gone(&mut self) -> bool {
+        self.inner.display_gone()
+    }
 }
 
 #[cfg(test)]

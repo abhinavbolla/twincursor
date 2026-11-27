@@ -32,6 +32,6 @@ pub use pkce::Pkce;
 pub use secret::Secret;
 pub use session::{FileStore, MemoryStore, Session, SessionStore};
 pub use types::{
-    CallPass, Hosting, Inbox, Knock, Member, MemberState, PassRole, Profile, Ring, StartedCall,
+    CallPass, Hosting, Inbox, Knock, Me, Member, MemberState, PassRole, Profile, Ring, StartedCall,
     Waiting,
 };

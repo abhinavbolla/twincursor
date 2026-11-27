@@ -380,9 +380,7 @@ impl Calls {
         let state = State {
             account: AccountView {
                 configured: setup.account.account().is_ok(),
-                signed_in: false,
-                me: None,
-                signing_in: false,
+                ..AccountView::none()
             },
             stage: Stage::Idle,
             flow: 0,
@@ -554,6 +552,25 @@ impl Calls {
         }
     }
 
+    /// Starting a call is only for people the server lets host. Refused here when the server
+    /// has said so already; the server refuses it anyway (`not_invited`).
+    fn may_host(&self) -> Result<(), String> {
+        if self.inner.setup.account.can_host() {
+            Ok(())
+        } else {
+            Err(AccountError::NotInvited.to_string())
+        }
+    }
+
+    /// The server refused a call because this person may not host: show it at once.
+    async fn not_invited(&self, e: &AccountError) {
+        if *e == AccountError::NotInvited {
+            self.inner.setup.account.learned(Some(false), None);
+            self.refresh_account().await;
+            self.poll_soon();
+        }
+    }
+
     async fn refresh_account(&self) {
         let view = self.inner.setup.account.view().await;
         let mut s = self.lock();
@@ -608,7 +625,7 @@ impl Calls {
         let mut outcome = Polled::Done;
         match account.inbox(hosting.as_deref()).await {
             Ok(inbox) => {
-                self.inner.setup.account.set_me(Some(person(&inbox.me)));
+                self.inner.setup.account.set_me(Some(&inbox.me));
                 self.lock().failures = 0;
                 self.apply(&account, inbox, flow);
             }
@@ -1187,6 +1204,7 @@ impl Calls {
         if !self.lock().free() {
             return Err(IN_CALL.into());
         }
+        self.may_host()?;
         match self.ensure(Permission::ScreenRecording).await {
             Ok(true) => {}
             Ok(false) => {
@@ -1199,7 +1217,10 @@ impl Calls {
         self.emit();
         let started = match account.start_call().await {
             Ok(started) => started,
-            Err(e) => return self.fail(flow, e.to_string()),
+            Err(e) => {
+                self.not_invited(&e).await;
+                return self.fail(flow, e.to_string());
+            }
         };
         let call_id = started.call_id.clone();
         let ended = |me: &Calls| {
@@ -1493,6 +1514,7 @@ impl Calls {
             return Err(crate::platform::CANT_SHARE.into());
         }
         let account = self.signed_in().await?;
+        self.may_host()?;
         let hosting = {
             let s = self.lock();
             match &s.stage {
@@ -1513,11 +1535,22 @@ impl Calls {
                 Ok(self.home())
             }
             Err(e) => {
+                self.not_invited(&e).await;
                 self.lock().error = Some(e.to_string());
                 self.emit();
                 Err(e.to_string())
             }
         }
+    }
+
+    /// Ask to be invited: tells whoever runs the server this person would like to start calls.
+    pub async fn ask_to_host(&self) -> Result<HomeView, String> {
+        let account = self.signed_in().await?;
+        account.ask_to_host().await.map_err(|e| e.to_string())?;
+        self.inner.setup.account.learned(None, Some(true));
+        self.refresh_account().await;
+        self.emit();
+        Ok(self.home())
     }
 
     /// Answers a call ringing this person. Accepting ends or leaves any call this app is in.

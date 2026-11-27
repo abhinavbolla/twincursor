@@ -8,14 +8,24 @@
 #   4. both fetch call passes and join with `tc-engine` (pattern capture, no audio, input recorded,
 #      never injected); each sees the other under their account's name and role, and Sam gets video;
 #   5. Kim, never let in, knocks and is refused a pass; Sam's pass given to `share` fails fast;
-#   6. Alex ends the call and Sam's pass is refused; signing out removes the session file;
-#   7. no access token, refresh token or pass appears in anything captured, except the output of
+#   6. Alex ends the call and Sam's pass is refused;
+#   7. invite-only: Alex gets a GitHub handle and goes on the invite list (the owner's steps, done
+#      with the local service key); turning invite_only on with an empty list and removing the last
+#      handle are refused; Alex can start a call, Sam gets the invite-only sentence from start-call
+#      and ring, but still knocks, is let in and gets a guest pass, and asks to host; clients can't
+#      read the list or the waiting list. Then invite_only goes off and the handle comes off;
+#   8. signing out removes the session files;
+#   9. no access token, refresh token or pass appears in anything captured, except the output of
 #      `tc-account pass --print-env`, which exists to hand a pass to the engine.
 #
 # Also checks the sign-in page the tool builds is one the local auth server accepts (it redirects
 # to GitHub; the bench follows no further).
 #
-# Needs a running local stack (`supabase start`), jq, curl, openssl, and a release build:
+# Local users made through the admin API have no GitHub identity, so no handle. The invite-only
+# part gives Alex one the way GitHub sign-in would: a row in auth.identities, inserted with psql in
+# the stack's database container (local only), which the profile trigger turns into a handle.
+#
+# Needs a running local stack (`supabase start`), jq, curl, openssl, docker, and a release build:
 #   cargo build --release -p twincursor-account -p twincursor-engine-cli
 # Starts `livekit-server --dev` if none is running (and stops only that one), and serves the
 # call-pass function with the dev server's well-known key while it runs.
@@ -49,7 +59,13 @@ check() { if wait_for "$1" "$2" "${4:-20}"; then pass "$3"; else fail "$3"; fi; 
 pids=()
 serve_pid=""
 livekit_pid=""
+invited_handle=""
 cleanup() {
+  # An invite-only part that stopped half-way leaves the server open again, without our handle.
+  if [[ -n $invited_handle ]]; then
+    admin PATCH "server_settings?id=eq.true" '{"invite_only": false}' >/dev/null 2>&1 || true
+    admin DELETE "invited?handle=eq.$invited_handle" >/dev/null 2>&1 || true
+  fi
   for pid in "${pids[@]}"; do kill -INT "$pid" 2>/dev/null || true; done
   exec 3>&- 4>&- 2>/dev/null || true
   if [[ -n $serve_pid ]]; then kill "$serve_pid" 2>/dev/null || true; wait "$serve_pid" 2>/dev/null || true; fi
@@ -123,6 +139,31 @@ refused() {
   else
     fail "$label: $out"
   fi
+}
+
+# The owner's side, as the dashboard does it: the service role through PostgREST. Prints the HTTP
+# status, then the body.
+admin() {
+  local method=$1 path=$2 body=${3:-}
+  curl -s -X "$method" "$API_URL/rest/v1/$path" -w '\n%{http_code}' \
+    -H "apikey: $SERVICE_ROLE_KEY" -H "Authorization: Bearer $SERVICE_ROLE_KEY" \
+    -H 'content-type: application/json' -H 'Prefer: return=minimal' ${body:+-d "$body"} \
+    | awk '{ lines[NR] = $0 } END { print lines[NR]; for (i = 1; i < NR; i++) print lines[i] }'
+}
+# Expects the owner's change to be refused with this error word.
+admin_refused() {
+  local label=$1 word=$2 out
+  shift 2
+  out=$(admin "$@")
+  if [[ $(head -1 <<<"$out") == 400 ]] && tail -n +2 <<<"$out" | jq -e --arg w "$word" '.message | startswith($w + ":")' >/dev/null; then
+    pass "$label: $word"
+  else
+    fail "$label: $(tr '\n' ' ' <<<"$out")"
+  fi
+}
+db_sql() {
+  docker exec -i "supabase_db_$(sed -n 's/^project_id = "\(.*\)"/\1/p' supabase/config.toml)" \
+    psql -U postgres -d postgres -v ON_ERROR_STOP=1 -qtA "$@"
 }
 
 new_user() {
@@ -243,10 +284,67 @@ echo '{"cmd":"leave"}' >&3
 check "$OUT/share.jsonl" '.event == "ended" and .reason == "left"' "Alex left"
 exec 3>&- 4>&-
 
-echo "=== the end of the call, and signing out"
+echo "=== the end of the call"
 acct alex end "$call" | jq -e '.ok' >/dev/null && pass "Alex ends the call" || fail "end"
 refused "Sam's pass after the end" not_allowed "You can't join that call: it has ended, or the host hasn't let you in." sam pass "$call"
 refused "a knock on the ended call" call_not_found "That call has ended or the link is wrong." kim knock "$code"
+
+echo "=== an invite-only server"
+not_invited="This server is invite-only. Ask whoever runs it to add your GitHub handle."
+handle="alex-example-${run//[^0-9]/-}"
+# A GitHub identity, as GitHub sign-in would add it; the trigger gives Alex the handle.
+db_sql -c "insert into auth.identities (provider_id, user_id, identity_data, provider)
+           values ('bench-$run', '$alex_id', jsonb_build_object('sub', 'bench-$run', 'user_name', '$handle', 'name', 'Alex Account'), 'github')" \
+  && acct alex whoami | jq -e --arg h "$handle" '.handle == $h and .can_host == true and .asked_to_host == false' >/dev/null \
+  && pass "Alex has the GitHub handle $handle; the open server lets everyone host" || fail "Alex's handle"
+[[ $(admin GET "server_settings?select=invite_only" | tail -1) == '[{"invite_only":false}]' ]] \
+  && pass "the server starts open" || fail "the server isn't open"
+admin_refused "turning invite_only on with an empty list" invite_list_empty PATCH "server_settings?id=eq.true" '{"invite_only": true}'
+invited_handle=$handle
+upper=$(tr '[:lower:]' '[:upper:]' <<<"${handle:0:1}")${handle:1}
+[[ $(admin POST invited "$(jq -n --arg h "@$upper" '{handle: $h, note: "the bench"}')" | head -1) == 201 ]] \
+  && [[ $(admin GET "invited?select=handle&handle=eq.$handle" | tail -1) == "[{\"handle\":\"$handle\"}]" ]] \
+  && pass "the owner invites @$upper; it is kept as $handle" || fail "inviting Alex"
+[[ $(admin PATCH "server_settings?id=eq.true" '{"invite_only": true}' | head -1) == 204 ]] \
+  && pass "invite_only is on" || fail "turning invite_only on"
+admin_refused "removing the last handle while invite_only is on" last_invited DELETE "invited?handle=eq.$handle"
+
+acct alex whoami | jq -e '.can_host == true' >/dev/null && pass "Alex (invited) can host" || fail "Alex's can_host"
+acct sam whoami | jq -e '.can_host == false and .asked_to_host == false' >/dev/null \
+  && pass "Sam (not invited) can't host, and hasn't asked" || fail "Sam's can_host"
+refused "Sam starts a call" not_invited "$not_invited" sam start-call
+refused "Sam rings Alex, a contact" not_invited "$not_invited" sam ring "$alex_id"
+started=$(acct alex start-call)
+call2=$(jq -r .call_id <<<"$started")
+code2=$(jq -r .code <<<"$started")
+[[ $code2 =~ ^[0-9a-f]{32}$ ]] && pass "Alex starts a call on the invite-only server" || fail "Alex's start-call: $started"
+acct sam knock "$code2" | jq -e '.state == "knocking"' >/dev/null && pass "Sam knocks on Alex's call" || fail "Sam's knock"
+acct alex answer-knock "$call2" "$sam_id" --let-in | jq -e '.state == "admitted"' >/dev/null \
+  && pass "Alex lets Sam in" || fail "Alex letting Sam in"
+acct sam pass "$call2" | jq -e --arg s "guest-$sam_id" '.identity == $s and .role == "guest"' >/dev/null \
+  && pass "Sam gets a guest pass" || fail "Sam's guest pass"
+acct sam ask-to-host | jq -e '.ok' >/dev/null && acct sam ask-to-host | jq -e '.ok' >/dev/null \
+  && acct sam whoami | jq -e '.asked_to_host == true and .can_host == false' >/dev/null \
+  && pass "Sam asks to host (twice: no difference)" || fail "Sam's ask-to-host"
+admin GET "waiting_to_host?select=asked_to_host&user_id=eq.$sam_id" | tail -1 | jq -e '. == [{"asked_to_host": true}]' >/dev/null \
+  && pass "the owner's waiting list shows Sam asked" || fail "the waiting list"
+admin GET "waiting_to_host?select=user_id&user_id=eq.$alex_id" | tail -1 | jq -e '. == []' >/dev/null \
+  && pass "the waiting list leaves out Alex, who is invited" || fail "Alex on the waiting list"
+sam_token=$(jq -r .access_token "$OUT/sam.session")
+for table in invited server_settings host_requests waiting_to_host; do
+  as_sam=$(curl -s -o /dev/null -w '%{http_code}' "$API_URL/rest/v1/$table" -H "apikey: $ANON_KEY" -H "Authorization: Bearer $sam_token")
+  as_anon=$(curl -s -o /dev/null -w '%{http_code}' "$API_URL/rest/v1/$table" -H "apikey: $ANON_KEY")
+  [[ $as_sam =~ ^40[13]$ && $as_anon =~ ^40[13]$ ]] && pass "$table: refused to a signed-in client ($as_sam) and to anon ($as_anon)" \
+    || fail "$table: signed in $as_sam, anon $as_anon"
+done
+unset sam_token
+acct alex end "$call2" | jq -e '.ok' >/dev/null && pass "Alex ends that call" || fail "ending the invite-only call"
+
+[[ $(admin PATCH "server_settings?id=eq.true" '{"invite_only": false}' | head -1) == 204 ]] \
+  && [[ $(admin DELETE "invited?handle=eq.$handle" | head -1) == 204 ]] \
+  && invited_handle="" && pass "invite_only is off again and the handle is gone" || fail "switching invite_only off"
+acct sam whoami | jq -e '.can_host == true' >/dev/null && pass "open again: Sam can host" || fail "Sam's can_host after"
+echo "=== signing out"
 for who in sam alex kim; do
   acct "$who" sign-out | jq -e '.signed_in == false' >/dev/null || fail "$who's sign-out"
 done

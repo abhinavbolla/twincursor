@@ -168,6 +168,13 @@ jobs:
       - name: Build the package (no backend)
         run: packaging/windows/package-app.sh
 
+      # The Windows build has no warnings: the app, the engine and what they use, as the macOS
+      # rust job checks them.
+      - name: Clippy
+        run: |
+          cargo clippy --locked --release -p twincursor-engine-cli -p twincursor-engine -p twincursor-media -- -D warnings
+          cargo clippy --locked --release -p twincursor-desktop -p twincursor-account -p twincursor-ipc -p twincursor-protocol -p twincursor-control --all-targets -- -D warnings
+
       - name: Test
         run: |
           cargo test --locked --release -p twincursor-desktop --features tauri/custom-protocol

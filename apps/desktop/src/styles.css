@@ -656,6 +656,13 @@ button.icon-button.muted:hover:not(:disabled) {
   gap: 8px;
 }
 
+/* Invite-only: the note's button and the "Asked." line take the same room, so nothing jumps. */
+.invite-asked {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+}
+
 .hint.center {
   text-align: center;
   margin-top: -4px;

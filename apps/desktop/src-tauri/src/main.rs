@@ -182,6 +182,12 @@ async fn answer_ring(
     calls.answer_ring(&call_id, accept).await
 }
 
+/// Ask to be invited, on a server where this person may not start calls.
+#[tauri::command]
+async fn ask_to_host(calls: tauri::State<'_, Calls>) -> Result<HomeView, String> {
+    calls.ask_to_host().await
+}
+
 #[tauri::command]
 async fn end(calls: tauri::State<'_, Calls>) -> Result<HomeView, String> {
     calls.end().await
@@ -613,6 +619,7 @@ fn main() {
             give_control,
             ring,
             answer_ring,
+            ask_to_host,
             end
         ])
         .on_menu_event(|app, event| {

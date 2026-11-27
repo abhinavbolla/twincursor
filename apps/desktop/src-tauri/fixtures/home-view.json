@@ -8,7 +8,9 @@
       "handle": "alex",
       "avatar_url": null
     },
-    "signing_in": false
+    "signing_in": false,
+    "can_host": true,
+    "asked_to_host": false
   },
   "stage": {
     "kind": "hosting",
