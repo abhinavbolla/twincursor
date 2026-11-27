@@ -84,6 +84,11 @@ logged "$L" "window Bar: made (hidden)" "the log says the call bar was made"
 logged "$L" "window panel: made: tool window, no taskbar button, not in Alt-Tab, topmost" "the panel reads back as a topmost tool window"
 logged "$L" "window bar: made: tool window, no taskbar button, not in Alt-Tab, topmost" "the bar reads back as a topmost tool window"
 logged "$L" "exiting" "the log says it exited"
+if grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}Z \+[0-9]' "$L"; then
+  pass "the log's times are marked as UTC"
+else
+  fail "the log's times are marked as UTC"
+fi
 # The page inside a hidden window may not lay itself out; say so either way.
 if grep -qF "window Panel: page drawn" "$L"; then
   pass "the panel's page loaded from the app itself and measured itself"

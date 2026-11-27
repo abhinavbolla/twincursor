@@ -263,15 +263,38 @@ impl Engines for FakeEngines {
 struct FakePermits {
     missing: Mutex<HashSet<Permission>>,
     requests: Mutex<Vec<Permission>>,
+    /// Resets asked for. Nothing real is ever reset: this is the only reset tests make.
+    resets: Mutex<Vec<Permission>>,
+    /// What the fake tccutil exits with.
+    reset_code: Mutex<i32>,
+    /// How often `granted` was asked.
+    checks: AtomicUsize,
 }
 
 impl Permits for FakePermits {
     fn granted(&self, which: Permission) -> Result<bool, String> {
+        self.checks.fetch_add(1, Ordering::SeqCst);
         Ok(!self.missing.lock().unwrap().contains(&which))
     }
     fn request(&self, which: Permission) -> Result<bool, String> {
         self.requests.lock().unwrap().push(which);
         self.granted(which)
+    }
+    fn reset(&self, which: Permission) -> Result<i32, String> {
+        self.resets.lock().unwrap().push(which);
+        Ok(*self.reset_code.lock().unwrap())
+    }
+}
+
+impl FakePermits {
+    fn without(&self, which: Permission) {
+        self.missing.lock().unwrap().insert(which);
+    }
+    fn grant_all(&self) {
+        self.missing.lock().unwrap().clear();
+    }
+    fn requests(&self) -> Vec<Permission> {
+        self.requests.lock().unwrap().clone()
     }
 }
 
@@ -500,9 +523,11 @@ async fn the_home_view_has_exactly_this_shape() {
             "members",
             "needs",
             "notice",
+            "owed",
             "rings",
             "server_problem",
-            "stage"
+            "stage",
+            "stuck"
         ]
     );
     assert_eq!(keys(&v["stage"]), ["call_id", "kind", "link"]);
@@ -1099,6 +1124,350 @@ async fn without_accessibility_they_are_let_in_without_control() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn turned_on_later_the_message_goes_at_a_recheck_and_giving_control_is_one_armed_click() {
+    let w = world(true).await;
+    let sam = format!("guest-{SAM}");
+    w.permits.without(Permission::Accessibility);
+    w.knocked().await;
+    w.clock.advance(ARMING);
+    w.calls.answer_knock(SAM, true, true).await.unwrap();
+    w.participants(0, &[(&sam, "guest")]);
+    // Still off: the re-check changes nothing, and nothing is offered yet.
+    w.calls.recheck().await;
+    let view = w.calls.home();
+    assert_eq!(view.needs, Some(Permission::Accessibility));
+    assert!(
+        !view.stuck,
+        "nobody was sent to System Settings or tried again"
+    );
+    assert_eq!(view.owed, None);
+
+    // Turned on in System Settings: the next re-check clears the message and the stale notice,
+    // and offers Give control for Sam, not armed yet. Nobody is given control by it.
+    w.permits.grant_all();
+    w.calls.recheck().await;
+    let view = w.calls.home();
+    assert_eq!(view.needs, None);
+    assert_eq!(
+        view.notice, None,
+        "the 'let in without control' notice went"
+    );
+    assert_eq!(
+        view.owed,
+        Some(OwedView {
+            identity: sam.clone(),
+            name: "Sam".into(),
+            armed: false
+        })
+    );
+    assert!(w.trusts(0).is_empty() && w.arrivals(0).is_empty());
+    assert_eq!(w.calls.give_owed_control().await.unwrap_err(), TOO_SOON);
+    assert!(w.trusts(0).is_empty());
+
+    // A second later, one click gives it, exactly as Give control does.
+    w.clock.advance(ARMING);
+    assert!(w.calls.home().owed.unwrap().armed);
+    let view = w.calls.give_owed_control().await.unwrap();
+    assert_eq!(w.trusts(0), [(sam, Some(1))]);
+    assert_eq!(view.owed, None);
+    assert_eq!(w.calls.give_owed_control().await.unwrap_err(), NOBODY_OWED);
+    assert_eq!(w.permits.requests(), [Permission::Accessibility]);
+}
+
+/// Sam let in with control while Accessibility was off, then turned on and re-checked: Give
+/// control to Sam is offered and armed.
+async fn owed_sam(w: &World, joined: bool) -> String {
+    let sam = format!("guest-{SAM}");
+    w.permits.without(Permission::Accessibility);
+    w.knocked().await;
+    w.clock.advance(ARMING);
+    w.calls.answer_knock(SAM, true, true).await.unwrap();
+    w.hosting(json!([{ "user_id": SAM, "name": "Sam", "handle": null, "avatar_url": null, "state": "admitted" }]));
+    if joined {
+        w.participants(0, &[(&sam, "guest")]);
+    }
+    w.permits.grant_all();
+    w.calls.recheck().await;
+    w.clock.advance(ARMING);
+    assert!(w.calls.home().owed.unwrap().armed);
+    sam
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn owed_control_ends_when_the_guest_leaves_and_is_never_a_promise_for_them() {
+    let w = world(true).await;
+    owed_sam(&w, true).await;
+    w.participants(0, &[]);
+    assert_eq!(w.calls.home().owed, None);
+    assert_eq!(w.calls.give_owed_control().await.unwrap_err(), NOBODY_OWED);
+    assert!(w.arrivals(0).is_empty() && w.trusts(0).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn owed_control_ends_when_they_are_no_longer_admitted() {
+    for state in ["turned_away", "left"] {
+        let w = world(true).await;
+        owed_sam(&w, false).await;
+        w.hosting(json!([{ "user_id": SAM, "name": "Sam", "handle": null, "avatar_url": null, "state": state }]));
+        assert_eq!(w.calls.poll_once().await, Polled::Done);
+        assert_eq!(w.calls.home().owed, None, "{state}");
+    }
+    // Gone from the members altogether.
+    let w = world(true).await;
+    owed_sam(&w, false).await;
+    w.hosting(json!([]));
+    assert_eq!(w.calls.poll_once().await, Polled::Done);
+    assert_eq!(w.calls.home().owed, None);
+    assert_eq!(w.calls.give_owed_control().await.unwrap_err(), NOBODY_OWED);
+    assert!(w.arrivals(0).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn owed_control_ends_when_the_call_does() {
+    let w = world(true).await;
+    owed_sam(&w, true).await;
+    w.calls.end().await.unwrap();
+    assert_eq!(w.calls.home().owed, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn take_back_and_the_hotkey_end_the_offer() {
+    // Take back from the window.
+    let w = world(true).await;
+    owed_sam(&w, true).await;
+    w.calls
+        .send_command(&ipc::Command::RevokeControl)
+        .await
+        .unwrap();
+    assert_eq!(w.calls.home().owed, None);
+    assert!(w.trusts(0).is_empty());
+
+    // The hotkey, which the engine reports as `revoked`.
+    let w = world(true).await;
+    owed_sam(&w, true).await;
+    w.event(0, json!({ "event": "revoked" }));
+    assert_eq!(w.calls.home().owed, None);
+
+    // Before anything was offered: a revoke while Accessibility was still off leaves nothing
+    // to offer once it is on.
+    let w = world(true).await;
+    let sam = format!("guest-{SAM}");
+    w.permits.without(Permission::Accessibility);
+    w.knocked().await;
+    w.clock.advance(ARMING);
+    w.calls.answer_knock(SAM, true, true).await.unwrap();
+    w.participants(0, &[(&sam, "guest")]);
+    w.event(0, json!({ "event": "revoked" }));
+    w.permits.grant_all();
+    w.calls.recheck().await;
+    assert_eq!(w.calls.home().owed, None);
+    assert_eq!(
+        w.calls.home().notice.as_deref(),
+        Some(ACCESSIBILITY_ON),
+        "Give control in the menu is still there"
+    );
+    w.calls.give_control(&sam).await.unwrap();
+    assert_eq!(w.trusts(0), [(sam, Some(1))]);
+}
+
+#[test]
+fn the_recheck_slows_down_then_stops() {
+    let t = Instant::now();
+    let at = |secs: u64| recheck_delay(t, t + Duration::from_secs(secs));
+    assert_eq!(at(0), Some(RECHECK_FAST));
+    assert_eq!(at(119), Some(RECHECK_FAST));
+    assert_eq!(at(120), Some(RECHECK_SLOW));
+    assert_eq!(at(599), Some(RECHECK_SLOW));
+    assert_eq!(at(600), None);
+    assert_eq!(
+        (
+            RECHECK_FAST,
+            RECHECK_FAST_FOR,
+            RECHECK_SLOW,
+            RECHECK_STOP_AFTER
+        ),
+        (
+            Duration::from_secs(2),
+            Duration::from_secs(120),
+            Duration::from_secs(15),
+            Duration::from_secs(600)
+        )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_recheck_timer_stops_after_ten_minutes_and_a_click_starts_it_again() {
+    let w = world(true).await;
+    let sam = format!("guest-{SAM}");
+    w.permits.without(Permission::Accessibility);
+    w.host().await;
+    w.participants(0, &[(&sam, "guest")]);
+    assert!(w.calls.give_control(&sam).await.is_err());
+    let checks = || w.permits.checks.load(Ordering::SeqCst);
+    let after_click = checks();
+    // Ten minutes on: the timer's next wake-up ends it without asking.
+    w.clock.advance(RECHECK_STOP_AFTER);
+    tokio::time::sleep(RECHECK_FAST + Duration::from_millis(300)).await;
+    assert_eq!(checks(), after_click, "no check past the end");
+    tokio::time::sleep(RECHECK_FAST + Duration::from_millis(300)).await;
+    assert_eq!(checks(), after_click, "and none later either");
+    assert_eq!(w.calls.home().needs, Some(Permission::Accessibility));
+    // A click checks afresh, and the timer runs again.
+    assert!(w.calls.give_control(&sam).await.is_err());
+    let clicked = checks();
+    assert_eq!(clicked, after_click + 1);
+    eventually("a re-check", || checks() > clicked).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn owed_control_for_someone_not_joined_yet_is_kept_for_their_arrival() {
+    let w = world(true).await;
+    w.permits.without(Permission::Accessibility);
+    w.knocked().await;
+    w.clock.advance(ARMING);
+    w.calls.answer_knock(SAM, true, true).await.unwrap();
+    w.permits.grant_all();
+    w.calls.recheck().await;
+    assert!(w.calls.home().owed.is_some());
+    w.clock.advance(ARMING);
+    w.calls.give_owed_control().await.unwrap();
+    assert_eq!(w.arrivals(0), [(format!("guest-{SAM}"), Some(1))]);
+    assert!(w.trusts(0).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_recheck_after_a_refused_allow_says_accessibility_is_on() {
+    let w = world(true).await;
+    w.permits.without(Permission::Accessibility);
+    w.host().await;
+    w.event(
+        0,
+        json!({ "event": "control_asked", "request": 1, "identity": format!("guest-{SAM}"), "name": "Sam", "platform": "macos" }),
+    );
+    w.clock.advance(ARMING);
+    w.calls
+        .send_command(&ipc::Command::AllowControl { request: 1 })
+        .await
+        .unwrap();
+    assert_eq!(
+        w.calls.home().notice.as_deref(),
+        Some("Sam wasn't given control: TwinCursor needs Accessibility.")
+    );
+    w.permits.grant_all();
+    w.calls.recheck().await;
+    let view = w.calls.home();
+    assert_eq!(view.needs, None);
+    assert_eq!(view.notice.as_deref(), Some(ACCESSIBILITY_ON));
+    assert_eq!(
+        view.owed, None,
+        "an allow is answered again by the guest asking"
+    );
+    assert_eq!(
+        w.sent(0),
+        [(ipc::Command::DenyControl { request: 1 }, Some(1))],
+        "nothing allowed by the re-check"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn still_refused_after_trying_again_is_stuck_and_reset_asks_macos_again() {
+    let w = world(true).await;
+    let sam = format!("guest-{SAM}");
+    w.permits.without(Permission::Accessibility);
+    w.host().await;
+    w.participants(0, &[(&sam, "guest")]);
+    assert_eq!(
+        w.calls
+            .reset_permission(Permission::Accessibility)
+            .await
+            .unwrap_err(),
+        NOTHING_TO_RESET,
+        "nothing to reset while nothing is needed"
+    );
+    assert_eq!(
+        w.calls.give_control(&sam).await.unwrap_err(),
+        NEEDS_ACCESSIBILITY
+    );
+    assert!(!w.calls.home().stuck, "macOS was only just asked");
+    // Tried again, still no: listed but not working.
+    assert_eq!(
+        w.calls.give_control(&sam).await.unwrap_err(),
+        NEEDS_ACCESSIBILITY
+    );
+    let view = w.calls.home();
+    assert!(view.stuck);
+    assert_eq!(view.needs, Some(Permission::Accessibility));
+    assert_eq!(w.permits.requests(), [Permission::Accessibility]);
+
+    // Reset and ask again: TwinCursor's own entry, then macOS's prompt once more.
+    let view = w
+        .calls
+        .reset_permission(Permission::Accessibility)
+        .await
+        .unwrap();
+    assert_eq!(
+        *w.permits.resets.lock().unwrap(),
+        [Permission::Accessibility]
+    );
+    assert_eq!(
+        w.permits.requests(),
+        [Permission::Accessibility, Permission::Accessibility]
+    );
+    assert!(!view.stuck);
+    assert_eq!(view.needs, Some(Permission::Accessibility));
+    assert!(w.trusts(0).is_empty(), "a reset gives nobody control");
+
+    // A reset that fails says so and doesn't ask macOS.
+    *w.permits.reset_code.lock().unwrap() = 1;
+    assert_eq!(
+        w.calls
+            .reset_permission(Permission::Accessibility)
+            .await
+            .unwrap_err(),
+        "The reset didn't work (tccutil exited with 1). In System Settings, select TwinCursor in the list, remove it with −, then try again."
+    );
+    assert_eq!(w.permits.requests().len(), 2);
+
+    // Turned on after all: Give control works, and the bar stops offering the reset.
+    w.permits.grant_all();
+    w.calls.give_control(&sam).await.unwrap();
+    let view = w.calls.home();
+    assert!(!view.stuck && view.needs.is_none());
+    assert_eq!(w.trusts(0), [(sam, Some(1))]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sent_to_system_settings_and_still_refused_at_a_recheck_is_stuck() {
+    let w = world(true).await;
+    w.permits.without(Permission::ScreenRecording);
+    assert_eq!(w.calls.share().await.unwrap_err(), NEEDS_SCREEN_RECORDING);
+    w.calls.recheck().await;
+    assert!(!w.calls.home().stuck);
+    w.calls.opened_settings(Permission::ScreenRecording);
+    w.calls.recheck().await;
+    let view = w.calls.home();
+    assert!(view.stuck);
+    assert_eq!(view.needs, Some(Permission::ScreenRecording));
+    // Granted: the next re-check clears both, and says nothing about Accessibility.
+    w.permits.grant_all();
+    w.calls.recheck().await;
+    let view = w.calls.home();
+    assert!(!view.stuck && view.needs.is_none());
+    assert_eq!(view.notice, None);
+    assert_eq!(w.permits.requests(), [Permission::ScreenRecording]);
+}
+
+#[test]
+fn the_window_knows_the_refusals_it_shows_elsewhere() {
+    // The needs section says these, so the window leaves them out of its notices
+    // (`permissionLine` in apps/desktop/src/permissions.ts).
+    let ui = include_str!("../../../src/permissions.ts");
+    for refusal in [NEEDS_ACCESSIBILITY, NEEDS_SCREEN_RECORDING] {
+        assert!(ui.contains(&format!("\"{refusal}\"")), "{refusal}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn give_control_only_to_a_guest_in_the_call() {
     let w = world(true).await;
     assert_eq!(
@@ -1648,6 +2017,12 @@ fn the_home_view_fixture_is_what_the_window_gets() {
         notice: Some(LINK_COPIED.into()),
         error: None,
         needs: Some(Permission::Accessibility),
+        stuck: true,
+        owed: Some(OwedView {
+            identity: format!("guest-{SAM}"),
+            name: "Sam".into(),
+            armed: false,
+        }),
         server_problem: Some(CANT_REACH.into()),
     };
     let text = serde_json::to_string_pretty(&view).unwrap() + "\n";

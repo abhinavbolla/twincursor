@@ -18,6 +18,9 @@ describe("home view", () => {
     expect(home?.knocks[0]?.armed).toBe(false);
     expect(home?.members[0]?.state).toBe("admitted");
     expect(home?.needs).toBe("accessibility");
+    expect(home?.stuck).toBe(true);
+    expect(home?.owed).toEqual({ identity: "guest-00000000-0000-4000-8000-00000000000b", name: "Sam", armed: false });
+    expect(parseHomeView({ ...fixture, owed: null })?.owed).toBeNull();
     expect(home).toEqual(fixture);
   });
 
@@ -41,6 +44,8 @@ describe("home view", () => {
     expect(parseHomeView({ ...fixture, knocks: [{ user_id: "u", name: "K", handle: null, avatar_url: null }] })).toBeNull();
     expect(parseHomeView({ ...fixture, members: [{ ...fixture.members[0], state: "beamed_in" }] })).toBeNull();
     expect(parseHomeView({ ...fixture, needs: "camera" })).toBeNull();
+    expect(parseHomeView({ ...fixture, stuck: undefined })).toBeNull();
+    expect(parseHomeView({ ...fixture, owed: { identity: "guest-x", name: "Sam" } })).toBeNull();
     expect(parseHomeView({ ...fixture, account: { signed_in: true } })).toBeNull();
     expect(parseHomeView({ ...fixture, contacts: null })).toBeNull();
   });

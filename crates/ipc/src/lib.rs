@@ -128,6 +128,10 @@ pub enum Event {
         /// Guest with a window: how the picture is drawn, in percent of its size (100 is 1:1).
         shown_pct: Option<u32>,
     },
+    /// Sharer: control was taken back, by the revoke hotkey or [`Command::RevokeControl`],
+    /// whether or not anyone had it or was trusted with it. Sent for every revoke, so the app
+    /// can drop any offer to give control that it was showing.
+    Revoked,
     /// Something went wrong, in a sentence a person can read. The call may go on.
     Error { message: String },
     /// The call is over for this engine; it exits next.
@@ -298,6 +302,7 @@ mod tests {
             "control",
             "voice",
             "stats",
+            "revoked",
             "error",
             "ended",
         ];
@@ -319,6 +324,7 @@ mod tests {
             | Event::Control { .. }
             | Event::Voice { .. }
             | Event::Stats { .. }
+            | Event::Revoked
             | Event::Error { .. }
             | Event::Ended { .. } => {}
         }

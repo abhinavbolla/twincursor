@@ -8,6 +8,7 @@ import type { HomeView, Person } from "./home";
 import type { Participant } from "./ipc";
 import { joinNames, shortName, type Phrase } from "./people";
 import type { FaceView } from "./panelModel";
+import { permissionLine } from "./permissions";
 
 /** At most this many faces in the row; the rest are "+N". */
 export const MAX_FACES = 3;
@@ -95,9 +96,20 @@ export type BarModel =
       knocks: KnockCard[];
       ask: AskCard | null;
       needsAccessibility: boolean;
+      /** Still refused after asking: offer Reset and ask again. */
+      stuck: boolean;
+      /** Accessibility is on now: Give control to the guest who wasn't given it. */
+      owed: OwedCard | null;
       notices: NoticeLine[];
       menu: MenuView;
     };
+
+export interface OwedCard {
+  identity: string;
+  /** Short, for the button. */
+  name: string;
+  armed: boolean;
+}
 
 export interface BarLocal {
   dismissed: ReadonlySet<string>;
@@ -138,7 +150,8 @@ function voiceLine(call: CallState): string {
 
 function noticesOf(home: HomeView, call: CallState, local: BarLocal): NoticeLine[] {
   const lines: NoticeLine[] = [];
-  const add = (text: string | null, tone: NoticeLine["tone"]) => {
+  const add = (raw: string | null, tone: NoticeLine["tone"]) => {
+    const text = raw === null ? null : permissionLine(raw, home.needs);
     if (text !== null && !local.dismissed.has(text) && !lines.some((l) => l.text === text)) {
       lines.push({ text, tone });
     }
@@ -272,6 +285,11 @@ export function barModel(home: HomeView | null, call: CallState, local: BarLocal
       return { request: asked.request, name: asked.name, avatar: face.avatar };
     })(),
     needsAccessibility: sharer && home.needs === "accessibility",
+    stuck: sharer && home.needs === "accessibility" && home.stuck,
+    owed:
+      sharer && home.owed !== null
+        ? { identity: home.owed.identity, name: shortName(home.owed.name), armed: home.owed.armed }
+        : null,
     notices: noticesOf(home, call, local),
     menu: {
       link: stage.kind === "hosting" ? stage.link : null,

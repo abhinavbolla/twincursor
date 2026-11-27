@@ -168,6 +168,22 @@ async fn give_control(
     calls.give_control(&identity).await
 }
 
+/// Give control to the guest the view says is owed it, once Accessibility is on.
+#[tauri::command]
+async fn give_owed_control(calls: tauri::State<'_, Calls>) -> Result<HomeView, String> {
+    calls.give_owed_control().await
+}
+
+/// Reset and ask again: clears TwinCursor's own entry for one permission in macOS's list and
+/// asks macOS again. Only while that permission is needed.
+#[tauri::command]
+async fn reset_permission(
+    calls: tauri::State<'_, Calls>,
+    which: seams::Permission,
+) -> Result<HomeView, String> {
+    calls.reset_permission(which).await
+}
+
 #[tauri::command(rename_all = "snake_case")]
 async fn ring(calls: tauri::State<'_, Calls>, user_id: String) -> Result<HomeView, String> {
     calls.ring(&user_id).await
@@ -204,7 +220,15 @@ async fn permissions(request: bool) -> Result<Value, String> {
         } else {
             &["permissions"]
         };
-        engine::run_once(&exe, args)
+        let status = engine::run_once(&exe, args);
+        match &status {
+            Ok(status) => applog::line(format!(
+                "permissions: listed{}: {status}",
+                if request { " after asking macOS" } else { "" }
+            )),
+            Err(e) => applog::line(format!("permissions: couldn't list: {e}")),
+        }
+        status
     })
     .await
     .map_err(|e| e.to_string())?
@@ -212,8 +236,17 @@ async fn permissions(request: bool) -> Result<Value, String> {
 
 /// Opens the System Settings privacy pane for one permission (macOS; elsewhere a sentence).
 #[tauri::command]
-fn open_settings_pane(pane: platform::Pane) -> Result<(), String> {
-    platform::open_settings_pane(pane)
+fn open_settings_pane(calls: tauri::State<'_, Calls>, pane: platform::Pane) -> Result<(), String> {
+    platform::open_settings_pane(pane)?;
+    let which = match pane {
+        platform::Pane::ScreenRecording => Some(seams::Permission::ScreenRecording),
+        platform::Pane::Accessibility => Some(seams::Permission::Accessibility),
+        platform::Pane::Microphone => None,
+    };
+    if let Some(which) = which {
+        calls.opened_settings(which);
+    }
+    Ok(())
 }
 
 /// What this platform can do: the panel offers sharing and calling only where it can share.
@@ -625,6 +658,8 @@ fn main() {
             cancel_knock,
             answer_knock,
             give_control,
+            give_owed_control,
+            reset_permission,
             ring,
             answer_ring,
             ask_to_host,

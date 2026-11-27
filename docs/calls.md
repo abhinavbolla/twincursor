@@ -118,6 +118,35 @@ request down, so the guest isn't left waiting, and says why ("Sam wasn't given c
 TwinCursor needs Accessibility."); they can ask again once it is granted. The
 microphone is asked for by the engine when a call starts.
 
+The app asks macOS once per run. While a permission is needed, the app checks it again
+(`tc-engine permissions`, which never prompts): every 2 s for two minutes after the need
+appeared or you last clicked, opened Settings or reset, then every 15 s, and not at all after ten
+minutes, until the next click checks afresh. So the window stops asking soon after it is turned
+on; a re-check never gives anyone control. A guest who was let in without control, or whom Give
+control couldn't trust, is then `owed`: the bar offers **Give control to Sam**, armed a second
+after it is shown like a knock, and clicking it does exactly what Give control does (or, for
+someone let in who has never been in the call since, what Let in with control does). The offer
+ends when that guest leaves the call after being in it, is no longer let in (turned away or
+removed), or the call ends, so it is never a promise for someone who has gone. Any revoke ends it
+too, the hotkey and Take back alike, even before anything was given: Give control in the menu
+stays for a deliberate grant.
+
+Still refused after macOS was asked, and after either Open Settings or another attempt, the
+permission is `stuck`. The window then offers **Reset and ask again** (`reset_permission`):
+`tccutil reset Accessibility dev.twincursor.desktop` (or `ScreenCapture`) clears TwinCursor's own
+entry, never another app's, and macOS is asked again. That is the way out when System Settings
+shows TwinCursor switched on but macOS doesn't apply it, as can happen when the entry belongs to a
+differently signed copy of the app (see [Releasing](RELEASING.md)).
+
+A grant made in the middle of a call needs no new call: the sharer's engine makes its input
+injector at the first grant and tries again at every later one, asking macOS each time. If the
+engine still refuses while the app's fresh check says yes, the bar says "macOS says
+Accessibility is on, but this share can't use it yet. Stop and share again for it to take
+effect."
+
+Every check, request and reset is written to the app's log with its answer, whether macOS was
+asked, and tccutil's exit code; a re-check is written only when its answer changes.
+
 ## What the window gets
 
 Every change to accounts and calls arrives on the `home` event as one view, which `home_state`
@@ -134,12 +163,16 @@ also returns, so a window that opens later starts out right:
   "notice": "The call link is on your clipboard.",
   "error": null,
   "needs": null,
+  "stuck": false,
+  "owed": null,
   "server_problem": null
 }
 ```
 
 `stage.kind` is `idle`, `starting`, `hosting` (with `call_id` and `link`), `knocking` or `joined`
-(with the `host`), or `ending`. `needs` is `screen_recording`, `accessibility` or `null`.
+(with the `host`), or `ending`. `needs` is `screen_recording`, `accessibility` or `null`;
+`stuck` says it is still refused after asking; `owed` is `null` or `{ "identity", "name",
+"armed" }`, the guest Give control is offered for once Accessibility is on.
 
 | Command | Arguments | Does |
 |---|---|---|
@@ -151,6 +184,8 @@ also returns, so a window that opens later starts out right:
 | `cancel_knock` | | Stop waiting |
 | `answer_knock` | `user_id`, `let_in`, `control` | Let in (with or without control), or turn away |
 | `give_control` | `identity` | Trust a guest in the call with control |
+| `give_owed_control` | | Give control to `owed`, once armed |
+| `reset_permission` | `which` | Reset TwinCursor's own entry for a needed permission and ask macOS again |
 | `ring` | `user_id` | Ring a contact |
 | `answer_ring` | `call_id`, `accept` | Accept or decline |
 | `ask_to_host` | | Ask to be invited, on an invite-only server |

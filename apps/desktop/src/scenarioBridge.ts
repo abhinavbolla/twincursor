@@ -206,7 +206,28 @@ export function scenarioBridge(scenario: Scenario, base: Bridge, platform: Platf
         return refuse("TwinCursor needs Accessibility to give control. Turn it on in System Settings, then try again.");
       }
       control(call.control.state, call.control.by, [...call.control.trusted.filter((t) => t.identity !== identity), peer(guest)]);
-      return ok();
+      return Promise.resolve(setHome({ owed: home.owed?.identity === identity ? null : home.owed }));
+    },
+    giveOwedControl: () => {
+      const owed = home.owed;
+      if (owed === null) {
+        return refuse("Nobody is waiting to be given control.");
+      }
+      if (!owed.armed) {
+        return refuse("Too soon. Try again.");
+      }
+      const guest = call.participants.find((p) => p.identity === owed.identity);
+      if (guest !== undefined) {
+        control(call.control.state, call.control.by, [...call.control.trusted.filter((t) => t.identity !== owed.identity), peer(guest)]);
+      }
+      return Promise.resolve(setHome({ owed: null }));
+    },
+    resetPermission: (which) => {
+      if (home.needs !== which) {
+        return refuse("macOS isn't refusing that permission now.");
+      }
+      // Pretend the reset and macOS's prompt went through: still needed, not stuck.
+      return Promise.resolve(setHome({ stuck: false }));
     },
     ring: (userId) => {
       if (!platform.can_share) {

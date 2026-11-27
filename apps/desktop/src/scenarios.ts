@@ -151,6 +151,8 @@ export function homeView(change: Partial<HomeView> = {}): HomeView {
     notice: null,
     error: null,
     needs: null,
+    stuck: false,
+    owed: null,
     server_problem: null,
     ...change,
   };
@@ -228,6 +230,11 @@ export const SCENARIOS: readonly Scenario[] = [
   panel("ring", "Sam is calling", homeView({ rings: [{ call_id: "c7", host: SAM }] })),
   panel("rings", "Two people calling at once", homeView({ rings: [{ call_id: "c7", host: SAM }, { call_id: "c8", host: LONG }] })),
   panel("needs", "Screen Recording is missing", homeView({ needs: "screen_recording" })),
+  panel(
+    "needs-stuck",
+    "Screen Recording still refused after asking and opening System Settings",
+    homeView({ needs: "screen_recording", stuck: true }),
+  ),
   panel("starting", "Share was clicked", homeView({ stage: { kind: "starting" } })),
   panel(
     "hosting",
@@ -284,6 +291,35 @@ export const SCENARIOS: readonly Scenario[] = [
       notice: `${SAM.name} wasn't given control: TwinCursor needs Accessibility.`,
     }),
     withSam(),
+  ),
+  bar(
+    "needs-stuck",
+    "Accessibility still refused after asking and trying again: Reset and ask again",
+    hosting({
+      members: admitted(SAM),
+      needs: "accessibility",
+      stuck: true,
+      notice: `${SAM.name} was let in without control: TwinCursor needs Accessibility to give control.`,
+    }),
+    withSam(),
+  ),
+  bar(
+    "owed",
+    "Accessibility turned on: Give control to Sam, not armed yet",
+    hosting({ members: admitted(SAM), owed: { identity: guestIdentity(SAM), name: SAM.name, armed: false } }),
+    withSam(),
+  ),
+  bar(
+    "owed-armed",
+    "Accessibility turned on: Give control to Sam, armed",
+    hosting({ members: admitted(SAM), owed: { identity: guestIdentity(SAM), name: SAM.name, armed: true } }),
+    withSam(),
+  ),
+  bar(
+    "reshare",
+    "macOS says yes, but the running share's engine can't use it",
+    hosting({ members: admitted(SAM) }),
+    withSam(out.error("TwinCursor needs Accessibility to let someone control this Mac.")),
   ),
   bar(
     "menu",

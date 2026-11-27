@@ -122,6 +122,7 @@ A command that can't be read, or doesn't fit the role, gets an `error` event; th
 | `control` | `state`: `none`, `asked` or `controlling`; `by`: who (on a guest, this guest); `trusted`: on the sharer, the guests trusted with control right now (`identity`, `name`), always `[]` on a guest. Sent again whenever any of it changes |
 | `voice` | `sending`, `muted`, and the `mic` and `speaker` in use |
 | `stats` | About once a second: `width`, `height`, `fps`, `kbps`, `rtt_ms`, `codec`, and on a guest with a window `shown_pct` (100 is 1:1) |
+| `revoked` | Sharer: control was taken back, by the hotkey or `revoke_control`, whether or not anyone had it. Sent for every revoke |
 | `error` | `message`: a sentence for a person. The call may go on |
 | `ended` | Last: `reason` is `left`, `disconnected` or `failed` |
 

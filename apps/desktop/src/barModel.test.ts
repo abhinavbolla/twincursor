@@ -46,6 +46,10 @@ describe("bar scenarios", () => {
       "controlling",
       "asked",
       "needs",
+      "needs-stuck",
+      "owed",
+      "owed-armed",
+      "reshare",
       "menu",
       "notice",
       "g-knocking",
@@ -179,6 +183,43 @@ describe("the bar's sections", () => {
     expect(bar("needs").notices).toEqual([
       { text: "Sam Rivera wasn't given control: TwinCursor needs Accessibility.", tone: "plain" },
     ]);
+  });
+
+  it("says plainly when macOS still says no, and offers the reset", () => {
+    const m = bar("needs-stuck");
+    expect(m.needsAccessibility).toBe(true);
+    expect(m.stuck).toBe(true);
+    expect(bar("needs").stuck).toBe(false);
+    expect(m.owed).toBeNull();
+    // A guest's bar never offers it.
+    const guest = barModel({ ...homeView({ stage: { kind: "joined", host: homeView().contacts[0]! } }), needs: "accessibility", stuck: true }, initialCall);
+    expect(guest.kind === "call" && guest.stuck).toBe(false);
+  });
+
+  it("doesn't repeat the refusal as a notice: the needs section says it, and once on it's stale", () => {
+    const refusal = "TwinCursor needs Accessibility to give control. Turn it on in System Settings, then try again.";
+    expect(bar("needs", { dismissed: new Set(), error: refusal }).notices.map((n) => n.text)).not.toContain(refusal);
+    expect(bar("with", { dismissed: new Set(), error: refusal }).notices).toEqual([]);
+  });
+
+  it("offers Give control once Accessibility is on, armed like a knock", () => {
+    expect(bar("owed").owed).toEqual({ identity: "guest-u2", name: "Sam", armed: false });
+    expect(bar("owed-armed").owed?.armed).toBe(true);
+    expect(bar("owed").needsAccessibility).toBe(false);
+    expect(bar("with").owed).toBeNull();
+  });
+
+  it("says to share again when the running engine can't use a grant macOS reports", () => {
+    expect(bar("reshare").notices).toEqual([
+      {
+        text: "macOS says Accessibility is on, but this share can't use it yet. Stop and share again for it to take effect.",
+        tone: "bad",
+      },
+    ]);
+    // While the app itself still finds it missing, the needs section is enough.
+    const s = findScenario("bar", "reshare");
+    const m = s === undefined ? null : barModel({ ...s.home, needs: "accessibility" }, replay(s.outputs));
+    expect(m?.kind === "call" && m.notices).toEqual([]);
   });
 
   it("shows at most two notices, errors first, and not the closed ones", () => {

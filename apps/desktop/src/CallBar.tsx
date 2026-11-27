@@ -17,6 +17,7 @@ import { MicIcon, MicOffIcon, MoreIcon } from "./icons";
 import { forget } from "./notices";
 import type { EngineCommand } from "./ipc";
 import { phraseText } from "./people";
+import { permissionLine, RESET_LABEL, STILL_NO } from "./permissions";
 import { COPIED_MS } from "./Panel";
 import { useCall, useHome } from "./useSurface";
 
@@ -103,7 +104,9 @@ export function CallBar({ bridge, home, call, menuOpen }: Props) {
   };
   const hoverNotice = useNoticeClock(notices, dismiss);
   // A closed line that is no longer sent is forgotten, so the same words can show again.
-  const present = [error, call.error, call.notice, home?.error ?? null, home?.notice ?? null];
+  const present = [error, call.error, call.notice, home?.error ?? null, home?.notice ?? null].map((t) =>
+    t === null ? null : permissionLine(t, home?.needs ?? null),
+  );
   const presentKey = present.join("\n");
   useEffect(() => {
     setDismissed((d) => forget(d, present));
@@ -247,11 +250,36 @@ export function CallBar({ bridge, home, call, menuOpen }: Props) {
         />
       )}
 
-      {model.needsAccessibility && (
+      {model.needsAccessibility && !model.stuck && (
         <div className="bar-section bar-slim" role="status">
           <span className="bar-slim-text">TwinCursor needs Accessibility to give control.</span>
           <button type="button" className="small" onClick={() => void bridge.openPane("accessibility")}>
             Open Settings
+          </button>
+        </div>
+      )}
+
+      {model.stuck && (
+        <div className="bar-section bar-card" role="status">
+          <p className="bar-card-text">{STILL_NO}</p>
+          <div className="bar-card-actions">
+            <span className="bar-fill" />
+            <button type="button" className="small quiet" onClick={() => void bridge.openPane("accessibility")}>
+              Open Settings
+            </button>
+            <button type="button" className="small" onClick={() => run(() => bridge.resetPermission("accessibility"))}>
+              {RESET_LABEL}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {model.owed !== null && (
+        <div className="bar-section bar-slim bar-owed" role="status">
+          {!model.owed.armed && <Arming ms={KNOCK_ARMING_MS} />}
+          <span className="bar-slim-text">Accessibility is on.</span>
+          <button type="button" className="small primary" disabled={!model.owed.armed} onClick={() => run(() => bridge.giveOwedControl())}>
+            Give control to {model.owed.name}
           </button>
         </div>
       )}

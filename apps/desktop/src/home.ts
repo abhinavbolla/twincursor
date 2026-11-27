@@ -49,6 +49,14 @@ export interface MemberView {
 
 export type NeededPermission = "screen_recording" | "accessibility";
 
+/** A guest who wasn't given control for want of Accessibility, now that it is on. */
+export interface OwedView {
+  identity: string;
+  name: string;
+  /** Give control can be clicked: the Rust side refuses it for a second after it is shown. */
+  armed: boolean;
+}
+
 export interface HomeView {
   account: AccountState;
   stage: Stage;
@@ -59,6 +67,10 @@ export interface HomeView {
   notice: string | null;
   error: string | null;
   needs: NeededPermission | null;
+  /** `needs` is still refused after macOS was asked and the person went to System Settings or
+   * tried again: offer Reset and ask again. */
+  stuck: boolean;
+  owed: OwedView | null;
   server_problem: string | null;
 }
 
@@ -144,6 +156,17 @@ function parseKnock(v: unknown): KnockView | null {
   return { user_id: v.user_id, name: v.name, handle: v.handle, avatar_url: v.avatar_url, armed: v.armed };
 }
 
+/** The owed guest (null is a valid answer: nobody), or undefined if it can't be read. */
+function parseOwed(v: unknown): OwedView | null | undefined {
+  if (v === null) {
+    return null;
+  }
+  if (!isObj(v) || !isStr(v.identity) || !isStr(v.name) || typeof v.armed !== "boolean") {
+    return undefined;
+  }
+  return { identity: v.identity, name: v.name, armed: v.armed };
+}
+
 function parseMember(v: unknown): MemberView | null {
   if (
     !isObj(v) ||
@@ -177,6 +200,7 @@ export function parseHomeView(value: unknown): HomeView | null {
   const knocks = list(v.knocks, parseKnock);
   const members = list(v.members, parseMember);
   const needs = v.needs === null || v.needs === "screen_recording" || v.needs === "accessibility" ? v.needs : undefined;
+  const owed = parseOwed(v.owed);
   if (
     account === null ||
     stage === null ||
@@ -185,6 +209,8 @@ export function parseHomeView(value: unknown): HomeView | null {
     knocks === null ||
     members === null ||
     needs === undefined ||
+    owed === undefined ||
+    typeof v.stuck !== "boolean" ||
     !isStrOrNull(v.notice) ||
     !isStrOrNull(v.error) ||
     !isStrOrNull(v.server_problem)
@@ -201,6 +227,8 @@ export function parseHomeView(value: unknown): HomeView | null {
     notice: v.notice,
     error: v.error,
     needs,
+    stuck: v.stuck,
+    owed,
     server_problem: v.server_problem,
   };
 }

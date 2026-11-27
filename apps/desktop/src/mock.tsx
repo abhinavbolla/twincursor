@@ -395,6 +395,9 @@ class MockCalls {
   private listeners = new Set<(home: HomeView) => void>();
   private shown = new Map<string, number>();
   private missingPermission: HomeView["needs"] = null;
+  /** Who was let in without control for want of Accessibility. */
+  private owedTo: { identity: string; name: string } | null = null;
+  private owedShown = 0;
   /** What "Paste link" finds on the pretend clipboard. */
   clipboard: string = `twincursor://call/${MOCK_CODE}`;
   home: HomeView;
@@ -413,6 +416,8 @@ class MockCalls {
       notice: null,
       error: null,
       needs: null,
+      stuck: false,
+      owed: null,
       server_problem: null,
     };
     window.setInterval(() => this.tick(), 500);
@@ -437,6 +442,10 @@ class MockCalls {
     const knocks = this.home.knocks.map((k) => ({ ...k, armed: now - (this.shown.get(k.user_id) ?? now) >= ARMING_MS }));
     if (knocks.some((k, i) => k.armed !== this.home.knocks[i]?.armed) || this.home.account.signed_in !== this.account().signed_in) {
       this.set({ knocks });
+    }
+    const owed = this.home.owed;
+    if (owed !== null && !owed.armed && now - this.owedShown >= ARMING_MS) {
+      this.set({ owed: { ...owed, armed: true } });
     }
   }
 
@@ -511,6 +520,9 @@ class MockCalls {
     }
     this.shown.delete(userId);
     const withoutControl = control && this.missingPermission === "accessibility";
+    if (withoutControl && letIn) {
+      this.owedTo = { identity: `guest-${knock.user_id}`, name: knock.name };
+    }
     return Promise.resolve(
       this.set({
         knocks: this.home.knocks.filter((k) => k.user_id !== userId),
@@ -529,11 +541,32 @@ class MockCalls {
       return Promise.reject("You aren't sharing a call.");
     }
     if (this.missingPermission === "accessibility") {
-      this.set({ needs: "accessibility" });
+      // Tried again while still refused: listed but not working.
+      this.set({ needs: "accessibility", stuck: this.home.needs === "accessibility" });
       return Promise.reject("TwinCursor needs Accessibility to give control. Turn it on in System Settings, then try again.");
     }
     this.engine.command({ cmd: "trust_control", identity });
-    return Promise.resolve(this.home);
+    this.owedTo = null;
+    return Promise.resolve(this.set({ owed: null }));
+  }
+
+  giveOwedControl(): Promise<HomeView> {
+    const owed = this.home.owed;
+    if (owed === null) {
+      return Promise.reject("Nobody is waiting to be given control.");
+    }
+    if (!owed.armed) {
+      return Promise.reject("Too soon. Try again.");
+    }
+    return this.giveControl(owed.identity);
+  }
+
+  resetPermission(which: "screen_recording" | "accessibility"): Promise<HomeView> {
+    if (this.home.needs !== which) {
+      return Promise.reject("macOS isn't refusing that permission now.");
+    }
+    console.info(`(mock) would reset TwinCursor's ${which} entry and ask macOS again`);
+    return Promise.resolve(this.set({ stuck: false }));
   }
 
   async ring(userId: string): Promise<HomeView> {
@@ -625,6 +658,17 @@ class MockCalls {
 
   missing(which: "screen_recording" | "accessibility"): void {
     this.missingPermission = this.missingPermission === which ? null : which;
+    // Turned on: what the Rust side's re-check does a moment later.
+    if (this.missingPermission === null && this.home.needs === which) {
+      const owed = which === "accessibility" && this.owedTo !== null && this.home.stage.kind === "hosting";
+      this.owedShown = Date.now();
+      this.set({
+        needs: null,
+        stuck: false,
+        notice: owed || which !== "accessibility" ? null : "Accessibility is on. You can give control now.",
+        owed: owed && this.owedTo !== null ? { ...this.owedTo, armed: false } : null,
+      });
+    }
   }
 }
 
@@ -797,6 +841,8 @@ export function createMock(params: URLSearchParams): LoadedBridge {
     cancelKnock: () => calls.cancelKnock(),
     answerKnock: (userId, letIn, control) => calls.answerKnock(userId, letIn, control),
     giveControl: (identity) => calls.giveControl(identity),
+    giveOwedControl: () => calls.giveOwedControl(),
+    resetPermission: (which) => calls.resetPermission(which),
     ring: (userId) => calls.ring(userId),
     answerRing: (callId, accept) => calls.answerRing(callId, accept),
     askToHost: () => {

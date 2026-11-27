@@ -37,6 +37,7 @@ describe("engine events", () => {
       "control",
       "voice",
       "stats",
+      "revoked",
       "error",
       "ended",
     ]) {

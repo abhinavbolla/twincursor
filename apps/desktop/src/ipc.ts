@@ -62,6 +62,8 @@ export type EngineEvent =
     }
   | ({ event: "voice" } & Voice)
   | ({ event: "stats" } & Stats)
+  /** Sharer: control was taken back (hotkey or revoke_control), whether or not anyone had it. */
+  | { event: "revoked" }
   | { event: "error"; message: string }
   | { event: "ended"; reason: EndReason };
 
@@ -198,6 +200,8 @@ export function parseEvent(value: unknown): EngineEvent | null {
             shown_pct: v.shown_pct,
           }
         : null;
+    case "revoked":
+      return { event: "revoked" };
     case "error":
       return isStr(v.message) ? { event: "error", message: v.message } : null;
     case "ended":

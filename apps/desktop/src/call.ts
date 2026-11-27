@@ -155,6 +155,9 @@ function onEvent(state: CallState, raw: unknown): CallState {
           shown_pct: event.shown_pct,
         },
       };
+    case "revoked":
+      // The control event that comes with it says who has control now.
+      return state;
     case "error":
       return { ...state, error: event.message };
     case "ended":

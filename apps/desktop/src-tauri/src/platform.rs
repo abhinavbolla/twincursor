@@ -32,10 +32,27 @@ pub const INFO: PlatformInfo = PlatformInfo {
 pub const CANT_SHARE: &str =
     "Sharing your screen from Windows isn't available yet. You can join a call with a link.";
 
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 /// The app's identifier (`identifier` in tauri.conf.json), for paths worked out before Tauri
-/// has started.
+/// has started, and the one entry a permission reset touches on macOS.
 pub const IDENTIFIER: &str = "dev.twincursor.desktop";
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// What a permission reset runs on macOS: `/usr/bin/tccutil reset <service>
+/// dev.twincursor.desktop`. Always this app's identifier, so no other app's entry is touched.
+pub fn tccutil_command(service: &str) -> (&'static str, [&str; 3]) {
+    ("/usr/bin/tccutil", ["reset", service, IDENTIFIER])
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// The log file on macOS, under `home`: `~/Library/Logs/TwinCursor/twincursor.log`, where
+/// Console finds it.
+pub fn mac_log_file(home: &Path) -> PathBuf {
+    home.join("Library")
+        .join("Logs")
+        .join("TwinCursor")
+        .join("twincursor.log")
+}
 
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 /// A page the app may open in the browser: http or https, and nothing in it that a command
@@ -190,9 +207,23 @@ mod mac {
             .map_err(|e| format!("No config folder: {e}."))
     }
 
-    /// No log file unless `TWINCURSOR_LOG_FILE` asks for one.
+    /// `~/Library/Logs/TwinCursor/twincursor.log` ([`super::mac_log_file`]).
     pub fn default_log_file() -> Option<PathBuf> {
-        None
+        let home = std::env::var_os("HOME").filter(|v| !v.is_empty())?;
+        Some(super::mac_log_file(std::path::Path::new(&home)))
+    }
+
+    /// Runs [`super::tccutil_command`] for `service` and returns its exit code.
+    pub fn reset_permission(service: &str) -> Result<i32, String> {
+        let (program, args) = super::tccutil_command(service);
+        let status = Command::new(program)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_err(|e| format!("tccutil couldn't run: {e}."))?;
+        Ok(status.code().unwrap_or(-1))
     }
 
     pub fn prepare_engine(_command: &mut Command) {}
@@ -418,6 +449,11 @@ mod win {
         });
     }
 
+    /// Windows keeps no permission list for the app to reset.
+    pub fn reset_permission(_service: &str) -> Result<i32, String> {
+        Err(crate::seams::NOTHING_TO_RESET.into())
+    }
+
     /// A Windows guest needs only the microphone, which Windows asks about itself.
     pub const ASKS_PERMISSIONS: bool = false;
 }
@@ -474,6 +510,10 @@ mod other {
 
     pub fn prepare_engine(_command: &mut Command) {}
     pub fn adopt_engine(_child: &Child) {}
+
+    pub fn reset_permission(_service: &str) -> Result<i32, String> {
+        Err(crate::seams::NOTHING_TO_RESET.into())
+    }
 
     pub const ASKS_PERMISSIONS: bool = false;
 }
@@ -552,6 +592,27 @@ mod tests {
         // Ten units, but more than ten bytes of UTF-8.
         let wide = utf16_with_nul(&"王".repeat(10));
         assert_eq!(text_from_utf16(&wide, 10).unwrap_err(), TOO_LONG);
+    }
+
+    #[test]
+    fn a_reset_only_ever_names_this_app() {
+        // Built, never run: a test must not reset anyone's permissions.
+        assert_eq!(
+            tccutil_command("Accessibility"),
+            (
+                "/usr/bin/tccutil",
+                ["reset", "Accessibility", "dev.twincursor.desktop"]
+            )
+        );
+        assert_eq!(tccutil_command("ScreenCapture").1[2], IDENTIFIER);
+    }
+
+    #[test]
+    fn the_mac_log_is_in_the_users_logs_folder() {
+        assert_eq!(
+            mac_log_file(Path::new("/Users/sam")),
+            Path::new("/Users/sam/Library/Logs/TwinCursor/twincursor.log")
+        );
     }
 
     #[test]

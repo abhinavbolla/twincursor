@@ -199,7 +199,7 @@ engine's own native window (ADR 0007, and [the IPC protocol](ipc.md)).
   | Session file | App config folder, mode 0600 | `%LOCALAPPDATA%\dev.twincursor.desktop` |
   | Permissions | Asked through `tc-engine permissions` | None to ask; the mic is Windows' own prompt |
   | Engine process | Ends when its stdin closes | The same, no console window, and a kill-on-close job object |
-  | Log file | None (`TWINCURSOR_LOG_FILE` to have one) | `%LOCALAPPDATA%\dev.twincursor.desktop\logs\twincursor.log` |
+  | Log file | `~/Library/Logs/TwinCursor/twincursor.log` | `%LOCALAPPDATA%\dev.twincursor.desktop\logs\twincursor.log` |
 
   tao, under Tauri, makes every window without an owner an app window (`WS_EX_APPWINDOW`); its
   `skip_taskbar` only removes the taskbar button through `ITaskbarList`, leaving the window in
