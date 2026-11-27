@@ -83,6 +83,20 @@ carries no LiveKit key or secret; …".
 Without a file, `package.sh` builds an app with no backend, which says it isn't connected to a
 server. That is the right build for trying the app's packaging, not for people.
 
+**Signing.** By default the app and its engine are signed ad hoc. macOS then sees every build as
+a different app: a permission granted to one build doesn't carry over to the next, even though
+System Settings still shows TwinCursor switched on (the app offers **Reset and ask again** for
+that). To keep grants across updates, sign with a fixed identity that is already in a keychain:
+
+```bash
+TWINCURSOR_SIGN_IDENTITY="Developer ID Application: …" apps/desktop/scripts/package.sh ~/.config/twincursor/backend.conf
+```
+
+`TWINCURSOR_SIGN_IDENTITY` takes a name or SHA-1 from `security find-identity -v -p codesigning`;
+`TWINCURSOR_SIGN_KEYCHAIN` names the keychain to look in. The script signs `tc-engine`, then the
+app, keeping their entitlements and the hardened runtime, and prints which identity it used and
+the designated requirement. It never creates or changes a certificate, key or keychain.
+
 ## The Windows app
 
 `TwinCursor-<version>-windows-x64.zip` holds `TwinCursor.exe` (the app, its page built in),

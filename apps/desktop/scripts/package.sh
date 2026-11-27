@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Builds a disk image people can open: TwinCursor.app (ad hoc signed, tc-engine inside) next to a
-# link to /Applications.
+# Builds a disk image people can open: TwinCursor.app (tc-engine inside; signed ad hoc, or with
+# TWINCURSOR_SIGN_IDENTITY as bundle.sh says) next to a link to /Applications.
 #
 #   apps/desktop/scripts/package.sh                              # no backend
 #   apps/desktop/scripts/package.sh ~/.config/twincursor/backend.conf   # pointed at your backend
