@@ -20,7 +20,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Show Xcode and SDK
         run: xcodebuild -version && xcrun --sdk macosx --show-sdk-version
@@ -40,7 +40,7 @@ jobs:
 
       # The desktop app embeds the built UI (apps/desktop/dist), so it has to exist before the
       # app crate compiles.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -69,7 +69,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the minimum supported Rust version
         run: |
@@ -84,7 +84,7 @@ jobs:
           triple: mac-arm64-release
 
       # The desktop app embeds the built UI (apps/desktop/dist).
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -106,7 +106,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -142,7 +142,7 @@ jobs:
       LIVEKIT_SERVER_VERSION: 1.13.11
       LIVEKIT_SERVER_SHA256: 5d071ea43339f0140d24a66f0b2ff8a7bf6c4d0dceb19b30abca835670213667
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -152,7 +152,7 @@ jobs:
         with:
           triple: win-x64-release
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -195,12 +195,12 @@ jobs:
           app=$(ls dist/TwinCursor-*-windows-x64/TwinCursor.exe)
           APP="$app" OUT=smoke LIVEKIT=.livekit/livekit-server.exe bench/windows-smoke.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: TwinCursor-windows-x64-no-backend
           path: dist/*.zip
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: windows-smoke-reports
@@ -213,7 +213,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: supabase/setup-cli@v3
         with:
@@ -254,7 +254,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
@@ -266,7 +266,7 @@ jobs:
     timeout-minutes: 10
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
